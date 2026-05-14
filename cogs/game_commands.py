@@ -1,12 +1,8 @@
-"""
-Game Commands Cog
-/gen    - Search & download a game
-/search - Search in local database
-/info   - Full game details from Steam
-"""
 import asyncio
 import logging
 import urllib.parse
+import time
+import jwt
 from typing import Dict, List, Optional
 
 import aiohttp
@@ -16,7 +12,7 @@ from discord.ext import commands
 
 from config import (
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
-    DEFAULT_CC, LINK_EXPIRE_SECONDS, R2_BASE_URL,
+    DEFAULT_CC, LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET
 )
 from utils.helpers import (
     clean_search_string, extract_protection_type, format_size,
@@ -309,21 +305,19 @@ class GameCommands(commands.Cog):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _find_download(self, appid: str, game_name: str) -> Dict:
-        """Check whether a file exists in R2 and return the best available URL."""
+        """Check whether a file exists in R2 and return the JWT Web URL."""
         filename = f"{make_safe_filename(game_name)} [{appid}].zip"
 
         if not R2_BASE_URL:
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
         check_url = f"{R2_BASE_URL}/Database/{appid}.zip"
-        final_url = check_url
         expires_in = None
 
         if _PRESIGN_ENABLED:
             signed_url = await generate_presigned_url(appid)
             if signed_url:
                 check_url = signed_url
-                final_url = signed_url
                 expires_in = LINK_EXPIRE_SECONDS
             else:
                 log.warning(f"Presign failed for {appid}, falling back to public URL")
@@ -337,7 +331,18 @@ class GameCommands(commands.Cog):
                     return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
                 
                 size = int(resp.headers.get("Content-Length", 0))
-                return {"available": True, "url": final_url, "size_bytes": size, "filename": filename, "expires_in": expires_in}
+                
+                # --- SISTEM JWT ---
+                # Hasilkan link ber-token JWT yang aman!
+                payload = {
+                    "app_id": str(appid),
+                    "exp": int(time.time()) + LINK_EXPIRE_SECONDS
+                }
+                token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
+                jwt_url = f"{WEB_URL}/download/{appid}?token={token}"
+                
+                return {"available": True, "url": jwt_url, "size_bytes": size, "filename": filename, "expires_in": expires_in}
+                
         except Exception as e:
             log.error(f"R2 GET error for {appid}: {e}")
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}

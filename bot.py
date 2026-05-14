@@ -11,15 +11,19 @@ from pathlib import Path
 import discord
 from discord.ext import commands
 import aiohttp
+from aiohttp import web
+import jwt
 
 # Setup path for imports
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import (
     DISCORD_TOKEN, BOT_PREFIX, BOT_VERSION, BOT_DESCRIPTION,
-    LOG_LEVEL, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT
+    LOG_LEVEL, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT,
+    JWT_SECRET, PORT
 )
 from utils.database import DatabaseManager
+from utils.r2_presign import generate_presigned_url
 
 # Setup logging
 logging.basicConfig(
@@ -32,7 +36,6 @@ logging.basicConfig(
     ]
 )
 
-# Reduce discord.py logging noise
 logging.getLogger('discord').setLevel(logging.WARNING)
 logging.getLogger('discord.http').setLevel(logging.WARNING)
 
@@ -43,7 +46,6 @@ class SteamBot(commands.Bot):
     """Main bot class with enhanced functionality"""
     
     def __init__(self):
-        # Setup intents
         intents = discord.Intents.default()
         intents.message_content = True
         
@@ -53,46 +55,68 @@ class SteamBot(commands.Bot):
             description=BOT_DESCRIPTION
         )
         
-        # Bot metadata
         self.version = BOT_VERSION
-        # FIX: Gunakan discord.utils.utcnow() agar format timezone sama dengan command status
         self.start_time = discord.utils.utcnow() 
-        
-        # HTTP session for API calls
         self.session: aiohttp.ClientSession | None = None
-        
-        # Database manager
         self.db = DatabaseManager()
-        
-        # Status tracking
         self.is_ready = False
     
     async def setup_hook(self):
-        """
-        Called before bot connects to Discord
-        Setup HTTP session and load cogs
-        """
-        # Create HTTP session
         self.session = aiohttp.ClientSession()
         log.info("✅ HTTP session created")
         
-        # Load database
         self.db.load()
-        
-        # Load all cogs
         await self.load_cogs()
         
-        # Sync commands
+        # 🌐 NYALAKAN WEB SERVER UNTUK DOWNLOAD LINK (FUNGSI BARU)
+        self.loop.create_task(self.start_web_server())
+        
         try:
             synced = await self.tree.sync()
             log.info(f"✅ Synced {len(synced)} slash commands")
         except Exception as e:
             log.error(f"Failed to sync commands: {e}")
-    
-    async def load_cogs(self):
-        """Load all cogs from cogs directory"""
-        cogs_dir = Path(__file__).parent / "cogs"
+
+    async def start_web_server(self):
+        """Menjalankan Web API pendamping untuk sistem download JWT"""
+        app = web.Application()
+        app.router.add_get('/download/{appid}', self.handle_download)
         
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, '0.0.0.0', PORT)
+        await site.start()
+        log.info(f"🌐 Web API running on port {PORT}")
+
+    async def handle_download(self, request):
+        """Endpoint ini menangani klik link dari user dan mengecek Token JWT"""
+        appid = request.match_info.get('appid')
+        token = request.query.get('token')
+        
+        if not token:
+            return web.Response(text="❌ Token tidak ditemukan / Missing token.", status=401)
+            
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+            if str(payload.get("app_id")) != str(appid):
+                return web.Response(text="❌ Token tidak valid untuk game ini.", status=403)
+                
+        except jwt.ExpiredSignatureError:
+            return web.Response(text="❌ Link sudah kadaluarsa (Expired). Silakan request link baru di Discord.", status=403)
+        except jwt.InvalidTokenError:
+            return web.Response(text="❌ Token rusak / Invalid token.", status=403)
+            
+        # Token valid -> Generate link asli R2 secara rahasia
+        real_url = await generate_presigned_url(appid)
+        
+        if not real_url:
+            return web.Response(text="❌ Server sedang gangguan. Gagal menghubungi Cloudflare.", status=500)
+            
+        # Redirect IDM/Browser user ke link asli
+        raise web.HTTPFound(real_url)
+
+    async def load_cogs(self):
+        cogs_dir = Path(__file__).parent / "cogs"
         if not cogs_dir.exists():
             log.warning("Cogs directory not found")
             return
@@ -100,9 +124,7 @@ class SteamBot(commands.Bot):
         for cog_file in cogs_dir.glob("*.py"):
             if cog_file.name.startswith("_"):
                 continue
-            
             cog_name = f"cogs.{cog_file.stem}"
-            
             try:
                 await self.load_extension(cog_name)
                 log.info(f"✅ Loaded cog: {cog_name}")
@@ -110,18 +132,11 @@ class SteamBot(commands.Bot):
                 log.error(f"Failed to load cog {cog_name}: {e}")
     
     async def close(self):
-        """
-        Cleanup when bot shuts down
-        Close HTTP session and save database
-        """
         log.info("🛑 Shutting down bot...")
-        
-        # Save database
         if hasattr(self, 'db'):
             self.db.save()
             log.info("💾 Database saved")
         
-        # Close HTTP session
         if self.session and not self.session.closed:
             await self.session.close()
             log.info("✅ HTTP session closed")
@@ -129,91 +144,42 @@ class SteamBot(commands.Bot):
         await super().close()
     
     async def on_ready(self):
-        """Called when bot is ready and connected to Discord"""
         self.is_ready = True
-        
         log.info("=" * 60)
         log.info(f"🤖 Bot: {self.user}")
-        log.info(f"🆔 ID: {self.user.id}")
-        log.info(f"📊 Guilds: {len(self.guilds)}")
         log.info(f"📦 Version: {self.version}")
-        log.info(f"💾 Database: {len(self.db.game_db):,} games loaded")
         log.info("=" * 60)
         
-        # Set bot activity
         await self.change_presence(
             activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{len(self.db.game_db):,} games | /gen to search"
+                type=discord.ActivityType.playing,
+                name="/gen to generate game"
             )
         )
-    
-    async def on_command_error(self, ctx, error):
-        """Global error handler for prefix commands"""
-        if isinstance(error, commands.CommandNotFound):
-            return
-        
-        log.error(f"Command error: {error}", exc_info=error)
-    
-    async def on_app_command_error(
-        self, 
-        interaction: discord.Interaction, 
-        error: discord.app_commands.AppCommandError
-    ):
-        """Global error handler for slash commands"""
-        log.error(f"App command error: {error}", exc_info=error)
-        
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                f"❌ An error occurred: {str(error)}",
-                ephemeral=True
-            )
-        else:
-            await interaction.followup.send(
-                f"❌ An error occurred: {str(error)}",
-                ephemeral=True
-            )
     
     async def on_guild_join(self, guild):
-        """Called when bot joins a new guild"""
-        log.info(f"➕ Joined guild: {guild.name} (ID: {guild.id})")
-        
-        # Update activity
+        log.info(f"➕ Joined guild: {guild.name}")
         await self.change_presence(
             activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name=f"{len(self.guilds)} servers | /gen to search"
+                type=discord.ActivityType.playing,
+                name="/gen to generate game"
             )
         )
-    
-    async def on_guild_remove(self, guild):
-        """Called when bot leaves a guild"""
-        log.info(f"➖ Left guild: {guild.name} (ID: {guild.id})")
-
 
 async def main():
-    """Main entry point"""
     bot = SteamBot()
-    
     try:
         log.info("🚀 Starting bot...")
         await bot.start(DISCORD_TOKEN)
-        
     except KeyboardInterrupt:
-        log.info("⌨️ Keyboard interrupt received")
-    except Exception as e:
-        log.critical(f"💥 Fatal error: {e}", exc_info=True)
+        pass
     finally:
         if not bot.is_closed():
             await bot.close()
-        log.info("👋 Bot stopped")
-
 
 if __name__ == "__main__":
-    # Windows-specific event loop policy
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

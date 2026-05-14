@@ -31,6 +31,9 @@ ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "562612184333680709"
 # API URLs
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
+WEB_URL = os.getenv("WEB_URL", "http://localhost:8080").rstrip('/')
+JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
+PORT = int(os.getenv("PORT", "8080"))
 
 # R2 presigned-URL credentials (optional – enables expiring download links)
 R2_ACCESS_KEY_ID     = os.getenv("R2_ACCESS_KEY_ID", "")
