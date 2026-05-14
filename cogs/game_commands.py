@@ -25,6 +25,9 @@ from utils.helpers import (
 from utils.r2_presign import generate_presigned_url, _PRESIGN_ENABLED
 from utils.steam_api import SteamAPI, locale_to_country_code
 
+log = logging.getLogger(__name__)
+
+
 def resolve_country_code(interaction: discord.Interaction) -> str:
     """
     Pick the best Steam country code for this interaction.
