@@ -44,49 +44,80 @@ def resolve_country_code(interaction: discord.Interaction) -> str:
 
     return DEFAULT_CC
 
+# ── AUTOCOMPLETE (DIKEMBALIKAN KE VERSI LAMA) ────────────────────────────────
+
 async def autocomplete_games(
     interaction: discord.Interaction,
     current: str,
 ) -> List[app_commands.Choice[str]]:
-    """Instant autocomplete from local database."""
-    db = interaction.client.db
-    results: List[app_commands.Choice[str]] = []
+    """
+    Autocomplete versi lama:
+    1) Cari di Database Lokal (yang ada file-nya diprioritaskan).
+    2) Kalau nggak ada di DB, langsung live-search ke Steam API.
+    """
+    bot = interaction.client
+    db = bot.db
+    results = []
+    found_ids = set()
 
-    q = (current or "").strip().lower()
+    q_raw = (current or "").lower().strip()
+    q_clean = clean_search_string(q_raw)
 
-    # Fallback if Railway database is completely empty
-    if not db.game_db and q:
-        results.append(app_commands.Choice(name="⚠️ Database is empty. Press Enter to search Steam.", value=q))
-        return results
+    starred_matches = []
+    normal_matches = []
 
-    if not q:
-        top = [g for g in db.game_db if g.get("file") and g.get("name")]
-        for g in top[:25]:
-            results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
-        return results
-
-    q_clean = clean_search_string(q)
-    with_file, without_file = [], []
-
+    # 1. Cari di Database Lokal
     for game in db.game_db:
-        name: str = game.get("name", "")
-        appid: str = str(game.get("id", ""))
+        name = game.get("name")
+        appid = str(game.get("id", ""))
+        
         if not name:
             continue
-
-        name_lower = name.lower()
-        if q in name_lower or q_clean in clean_search_string(name_lower) or q in appid:
-            if game.get("file"):
-                with_file.append(game)
-            else:
-                without_file.append(game)
-
-    for g in with_file[:15]:
-        results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
         
+        name_raw = name.lower()
+        name_clean = clean_search_string(name_raw)
+        
+        # Logika pencarian
+        if (
+            not q_raw or
+            q_raw in name_raw or
+            (q_clean and q_clean in name_clean) or
+            q_raw in appid
+        ):
+            if game.get("file"):
+                starred_matches.append(game)
+            else:
+                normal_matches.append(game)
+
+    # Masukkan hasil DB yang ada file-nya duluan
+    for game in starred_matches[:15]:
+        results.append(app_commands.Choice(name=f"⭐ {game['name']}"[:100], value=str(game["id"])))
+        found_ids.add(str(game["id"]))
+
+    # Masukkan hasil DB biasa
     remaining = 25 - len(results)
-    for g in without_file[:remaining]:
-        results.append(app_commands.Choice(name=f"📁 {g['name']}"[:100], value=str(g["id"])))
+    for game in normal_matches[:remaining]:
+        gid = str(game["id"])
+        if gid not in found_ids:
+            results.append(app_commands.Choice(name=f"📁 {game['name']}"[:100], value=gid))
+            found_ids.add(gid)
+
+    # 2. Fallback Search ke Steam kalau hasil DB masih kurang dari 25
+    if q_raw and len(results) < 25:
+        try:
+            steam_api = SteamAPI(bot.session)
+            safe_q = urllib.parse.quote(q_raw)
+            steam_results = await steam_api.search_games(safe_q, limit=25 - len(results))
+            
+            for item in steam_results:
+                aid = item["id"]
+                if aid not in found_ids:
+                    results.append(app_commands.Choice(name=f"🌐 {item['name']}"[:100], value=aid))
+                    found_ids.add(aid)
+                if len(results) >= 25:
+                    break
+        except Exception as e:
+            log.error(f"Steam search error in autocomplete: {e}")
 
     return results
 
@@ -118,7 +149,6 @@ class GameCommands(commands.Cog):
         cc = resolve_country_code(interaction)
         target_id = query.strip()
 
-        # If user typed a title instead of App ID
         if not target_id.isdigit():
             safe_q = urllib.parse.quote(target_id)
             search_results = await self.steam_api.search_games(safe_q, limit=1)
@@ -134,7 +164,6 @@ class GameCommands(commands.Cog):
 
             target_id = search_results[0]["id"]
 
-        # Fetch Steam details
         steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
         if not steam_data:
             embed = discord.Embed(
@@ -293,7 +322,6 @@ class GameCommands(commands.Cog):
         final_url = check_url
         expires_in = None
 
-        # FIX: If Presign is enabled (private bucket), generate the signed URL FIRST to bypass 403 Forbidden!
         if _PRESIGN_ENABLED:
             signed_url = await generate_presigned_url(appid)
             if signed_url:
@@ -304,15 +332,18 @@ class GameCommands(commands.Cog):
                 log.warning(f"Presign failed for {appid}, falling back to public URL")
 
         try:
-            async with self.bot.session.head(
+            # FIX UTAMA: Menggunakan session.get() alih-alih session.head()
+            # Karena Presigned URL 'get_object' S3/R2 akan menolak method HEAD dengan 403 Forbidden
+            async with self.bot.session.get(
                 check_url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
             ) as resp:
                 if resp.status != 200:
                     return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
+                
                 size = int(resp.headers.get("Content-Length", 0))
                 return {"available": True, "url": final_url, "size_bytes": size, "filename": filename, "expires_in": expires_in}
         except Exception as e:
-            log.error(f"R2 HEAD error for {appid}: {e}")
+            log.error(f"R2 GET error for {appid}: {e}")
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
     async def _send_game_info(self, interaction, game_info, found_in_db, has_file, dl):
