@@ -48,10 +48,7 @@ async def autocomplete_games(
     interaction: discord.Interaction,
     current: str,
 ) -> List[app_commands.Choice[str]]:
-    """
-    Instant autocomplete from local database with a Steam fallback 
-    if the database is completely empty (e.g., fresh Railway deploy).
-    """
+    """Instant autocomplete from local database."""
     db = interaction.client.db
     results: List[app_commands.Choice[str]] = []
 
@@ -59,7 +56,7 @@ async def autocomplete_games(
 
     # Fallback if Railway database is completely empty
     if not db.game_db and q:
-        results.append(app_commands.Choice(name="⚠️ Database is empty. Press Enter to search Steam directly.", value=q))
+        results.append(app_commands.Choice(name="⚠️ Database is empty. Press Enter to search Steam.", value=q))
         return results
 
     if not q:
@@ -286,39 +283,34 @@ class GameCommands(commands.Cog):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _find_download(self, appid: str, game_name: str) -> Dict:
+        """Check whether a file exists in R2 and return the best available URL."""
         filename = f"{make_safe_filename(game_name)} [{appid}].zip"
 
         if not R2_BASE_URL:
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
-        # URL default (Public)
         check_url = f"{R2_BASE_URL}/Database/{appid}.zip"
         final_url = check_url
         expires_in = None
 
-        # 1. BIKIN KUNCI VIP (PRESIGNED URL) DULU SEBELUM NGE-PING!
+        # FIX: If Presign is enabled (private bucket), generate the signed URL FIRST to bypass 403 Forbidden!
         if _PRESIGN_ENABLED:
             signed_url = await generate_presigned_url(appid)
             if signed_url:
-                check_url = signed_url  # Pakai link khusus ini buat nge-Ping
-                final_url = signed_url  # Link ini juga yang bakal dikasih ke user
+                check_url = signed_url
+                final_url = signed_url
                 expires_in = LINK_EXPIRE_SECONDS
             else:
                 log.warning(f"Presign failed for {appid}, falling back to public URL")
 
-        # 2. SEKARANG BARU NGE-PING CLOUDFLARE PAKAI LINK YANG UDAH DIBIKIN
         try:
             async with self.bot.session.head(
                 check_url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
             ) as resp:
                 if resp.status != 200:
                     return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
-                
-                # Kalau berhasil masuk (Status 200), ambil ukuran file
                 size = int(resp.headers.get("Content-Length", 0))
-                
                 return {"available": True, "url": final_url, "size_bytes": size, "filename": filename, "expires_in": expires_in}
-                
         except Exception as e:
             log.error(f"R2 HEAD error for {appid}: {e}")
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
