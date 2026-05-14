@@ -1,14 +1,13 @@
 """
 Game Commands Cog
-/gen  - Search & download game (autocomplete = top trending yang ada di R2)
+/gen  - Search & download game
 /search - Cari di database lokal
 /info   - Detail lengkap game dari Steam
 """
 import asyncio
 import logging
-import time
 import urllib.parse
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import aiohttp
 import discord
@@ -27,50 +26,29 @@ from utils.steam_api import SteamAPI
 
 log = logging.getLogger(__name__)
 
-# ── Cache trending games ──────────────────────────────────────────────────────
-# Format: {"games": [...], "ts": float}
-_trending_cache: Dict = {"games": [], "ts": 0.0}
-TRENDING_TTL = 3600  # refresh tiap 1 jam
-
-
-# ── Autocomplete ──────────────────────────────────────────────────────────────
+# ── Autocomplete Super Cepat (Hanya DB Lokal) ─────────────────────────────────
 
 async def autocomplete_games(
     interaction: discord.Interaction,
     current: str,
 ) -> List[app_commands.Choice[str]]:
     """
-    Kalau input kosong → tampilkan Top 10 trending Steam yang filenya ada di R2.
-    Kalau ada input → cari di DB lokal dulu, lalu fallback ke Steam search.
+    Autocomplete 100% instan dari Database Lokal.
+    Menghindari error "Loading options failed" dari Discord (Batas 3 detik).
     """
-    bot = interaction.client
-    db = bot.db
+    db = interaction.client.db
     results: List[app_commands.Choice[str]] = []
-    found_ids: set = set()
-
+    
     q = (current or "").lower().strip()
-
-    # ── Kalau kosong: tampilkan top trending yang ada di R2 ──────────────────
+    
+    # Kalau kosong, tampilkan game yang filenya tersedia di DB
     if not q:
-        try:
-            # FIX: Limit eksekusi 2.5 detik agar tidak kena "Loading options failed" dari Discord!
-            trending = await asyncio.wait_for(_get_trending_with_r2(bot), timeout=2.5)
-            for item in trending[:10]:
-                results.append(
-                    app_commands.Choice(
-                        name=f"🔥 {item['name']}"[:100],
-                        value=item["appid"],
-                    )
-                )
-                found_ids.add(item["appid"])
-        except asyncio.TimeoutError:
-            # FIX: Jika internet/R2 lambat, fallback instan ke DB lokal
-            fallback = [g for g in bot.db.game_db if g.get("file") and g.get("name")]
-            for g in fallback[:10]:
-                results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
+        starred = [g for g in db.game_db if g.get("file") and g.get("name")]
+        for g in starred[:25]:
+            results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
         return results
 
-    # ── Ada input: cari di database ──────────────────────────────────────────
+    # Kalau ada input, cari cepat di DB lokal
     q_clean = clean_search_string(q)
     starred, normal = [], []
 
@@ -80,93 +58,19 @@ async def autocomplete_games(
         if not name:
             continue
         if q in name.lower() or q_clean in clean_search_string(name) or q in appid:
-            (starred if game.get("file") else normal).append(game)
+            if game.get("file"):
+                starred.append(game)
+            else:
+                normal.append(game)
 
+    # Prioritaskan yang ada filenya di atas
     for g in starred[:15]:
         results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
-        found_ids.add(str(g["id"]))
-
+        
     for g in normal[: 25 - len(results)]:
-        gid = str(g["id"])
-        if gid not in found_ids:
-            results.append(app_commands.Choice(name=f"📁 {g['name']}"[:100], value=gid))
-            found_ids.add(gid)
-
-    # Fallback Steam search
-    if len(results) < 25:
-        try:
-            steam_api = SteamAPI(bot.session)
-            # FIX: Encode spasi pada query agar Steam API tidak mengembalikan status 400 Bad Request
-            safe_q = urllib.parse.quote(q)
-            
-            steam_res = await asyncio.wait_for(
-                steam_api.search_games(safe_q, limit=25 - len(results)),
-                timeout=2.0
-            )
-            for item in steam_res:
-                aid = item["id"]
-                if aid not in found_ids:
-                    results.append(app_commands.Choice(name=f"🌐 {item['name']}"[:100], value=aid))
-                    found_ids.add(aid)
-                if len(results) >= 25:
-                    break
-        except Exception as e:
-            log.error(f"Steam search autocomplete error: {e}")
+        results.append(app_commands.Choice(name=f"📁 {g['name']}"[:100], value=str(g["id"])))
 
     return results
-
-
-async def _get_trending_with_r2(bot) -> List[Dict]:
-    """
-    Ambil top games dari SteamSpy, filter yang filenya ada di R2.
-    """
-    global _trending_cache
-    now = time.monotonic()
-
-    if _trending_cache["games"] and now - _trending_cache["ts"] < TRENDING_TTL:
-        return _trending_cache["games"]
-
-    steam_api = SteamAPI(bot.session)
-    top_games = await steam_api.get_top_games_steamspy(timeout=2)
-
-    if not top_games:
-        log.warning("SteamSpy returned empty list, falling back to DB starred games")
-        fallback = [g for g in bot.db.game_db if g.get("file") and g.get("name")]
-        return [{"appid": str(g["id"]), "name": g["name"]} for g in fallback[:10]]
-
-    verified: List[Dict] = []
-    if not R2_BASE_URL:
-        db_ids = {str(g["id"]) for g in bot.db.game_db if g.get("file")}
-        for item in top_games:
-            if item["appid"] in db_ids:
-                verified.append(item)
-            if len(verified) >= 10:
-                break
-    else:
-        # FIX: Hanya cek 15 game teratas (dikurangi dari 50) agar proses jauh lebih cepat
-        tasks = [_check_r2_exists(bot.session, R2_BASE_URL, item) for item in top_games[:15]]
-        check_results = await asyncio.gather(*tasks, return_exceptions=True)
-        for item, ok in zip(top_games[:15], check_results):
-            if ok is True:
-                verified.append(item)
-            if len(verified) >= 10:
-                break
-
-    if verified:
-        _trending_cache = {"games": verified, "ts": now}
-        
-    return verified
-
-
-async def _check_r2_exists(session: aiohttp.ClientSession, r2_base: str, item: Dict) -> bool:
-    """HEAD request ke R2 untuk cek apakah file ada."""
-    url = f"{r2_base}/Database/{item['appid']}.zip"
-    try:
-        # FIX: Timeout 1 detik per file agar terhindar dari Discord Autocomplete Timeout
-        async with session.head(url, timeout=aiohttp.ClientTimeout(total=1.0), allow_redirects=True) as resp:
-            return resp.status == 200
-    except Exception:
-        return False
 
 
 # ── Cog ───────────────────────────────────────────────────────────────────────
@@ -187,7 +91,7 @@ class GameCommands(commands.Cog):
     # ── /gen ──────────────────────────────────────────────────────────────────
 
     @app_commands.command(name="gen", description="Cari dan download game Steam")
-    @app_commands.describe(query="Nama game atau App ID — biarkan kosong untuk lihat trending")
+    @app_commands.describe(query="Ketik Judul Game ATAU App ID (Angka)")
     @app_commands.autocomplete(query=autocomplete_games)
     @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
     async def gen(self, interaction: discord.Interaction, query: str):
@@ -195,31 +99,29 @@ class GameCommands(commands.Cog):
 
         target_id = query.strip()
 
-        # Validasi input
+        # FITUR BARU: JIKA INPUT BUKAN ANGKA (JUDUL GAME), SEARCH KE STEAM DULU!
         if not target_id.isdigit():
-            embed = discord.Embed(
-                title="❌ Input Tidak Valid",
-                description=(
-                    f"`{target_id}` bukan App ID yang valid.\n\n"
-                    "Gunakan **autocomplete** untuk memilih game, "
-                    "atau masukkan **App ID numerik** langsung.\n"
-                    "Contoh: `1771300`"
-                ),
-                color=COLOR_ERROR,
-            )
-            embed.set_footer(text="💡 Ketik nama game lalu pilih dari daftar")
-            await interaction.edit_original_response(embed=embed)
-            return
+            safe_q = urllib.parse.quote(target_id)
+            search_results = await self.steam_api.search_games(safe_q, limit=1)
+            
+            if not search_results:
+                embed = discord.Embed(
+                    title="❌ Game Tidak Ditemukan",
+                    description=f"Pencarian untuk **`{target_id}`** tidak membuahkan hasil di Steam.",
+                    color=COLOR_ERROR,
+                )
+                await interaction.edit_original_response(embed=embed)
+                return
+            
+            # Ambil AppID dari hasil pencarian teratas
+            target_id = search_results[0]["id"]
 
-        # Fetch Steam
+        # Fetch Steam details using AppID
         steam_data = await self.steam_api.get_app_details(target_id)
         if not steam_data:
             embed = discord.Embed(
                 title="❌ Game Tidak Ditemukan",
-                description=(
-                    f"Tidak ada game dengan App ID **`{target_id}`** di Steam.\n\n"
-                    "Pastikan App ID benar atau cari lewat autocomplete."
-                ),
+                description=f"Tidak ada game dengan App ID **`{target_id}`** di Steam.",
                 color=COLOR_ERROR,
             )
             embed.set_footer(text="App ID bisa dicek di store.steampowered.com")
@@ -231,13 +133,13 @@ class GameCommands(commands.Cog):
         found_in_db = db_entry is not None
         has_file = db_entry.get("file", False) if found_in_db else False
 
-        # Cek file di R2
+        # Cek ketersediaan file asli di R2
         dl = await self._find_download(target_id, game_info["name"])
 
-        # Embed publik (terlihat semua orang)
+        # Tampilkan Embed Publik
         await self._send_game_info(interaction, game_info, found_in_db, has_file, dl)
 
-        # Embed privat dengan link (hanya pengirim)
+        # Tampilkan Link Download Privat (Jika Ada)
         if dl["available"]:
             self.db.mark_as_starred(target_id, game_info["name"])
             self.db.save()
@@ -260,7 +162,7 @@ class GameCommands(commands.Cog):
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="🔍 Tidak Ditemukan",
-                    description=f"Tidak ada game yang cocok dengan **`{query}`**",
+                    description=f"Tidak ada game yang cocok dengan **`{query}`** di database.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
@@ -280,7 +182,7 @@ class GameCommands(commands.Cog):
                 value=f"AppID: `{game['id']}` • {status}",
                 inline=False,
             )
-        embed.set_footer(text="Gunakan /gen <AppID> untuk download")
+        embed.set_footer(text="Gunakan /gen <Nama Game> untuk download")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /info ─────────────────────────────────────────────────────────────────
@@ -341,7 +243,7 @@ class GameCommands(commands.Cog):
         embed.set_footer(text=f"SteamTools • App ID: {appid}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # ── Error handler cooldown ────────────────────────────────────────────────
+    # ── Error handler ─────────────────────────────────────────────────────────
 
     @gen.error
     async def gen_error(self, interaction: discord.Interaction, error):
@@ -370,20 +272,18 @@ class GameCommands(commands.Cog):
 
         try:
             async with self.bot.session.head(
-                url, timeout=aiohttp.ClientTimeout(total=6), allow_redirects=True
+                url, timeout=aiohttp.ClientTimeout(total=4), allow_redirects=True
             ) as resp:
                 if resp.status == 200:
                     size = int(resp.headers.get("Content-Length", 0))
                     return {"available": True, "url": url, "size_bytes": size, "filename": filename}
-        except asyncio.TimeoutError:
-            log.warning(f"R2 HEAD timeout for {appid}")
         except Exception as e:
             log.error(f"R2 HEAD error for {appid}: {e}")
 
         return {"available": False, "url": None, "size_bytes": 0, "filename": filename}
 
     async def _send_game_info(self, interaction, game_info, found_in_db, has_file, dl):
-        """Embed publik — ditampilkan di channel, tanpa URL download."""
+        """Embed publik."""
         protection = extract_protection_type(game_info.get("drm_notice"))
 
         if dl["available"]:   color = COLOR_DOWNLOAD
@@ -433,7 +333,7 @@ class GameCommands(commands.Cog):
         await interaction.edit_original_response(embed=embed)
 
     async def _send_download_embed(self, interaction, game_info, dl):
-        """Embed privat dengan link download — ephemeral, hanya terlihat requester."""
+        """Embed privat dengan link download."""
         size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "Tidak diketahui"
 
         embed = discord.Embed(
