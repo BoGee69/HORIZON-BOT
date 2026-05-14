@@ -1,8 +1,8 @@
 """
 Game Commands Cog
-/gen  - Search & download game
-/search - Cari di database lokal
-/info   - Detail lengkap game dari Steam
+/gen    - Search & download a game
+/search - Search in local database
+/info   - Full game details from Steam
 """
 import asyncio
 import logging
@@ -22,53 +22,70 @@ from utils.helpers import (
     clean_search_string, extract_protection_type, format_size,
     make_safe_filename, truncate_text,
 )
-from utils.steam_api import SteamAPI
+from utils.steam_api import SteamAPI, locale_to_country_code
 
 log = logging.getLogger(__name__)
 
-# ── Autocomplete Super Cepat (Hanya DB Lokal) ─────────────────────────────────
+
+# ── Autocomplete ───────────────────────────────────────────────────────────────
 
 async def autocomplete_games(
     interaction: discord.Interaction,
     current: str,
 ) -> List[app_commands.Choice[str]]:
     """
-    Autocomplete 100% instan dari Database Lokal.
-    Menghindari error "Loading options failed" dari Discord (Batas 3 detik).
+    Instant autocomplete from local database (stays well under Discord's 3-second limit).
+
+    • Empty query  → Top 10 games that have a file in R2, in order added.
+    • With input   → Fuzzy search across all DB entries; R2-available games float first.
     """
     db = interaction.client.db
     results: List[app_commands.Choice[str]] = []
-    
-    q = (current or "").lower().strip()
-    
-    # Kalau kosong, tampilkan game yang filenya tersedia di DB
+
+    q = (current or "").strip()
+
     if not q:
-        starred = [g for g in db.game_db if g.get("file") and g.get("name")]
-        for g in starred[:25]:
-            results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
+        # ── Default: show top-10 games that have an R2 file ──────────────────
+        top = [g for g in db.game_db if g.get("file") and g.get("name")]
+        for g in top[:10]:
+            label = f"⭐ {g['name']}"[:100]
+            results.append(app_commands.Choice(name=label, value=str(g["id"])))
         return results
 
-    # Kalau ada input, cari cepat di DB lokal
-    q_clean = clean_search_string(q)
-    starred, normal = [], []
+    # ── Typed query: search through the whole DB ──────────────────────────────
+    q_lower = q.lower()
+    q_clean = clean_search_string(q_lower)
+
+    with_file: List[Dict] = []
+    without_file: List[Dict] = []
 
     for game in db.game_db:
-        name = game.get("name", "")
-        appid = str(game.get("id", ""))
+        name: str = game.get("name", "")
+        appid: str = str(game.get("id", ""))
         if not name:
             continue
-        if q in name.lower() or q_clean in clean_search_string(name) or q in appid:
-            if game.get("file"):
-                starred.append(game)
-            else:
-                normal.append(game)
 
-    # Prioritaskan yang ada filenya di atas
-    for g in starred[:15]:
-        results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
-        
-    for g in normal[: 25 - len(results)]:
-        results.append(app_commands.Choice(name=f"📁 {g['name']}"[:100], value=str(g["id"])))
+        name_lower = name.lower()
+        if (
+            q_lower in name_lower
+            or q_clean in clean_search_string(name_lower)
+            or q_lower in appid
+        ):
+            if game.get("file"):
+                with_file.append(game)
+            else:
+                without_file.append(game)
+
+    # R2-available games first, then the rest; cap at 25 total (Discord limit)
+    for g in with_file[:15]:
+        results.append(
+            app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"]))
+        )
+    remaining = 25 - len(results)
+    for g in without_file[:remaining]:
+        results.append(
+            app_commands.Choice(name=f"📁 {g['name']}"[:100], value=str(g["id"]))
+        )
 
     return results
 
@@ -90,41 +107,46 @@ class GameCommands(commands.Cog):
 
     # ── /gen ──────────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="gen", description="Cari dan download game Steam")
-    @app_commands.describe(query="Ketik Judul Game ATAU App ID (Angka)")
+    @app_commands.command(name="gen", description="Search and download a Steam game")
+    @app_commands.describe(query="Game title OR App ID (numbers only)")
     @app_commands.autocomplete(query=autocomplete_games)
     @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
     async def gen(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer()
 
+        # Detect user's region for localised pricing
+        cc = locale_to_country_code(interaction.locale)
+
         target_id = query.strip()
 
-        # FITUR BARU: JIKA INPUT BUKAN ANGKA (JUDUL GAME), SEARCH KE STEAM DULU!
+        # If the user typed a title instead of an App ID → search Steam first
         if not target_id.isdigit():
             safe_q = urllib.parse.quote(target_id)
             search_results = await self.steam_api.search_games(safe_q, limit=1)
-            
+
             if not search_results:
                 embed = discord.Embed(
-                    title="❌ Game Tidak Ditemukan",
-                    description=f"Pencarian untuk **`{target_id}`** tidak membuahkan hasil di Steam.",
+                    title="❌ Game Not Found",
+                    description=(
+                        f"No results for **`{target_id}`** on Steam.\n"
+                        "Try searching with a different spelling or use the App ID directly."
+                    ),
                     color=COLOR_ERROR,
                 )
                 await interaction.edit_original_response(embed=embed)
                 return
-            
-            # Ambil AppID dari hasil pencarian teratas
+
             target_id = search_results[0]["id"]
 
-        # Fetch Steam details using AppID
-        steam_data = await self.steam_api.get_app_details(target_id)
+        # Fetch Steam details (with regional pricing)
+        steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
         if not steam_data:
             embed = discord.Embed(
-                title="❌ Game Tidak Ditemukan",
-                description=f"Tidak ada game dengan App ID **`{target_id}`** di Steam.",
+                title="❌ Game Not Found",
+                description=f"No game with App ID **`{target_id}`** was found on Steam.",
                 color=COLOR_ERROR,
             )
-            embed.set_footer(text="App ID bisa dicek di store.steampowered.com")
+            embed.set_footer(text="You can look up App IDs at store.steampowered.com")
             await interaction.edit_original_response(embed=embed)
             return
 
@@ -133,13 +155,13 @@ class GameCommands(commands.Cog):
         found_in_db = db_entry is not None
         has_file = db_entry.get("file", False) if found_in_db else False
 
-        # Cek ketersediaan file asli di R2
+        # Check whether a real file exists in R2
         dl = await self._find_download(target_id, game_info["name"])
 
-        # Tampilkan Embed Publik
+        # Public info embed
         await self._send_game_info(interaction, game_info, found_in_db, has_file, dl)
 
-        # Tampilkan Link Download Privat (Jika Ada)
+        # Private download link (ephemeral)
         if dl["available"]:
             self.db.mark_as_starred(target_id, game_info["name"])
             self.db.save()
@@ -152,8 +174,8 @@ class GameCommands(commands.Cog):
 
     # ── /search ───────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="search", description="Cari game di database lokal")
-    @app_commands.describe(query="Nama game yang ingin dicari")
+    @app_commands.command(name="search", description="Search for a game in the local database")
+    @app_commands.describe(query="Game title to look for")
     async def search(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer(ephemeral=True)
 
@@ -161,8 +183,8 @@ class GameCommands(commands.Cog):
         if not results:
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title="🔍 Tidak Ditemukan",
-                    description=f"Tidak ada game yang cocok dengan **`{query}`** di database.",
+                    title="🔍 No Results",
+                    description=f"No games matching **`{query}`** were found in the database.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
@@ -170,45 +192,48 @@ class GameCommands(commands.Cog):
             return
 
         embed = discord.Embed(
-            title=f"🔍 Hasil: `{query}`",
-            description=f"Ditemukan **{len(results)}** game",
+            title=f"🔍 Results for: `{query}`",
+            description=f"Found **{len(results)}** game(s)",
             color=COLOR_SUCCESS,
         )
         for game in results:
             icon = "⭐" if game.get("file") else "📁"
-            status = "File Tersedia" if game.get("file") else "Terdaftar"
+            status = "File Available" if game.get("file") else "Registered"
             embed.add_field(
                 name=f"{icon} {game.get('name', 'Unknown')}",
                 value=f"AppID: `{game['id']}` • {status}",
                 inline=False,
             )
-        embed.set_footer(text="Gunakan /gen <Nama Game> untuk download")
+        embed.set_footer(text="Use /gen <game name> to download")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /info ─────────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="info", description="Lihat detail lengkap sebuah game")
-    @app_commands.describe(appid="Steam App ID (angka)")
+    @app_commands.command(name="info", description="View full details for a Steam game")
+    @app_commands.describe(appid="Steam App ID (numbers only)")
     async def info(self, interaction: discord.Interaction, appid: str):
         await interaction.response.defer(ephemeral=True)
 
         if not appid.isdigit():
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title="❌ App ID Tidak Valid",
-                    description=f"`{appid}` bukan angka yang valid.",
+                    title="❌ Invalid App ID",
+                    description=f"`{appid}` is not a valid numeric App ID.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
             )
             return
 
-        steam_data = await self.steam_api.get_app_details(appid)
+        # Regional pricing based on user locale
+        cc = locale_to_country_code(interaction.locale)
+
+        steam_data = await self.steam_api.get_app_details(appid, cc=cc)
         if not steam_data:
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title="❌ Tidak Ditemukan",
-                    description=f"Game dengan App ID `{appid}` tidak ada di Steam.",
+                    title="❌ Not Found",
+                    description=f"No game with App ID `{appid}` exists on Steam.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
@@ -225,19 +250,19 @@ class GameCommands(commands.Cog):
             color=COLOR_INFO,
             url=f"https://store.steampowered.com/app/{appid}",
         )
-        embed.add_field(name="🆔 AppID",      value=f"`{appid}`",              inline=True)
-        embed.add_field(name="🎯 Tipe",       value=game_info["type"],         inline=True)
-        embed.add_field(name="💰 Harga",      value=game_info["price"],        inline=True)
-        embed.add_field(name="🏷️ Genre",      value=game_info["genres"],       inline=True)
-        embed.add_field(name="📅 Rilis",      value=game_info["release_date"], inline=True)
-        embed.add_field(name="🛡️ DRM",        value=protection,                inline=True)
-        embed.add_field(name="👥 Developer",  value=game_info["developers"],   inline=False)
-        embed.add_field(name="🏢 Publisher",  value=game_info["publishers"],   inline=False)
+        embed.add_field(name="🆔 App ID",      value=f"`{appid}`",              inline=True)
+        embed.add_field(name="🎯 Type",        value=game_info["type"],          inline=True)
+        embed.add_field(name="💰 Price",       value=game_info["price"],         inline=True)
+        embed.add_field(name="🏷️ Genre",       value=game_info["genres"],        inline=True)
+        embed.add_field(name="📅 Release",     value=game_info["release_date"],  inline=True)
+        embed.add_field(name="🛡️ DRM",         value=protection,                 inline=True)
+        embed.add_field(name="👥 Developer",   value=game_info["developers"],    inline=False)
+        embed.add_field(name="🏢 Publisher",   value=game_info["publishers"],    inline=False)
         if db_game:
-            db_status = "✅ Ada di Database"
+            db_status = "✅ In Database"
             if db_game.get("file"):
-                db_status += " • ⭐ File Tersedia"
-            embed.add_field(name="📊 Status DB", value=db_status, inline=False)
+                db_status += " • ⭐ File Available"
+            embed.add_field(name="📊 DB Status", value=db_status, inline=False)
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
         embed.set_footer(text=f"SteamTools • App ID: {appid}")
@@ -250,7 +275,7 @@ class GameCommands(commands.Cog):
         if isinstance(error, app_commands.CommandOnCooldown):
             embed = discord.Embed(
                 title="⏳ Cooldown",
-                description=f"Tunggu **{error.retry_after:.1f} detik** sebelum request lagi.",
+                description=f"Please wait **{error.retry_after:.1f}s** before requesting again.",
                 color=COLOR_WARNING,
             )
             if interaction.response.is_done():
@@ -263,7 +288,7 @@ class GameCommands(commands.Cog):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _find_download(self, appid: str, game_name: str) -> Dict:
-        """Cek ketersediaan file di R2 dengan HEAD request."""
+        """Check whether a file exists in R2 via HEAD request."""
         filename = f"{make_safe_filename(game_name)} [{appid}].zip"
         url = f"{R2_BASE_URL}/Database/{appid}.zip"
 
@@ -283,7 +308,7 @@ class GameCommands(commands.Cog):
         return {"available": False, "url": None, "size_bytes": 0, "filename": filename}
 
     async def _send_game_info(self, interaction, game_info, found_in_db, has_file, dl):
-        """Embed publik."""
+        """Public embed shown in the channel."""
         protection = extract_protection_type(game_info.get("drm_notice"))
 
         if dl["available"]:   color = COLOR_DOWNLOAD
@@ -298,18 +323,18 @@ class GameCommands(commands.Cog):
             url=f"https://store.steampowered.com/app/{game_info['appid']}",
         )
 
-        embed.add_field(name="🆔 AppID",      value=f"`{game_info['appid']}`", inline=True)
-        embed.add_field(name="🛡️ Protection", value=protection,               inline=True)
-        embed.add_field(name="🏷️ Genre",      value=game_info["genres"],      inline=True)
+        embed.add_field(name="🆔 App ID",      value=f"`{game_info['appid']}`", inline=True)
+        embed.add_field(name="🛡️ Protection",  value=protection,                inline=True)
+        embed.add_field(name="🏷️ Genre",       value=game_info["genres"],       inline=True)
 
-        if dl["available"]:     sv = "✅ **Download Tersedia**"
-        elif has_file:          sv = "✅ Verified"
-        elif found_in_db:       sv = "📁 Scanned"
-        else:                   sv = "🌐 Ditemukan"
+        if dl["available"]:   sv = "✅ **Download Available**"
+        elif has_file:        sv = "✅ Verified"
+        elif found_in_db:     sv = "📁 Scanned"
+        else:                 sv = "🌐 Found on Steam"
 
-        embed.add_field(name="📊 Status",  value=sv,                          inline=True)
-        embed.add_field(name="📅 Release", value=game_info["release_date"],   inline=True)
-        embed.add_field(name="💰 Harga",   value=game_info["price"],          inline=True)
+        embed.add_field(name="📊 Status",  value=sv,                           inline=True)
+        embed.add_field(name="📅 Release", value=game_info["release_date"],    inline=True)
+        embed.add_field(name="💰 Price",   value=game_info["price"],           inline=True)
         embed.add_field(
             name="👥 Developer",
             value=f"{game_info['developers']} • *{game_info['publishers']}*",
@@ -320,46 +345,50 @@ class GameCommands(commands.Cog):
             size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "—"
             embed.add_field(
                 name="⬇️ Download",
-                value=f"Tersedia • `{size_str}`\n🔒 *Link dikirim secara pribadi*",
+                value=f"Available • `{size_str}`\n🔒 *Link sent privately*",
                 inline=False,
             )
         else:
-            embed.add_field(name="⬇️ Download", value="❌ File belum tersedia", inline=False)
+            embed.add_field(name="⬇️ Download", value="❌ File not available", inline=False)
 
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
 
-        embed.set_footer(text="SteamTools • Link download hanya terlihat oleh kamu")
+        embed.set_footer(text="SteamTools • Download link is only visible to you")
         await interaction.edit_original_response(embed=embed)
 
     async def _send_download_embed(self, interaction, game_info, dl):
-        """Embed privat dengan link download."""
-        size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "Tidak diketahui"
+        """Ephemeral embed with the private download link."""
+        size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "Unknown"
 
         embed = discord.Embed(
-            title="🔒 Link Download Pribadimu",
+            title="🔒 Your Private Download Link",
             description=(
                 f"**{game_info['name']}**\n"
-                "Pesan ini **hanya terlihat olehmu** dan tidak muncul di channel."
+                "This message is **only visible to you** and will not appear in the channel."
             ),
             color=COLOR_DOWNLOAD,
         )
-        embed.add_field(name="📁 File",    value=f"`{dl['filename']}`", inline=True)
-        embed.add_field(name="💾 Ukuran", value=size_str,               inline=True)
-        embed.add_field(name="🌐 Sumber", value="Cloudflare R2",        inline=True)
+        embed.add_field(name="📁 File",   value=f"`{dl['filename']}`", inline=True)
+        embed.add_field(name="💾 Size",   value=size_str,               inline=True)
+        embed.add_field(name="🌐 Source", value="Cloudflare R2",        inline=True)
         embed.add_field(
-            name="⚠️ Perhatian",
-            value="• Jangan bagikan link ini\n• Link bisa berubah\n• Extract setelah download selesai",
+            name="⚠️ Notice",
+            value=(
+                "• Do not share this link\n"
+                "• Link may change at any time\n"
+                "• Extract the archive after download completes"
+            ),
             inline=False,
         )
         if game_info.get("header_image"):
             embed.set_thumbnail(url=game_info["header_image"])
-        embed.set_footer(text="SteamTools • Pesan ini hanya untukmu")
+        embed.set_footer(text="SteamTools • This message is for you only")
 
         view = discord.ui.View(timeout=None)
         view.add_item(
             discord.ui.Button(
-                label="⬇️  Download Sekarang",
+                label="⬇️  Download Now",
                 url=dl["url"],
                 style=discord.ButtonStyle.link,
             )
@@ -368,18 +397,18 @@ class GameCommands(commands.Cog):
 
     def _unavailable_embed(self, game_name: str) -> discord.Embed:
         embed = discord.Embed(
-            title="❌ Download Tidak Tersedia",
+            title="❌ Download Not Available",
             description=(
-                f"**{game_name}** belum tersedia untuk didownload.\n\n"
-                "Kemungkinan penyebab:\n"
-                "• Belum ada di ManifestHub / R2\n"
-                "• DRM yang belum didukung (Denuvo, dll)\n"
-                "• File sedang diproses\n\n"
-                "Coba lagi nanti atau hubungi admin."
+                f"**{game_name}** is not yet available for download.\n\n"
+                "Possible reasons:\n"
+                "• Not yet added to ManifestHub / R2\n"
+                "• DRM not supported (Denuvo, etc.)\n"
+                "• File is currently being processed\n\n"
+                "Try again later or contact an admin."
             ),
             color=COLOR_ERROR,
         )
-        embed.set_footer(text="Pesan ini hanya terlihat olehmu")
+        embed.set_footer(text="This message is only visible to you")
         return embed
 
 
