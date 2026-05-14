@@ -7,6 +7,7 @@ Game Commands Cog
 import asyncio
 import logging
 import time
+import urllib.parse
 from typing import Dict, List, Optional, Tuple
 
 import aiohttp
@@ -40,8 +41,7 @@ async def autocomplete_games(
 ) -> List[app_commands.Choice[str]]:
     """
     Kalau input kosong → tampilkan Top 10 trending Steam yang filenya ada di R2.
-    Kalau ada input → cari di DB lokal dulu (⭐ = ada file, 📁 = terdaftar),
-                      lalu fallback ke Steam search.
+    Kalau ada input → cari di DB lokal dulu, lalu fallback ke Steam search.
     """
     bot = interaction.client
     db = bot.db
@@ -52,15 +52,22 @@ async def autocomplete_games(
 
     # ── Kalau kosong: tampilkan top trending yang ada di R2 ──────────────────
     if not q:
-        trending = await _get_trending_with_r2(bot)
-        for item in trending[:10]:
-            results.append(
-                app_commands.Choice(
-                    name=f"🔥 {item['name']}"[:100],
-                    value=item["appid"],
+        try:
+            # FIX: Limit eksekusi 2.5 detik agar tidak kena "Loading options failed" dari Discord!
+            trending = await asyncio.wait_for(_get_trending_with_r2(bot), timeout=2.5)
+            for item in trending[:10]:
+                results.append(
+                    app_commands.Choice(
+                        name=f"🔥 {item['name']}"[:100],
+                        value=item["appid"],
+                    )
                 )
-            )
-            found_ids.add(item["appid"])
+                found_ids.add(item["appid"])
+        except asyncio.TimeoutError:
+            # FIX: Jika internet/R2 lambat, fallback instan ke DB lokal
+            fallback = [g for g in bot.db.game_db if g.get("file") and g.get("name")]
+            for g in fallback[:10]:
+                results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
         return results
 
     # ── Ada input: cari di database ──────────────────────────────────────────
@@ -89,7 +96,13 @@ async def autocomplete_games(
     if len(results) < 25:
         try:
             steam_api = SteamAPI(bot.session)
-            steam_res = await steam_api.search_games(q, limit=25 - len(results))
+            # FIX: Encode spasi pada query agar Steam API tidak mengembalikan status 400 Bad Request
+            safe_q = urllib.parse.quote(q)
+            
+            steam_res = await asyncio.wait_for(
+                steam_api.search_games(safe_q, limit=25 - len(results)),
+                timeout=2.0
+            )
             for item in steam_res:
                 aid = item["id"]
                 if aid not in found_ids:
@@ -106,7 +119,6 @@ async def autocomplete_games(
 async def _get_trending_with_r2(bot) -> List[Dict]:
     """
     Ambil top games dari SteamSpy, filter yang filenya ada di R2.
-    Di-cache 1 jam supaya tidak spam API.
     """
     global _trending_cache
     now = time.monotonic()
@@ -115,22 +127,15 @@ async def _get_trending_with_r2(bot) -> List[Dict]:
         return _trending_cache["games"]
 
     steam_api = SteamAPI(bot.session)
-    top_games = await steam_api.get_top_games_steamspy()
+    top_games = await steam_api.get_top_games_steamspy(timeout=2)
 
     if not top_games:
         log.warning("SteamSpy returned empty list, falling back to DB starred games")
-        # Fallback: ambil game ⭐ dari DB lokal
         fallback = [g for g in bot.db.game_db if g.get("file") and g.get("name")]
-        _trending_cache = {
-            "games": [{"appid": str(g["id"]), "name": g["name"]} for g in fallback[:20]],
-            "ts": now,
-        }
-        return _trending_cache["games"]
+        return [{"appid": str(g["id"]), "name": g["name"]} for g in fallback[:10]]
 
-    # Cek satu per satu ke R2 (HEAD request), ambil 10 yang ada
     verified: List[Dict] = []
     if not R2_BASE_URL:
-        # Kalau R2 belum diset, pakai DB lokal yang punya file
         db_ids = {str(g["id"]) for g in bot.db.game_db if g.get("file")}
         for item in top_games:
             if item["appid"] in db_ids:
@@ -138,16 +143,18 @@ async def _get_trending_with_r2(bot) -> List[Dict]:
             if len(verified) >= 10:
                 break
     else:
-        tasks = [_check_r2_exists(bot.session, R2_BASE_URL, item) for item in top_games[:50]]
+        # FIX: Hanya cek 15 game teratas (dikurangi dari 50) agar proses jauh lebih cepat
+        tasks = [_check_r2_exists(bot.session, R2_BASE_URL, item) for item in top_games[:15]]
         check_results = await asyncio.gather(*tasks, return_exceptions=True)
-        for item, ok in zip(top_games[:50], check_results):
+        for item, ok in zip(top_games[:15], check_results):
             if ok is True:
                 verified.append(item)
             if len(verified) >= 10:
                 break
 
-    _trending_cache = {"games": verified, "ts": now}
-    log.info(f"🔥 Trending cache refreshed: {len(verified)} games with R2 files")
+    if verified:
+        _trending_cache = {"games": verified, "ts": now}
+        
     return verified
 
 
@@ -155,7 +162,8 @@ async def _check_r2_exists(session: aiohttp.ClientSession, r2_base: str, item: D
     """HEAD request ke R2 untuk cek apakah file ada."""
     url = f"{r2_base}/Database/{item['appid']}.zip"
     try:
-        async with session.head(url, timeout=aiohttp.ClientTimeout(total=4), allow_redirects=True) as resp:
+        # FIX: Timeout 1 detik per file agar terhindar dari Discord Autocomplete Timeout
+        async with session.head(url, timeout=aiohttp.ClientTimeout(total=1.0), allow_redirects=True) as resp:
             return resp.status == 200
     except Exception:
         return False
