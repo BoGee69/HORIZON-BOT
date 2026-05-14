@@ -306,7 +306,7 @@ class GameCommands(commands.Cog):
 
     async def _find_download(self, appid: str, game_name: str) -> Dict:
         """Check whether a file exists in R2 and return the JWT Web URL."""
-        filename = f"{make_safe_filename(game_name)} [{appid}].zip"
+        filename = f"[{appid}].zip"
 
         if not R2_BASE_URL:
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
@@ -400,13 +400,11 @@ class GameCommands(commands.Cog):
             expiry_label = "⏱️ No expiry (public link)"
 
         embed = discord.Embed(
-            title="🔒 Your Private Download Link",
-            description=(
-                f"**{game_info['name']}**\n"
-                "This message is **only visible to you** and will not appear in the channel."
-            ),
+            title=f"🔒 {game_info['name']}",
+            description="This message is **only visible to you** and will not appear in the channel.",
             color=COLOR_DOWNLOAD,
         )
+        
         embed.add_field(name="📁 File",   value=f"`{dl['filename']}`", inline=True)
         embed.add_field(name="💾 Size",   value=size_str,               inline=True)
         embed.add_field(name="⚠️ Notice",
