@@ -289,7 +289,7 @@ class GameCommands(commands.Cog):
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
             
-        embed.set_footer(text=f"SteamTools • App ID: {appid}")
+        embed.set_footer(text=f"triadbot • App ID: {appid}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── Error handler ─────────────────────────────────────────────────────────
@@ -368,7 +368,7 @@ class GameCommands(commands.Cog):
         if dl["available"]:   sv = "✅ **Download Available**"
         elif has_file:        sv = "✅ Verified"
         elif found_in_db:     sv = "📁 Scanned"
-        else:                 sv = "🌐 Found on Steam"
+        else:                 sv = "❌ Not Found"
 
         embed.add_field(name="📊 Status",  value=sv,                           inline=True)
         embed.add_field(name="📅 Release", value=game_info["release_date"],    inline=True)
@@ -379,20 +379,10 @@ class GameCommands(commands.Cog):
             inline=False,
         )
 
-        if dl["available"]:
-            size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "—"
-            embed.add_field(
-                name="⬇️ Download",
-                value=f"Available • `{size_str}`\n🔒 *Link sent privately*",
-                inline=False,
-            )
-        else:
-            embed.add_field(name="⬇️ Download", value="❌ File not available", inline=False)
-
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
 
-        embed.set_footer(text="SteamTools • Download link is only visible to you")
+        embed.set_footer(text="triadbot • Download link is only visible to you")
         await interaction.edit_original_response(embed=embed)
 
     async def _send_download_embed(self, interaction, game_info, dl):
@@ -431,7 +421,7 @@ class GameCommands(commands.Cog):
         if game_info.get("header_image"):
             embed.set_thumbnail(url=game_info["header_image"])
             
-        embed.set_footer(text="SteamTools • This message is for you only")
+        embed.set_footer(text="triadbot • This message is for you only")
 
         view = discord.ui.View(timeout=None)
         view.add_item(
