@@ -44,16 +44,15 @@ def resolve_country_code(interaction: discord.Interaction) -> str:
 
     return DEFAULT_CC
 
-# ── AUTOCOMPLETE (DIKEMBALIKAN KE VERSI LAMA) ────────────────────────────────
+# ── AUTOCOMPLETE (TANPA EMOTICON) ─────────────────────────────────────────────
 
 async def autocomplete_games(
     interaction: discord.Interaction,
     current: str,
 ) -> List[app_commands.Choice[str]]:
     """
-    Autocomplete versi lama:
-    1) Cari di Database Lokal (yang ada file-nya diprioritaskan).
-    2) Kalau nggak ada di DB, langsung live-search ke Steam API.
+    Autocomplete bersih tanpa emoticon.
+    Prioritas: File di R2 > Database Lokal > Pencarian langsung ke Steam.
     """
     bot = interaction.client
     db = bot.db
@@ -77,7 +76,6 @@ async def autocomplete_games(
         name_raw = name.lower()
         name_clean = clean_search_string(name_raw)
         
-        # Logika pencarian
         if (
             not q_raw or
             q_raw in name_raw or
@@ -89,9 +87,9 @@ async def autocomplete_games(
             else:
                 normal_matches.append(game)
 
-    # Masukkan hasil DB yang ada file-nya duluan
+    # Masukkan hasil DB yang ada file-nya duluan (Teks bersih)
     for game in starred_matches[:15]:
-        results.append(app_commands.Choice(name=f"⭐ {game['name']}"[:100], value=str(game["id"])))
+        results.append(app_commands.Choice(name=game['name'][:100], value=str(game["id"])))
         found_ids.add(str(game["id"]))
 
     # Masukkan hasil DB biasa
@@ -99,7 +97,7 @@ async def autocomplete_games(
     for game in normal_matches[:remaining]:
         gid = str(game["id"])
         if gid not in found_ids:
-            results.append(app_commands.Choice(name=f"📁 {game['name']}"[:100], value=gid))
+            results.append(app_commands.Choice(name=game['name'][:100], value=gid))
             found_ids.add(gid)
 
     # 2. Fallback Search ke Steam kalau hasil DB masih kurang dari 25
@@ -112,7 +110,7 @@ async def autocomplete_games(
             for item in steam_results:
                 aid = item["id"]
                 if aid not in found_ids:
-                    results.append(app_commands.Choice(name=f"🌐 {item['name']}"[:100], value=aid))
+                    results.append(app_commands.Choice(name=item['name'][:100], value=aid))
                     found_ids.add(aid)
                 if len(results) >= 25:
                     break
@@ -219,10 +217,9 @@ class GameCommands(commands.Cog):
             color=COLOR_SUCCESS,
         )
         for game in results:
-            icon = "⭐" if game.get("file") else "📁"
             status = "File Available" if game.get("file") else "Registered"
             embed.add_field(
-                name=f"{icon} {game.get('name', 'Unknown')}",
+                name=f"{game.get('name', 'Unknown')}",
                 value=f"AppID: `{game['id']}` • {status}",
                 inline=False,
             )
@@ -283,7 +280,7 @@ class GameCommands(commands.Cog):
         if db_game:
             db_status = "✅ In Database"
             if db_game.get("file"):
-                db_status += " • ⭐ File Available"
+                db_status += " • File Available"
             embed.add_field(name="📊 DB Status", value=db_status, inline=False)
             
         if game_info.get("header_image"):
@@ -332,8 +329,7 @@ class GameCommands(commands.Cog):
                 log.warning(f"Presign failed for {appid}, falling back to public URL")
 
         try:
-            # FIX UTAMA: Menggunakan session.get() alih-alih session.head()
-            # Karena Presigned URL 'get_object' S3/R2 akan menolak method HEAD dengan 403 Forbidden
+            # Menggunakan session.get() untuk mengecek akses bucket private
             async with self.bot.session.get(
                 check_url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
             ) as resp:
@@ -368,7 +364,7 @@ class GameCommands(commands.Cog):
         if dl["available"]:   sv = "✅ **Download Available**"
         elif has_file:        sv = "✅ Verified"
         elif found_in_db:     sv = "📁 Scanned"
-        else:                 sv = "❌ Not Found"
+        else:                 sv = "🌐 Found on Steam"
 
         embed.add_field(name="📊 Status",  value=sv,                           inline=True)
         embed.add_field(name="📅 Release", value=game_info["release_date"],    inline=True)
@@ -379,10 +375,20 @@ class GameCommands(commands.Cog):
             inline=False,
         )
 
+        # UPDATE: Tampilan embed public super bersih tanpa size dan embel-embel link privat
+        if dl["available"]:
+            embed.add_field(
+                name="⬇️ Download",
+                value="✅ Available",
+                inline=False,
+            )
+        else:
+            embed.add_field(name="⬇️ Download", value="❌ File not available", inline=False)
+
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
 
-        embed.set_footer(text="triadbot • Download link is only visible to you")
+        embed.set_footer(text="triadbot")
         await interaction.edit_original_response(embed=embed)
 
     async def _send_download_embed(self, interaction, game_info, dl):
@@ -421,7 +427,7 @@ class GameCommands(commands.Cog):
         if game_info.get("header_image"):
             embed.set_thumbnail(url=game_info["header_image"])
             
-        embed.set_footer(text="triadbot • This message is for you only")
+        embed.set_footer(text="triadbot")
 
         view = discord.ui.View(timeout=None)
         view.add_item(
@@ -446,7 +452,6 @@ class GameCommands(commands.Cog):
             ),
             color=COLOR_ERROR,
         )
-        embed.set_footer(text="This message is only visible to you")
         return embed
 
 async def setup(bot):
