@@ -32,6 +32,18 @@ ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "562612184333680709"
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 
+# R2 presigned-URL credentials (optional – enables expiring download links)
+R2_ACCESS_KEY_ID     = os.getenv("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "")
+R2_ACCOUNT_ID        = os.getenv("R2_ACCOUNT_ID", "")
+R2_BUCKET_NAME       = os.getenv("R2_BUCKET_NAME", "")
+LINK_EXPIRE_SECONDS  = int(os.getenv("LINK_EXPIRE_SECONDS", "3600"))  # 1 hour
+
+# Default Steam store country code for regional pricing.
+# Uses the user's Discord locale when it can be mapped; falls back to this.
+# See: https://store.steampowered.com/api/appdetails?appids=1&cc=id
+DEFAULT_CC = os.getenv("DEFAULT_CC", "id")
+
 # Steam API
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API = "https://store.steampowered.com/api/appdetails"

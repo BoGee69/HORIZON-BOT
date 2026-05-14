@@ -16,18 +16,43 @@ from discord.ext import commands
 
 from config import (
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
-    R2_BASE_URL,
+    DEFAULT_CC, LINK_EXPIRE_SECONDS, R2_BASE_URL,
 )
 from utils.helpers import (
     clean_search_string, extract_protection_type, format_size,
     make_safe_filename, truncate_text,
 )
+from utils.r2_presign import generate_presigned_url, _PRESIGN_ENABLED
 from utils.steam_api import SteamAPI, locale_to_country_code
 
-log = logging.getLogger(__name__)
+def resolve_country_code(interaction: discord.Interaction) -> str:
+    """
+    Pick the best Steam country code for this interaction.
 
+    Priority:
+      1. Guild locale  — most reliable for a server that explicitly sets its community locale
+      2. User locale   — reliable when the user has set a non-English Discord language
+      3. DEFAULT_CC    — configured in .env (defaults to 'id' for Indonesian servers)
 
-# ── Autocomplete ───────────────────────────────────────────────────────────────
+    Discord's user locale defaults to en-US even for Indonesian users who keep
+    the client in English, so we do NOT fall back to 'us' blindly.
+    """
+    # 1. Guild locale (e.g. server community language set to Bahasa Indonesia → 'id')
+    guild_locale = getattr(interaction, "guild_locale", None)
+    if guild_locale:
+        cc = locale_to_country_code(str(guild_locale))
+        if cc != "us":          # 'us' means "not mapped", keep looking
+            return cc
+
+    # 2. User locale — only trust it when it's explicitly non-English
+    user_locale = str(interaction.locale)
+    if user_locale not in ("en-US", "en-GB", "en"):
+        cc = locale_to_country_code(user_locale)
+        if cc != "us":
+            return cc
+
+    # 3. Configured default
+    return DEFAULT_CC
 
 async def autocomplete_games(
     interaction: discord.Interaction,
@@ -115,7 +140,7 @@ class GameCommands(commands.Cog):
         await interaction.response.defer()
 
         # Detect user's region for localised pricing
-        cc = locale_to_country_code(interaction.locale)
+        cc = resolve_country_code(interaction)
 
         target_id = query.strip()
 
@@ -226,7 +251,7 @@ class GameCommands(commands.Cog):
             return
 
         # Regional pricing based on user locale
-        cc = locale_to_country_code(interaction.locale)
+        cc = resolve_country_code(interaction)
 
         steam_data = await self.steam_api.get_app_details(appid, cc=cc)
         if not steam_data:
@@ -288,24 +313,45 @@ class GameCommands(commands.Cog):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _find_download(self, appid: str, game_name: str) -> Dict:
-        """Check whether a file exists in R2 via HEAD request."""
+        """
+        Check whether a file exists in R2 and return the best available URL.
+
+        • If R2 API credentials are set → generates a presigned (expiring) URL.
+        • Otherwise → falls back to the plain public R2_BASE_URL.
+        """
         filename = f"{make_safe_filename(game_name)} [{appid}].zip"
-        url = f"{R2_BASE_URL}/Database/{appid}.zip"
 
         if not R2_BASE_URL:
-            return {"available": False, "url": None, "size_bytes": 0, "filename": filename}
+            return {"available": False, "url": None, "size_bytes": 0,
+                    "filename": filename, "expires_in": None}
 
+        public_url = f"{R2_BASE_URL}/Database/{appid}.zip"
+
+        # ── Quick existence check via HEAD on the public URL ──────────────────
         try:
             async with self.bot.session.head(
-                url, timeout=aiohttp.ClientTimeout(total=4), allow_redirects=True
+                public_url, timeout=aiohttp.ClientTimeout(total=4), allow_redirects=True
             ) as resp:
-                if resp.status == 200:
-                    size = int(resp.headers.get("Content-Length", 0))
-                    return {"available": True, "url": url, "size_bytes": size, "filename": filename}
+                if resp.status != 200:
+                    return {"available": False, "url": None, "size_bytes": 0,
+                            "filename": filename, "expires_in": None}
+                size = int(resp.headers.get("Content-Length", 0))
         except Exception as e:
             log.error(f"R2 HEAD error for {appid}: {e}")
+            return {"available": False, "url": None, "size_bytes": 0,
+                    "filename": filename, "expires_in": None}
 
-        return {"available": False, "url": None, "size_bytes": 0, "filename": filename}
+        # ── File confirmed to exist; pick the best URL ────────────────────────
+        if _PRESIGN_ENABLED:
+            signed_url = await generate_presigned_url(appid)
+            if signed_url:
+                return {"available": True, "url": signed_url, "size_bytes": size,
+                        "filename": filename, "expires_in": LINK_EXPIRE_SECONDS}
+            # Presign failed (misconfigured creds?) → fall through to public URL
+            log.warning(f"Presign failed for {appid}, falling back to public URL")
+
+        return {"available": True, "url": public_url, "size_bytes": size,
+                "filename": filename, "expires_in": None}
 
     async def _send_game_info(self, interaction, game_info, found_in_db, has_file, dl):
         """Public embed shown in the channel."""
@@ -361,6 +407,17 @@ class GameCommands(commands.Cog):
         """Ephemeral embed with the private download link."""
         size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "Unknown"
 
+        # Build expiry label
+        expires_in = dl.get("expires_in")
+        if expires_in:
+            mins = expires_in // 60
+            if mins >= 60:
+                expiry_label = f"⏱️ Expires in **{mins // 60}h {mins % 60:02d}m**"
+            else:
+                expiry_label = f"⏱️ Expires in **{mins} minutes**"
+        else:
+            expiry_label = "⏱️ No expiry (public link)"
+
         embed = discord.Embed(
             title="🔒 Your Private Download Link",
             description=(
@@ -371,9 +428,7 @@ class GameCommands(commands.Cog):
         )
         embed.add_field(name="📁 File",   value=f"`{dl['filename']}`", inline=True)
         embed.add_field(name="💾 Size",   value=size_str,               inline=True)
-        embed.add_field(name="🌐 Source", value="Cloudflare R2",        inline=True)
-        embed.add_field(
-            name="⚠️ Notice",
+        embed.add_field(name="⚠️ Notice",
             value=(
                 "• Do not share this link\n"
                 "• Link may change at any time\n"
@@ -381,6 +436,7 @@ class GameCommands(commands.Cog):
             ),
             inline=False,
         )
+        embed.add_field(name=expiry_label, value="Download before the link expires.", inline=False)
         if game_info.get("header_image"):
             embed.set_thumbnail(url=game_info["header_image"])
         embed.set_footer(text="SteamTools • This message is for you only")
