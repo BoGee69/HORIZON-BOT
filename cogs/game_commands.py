@@ -291,26 +291,37 @@ class GameCommands(commands.Cog):
         if not R2_BASE_URL:
             return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
-        public_url = f"{R2_BASE_URL}/Database/{appid}.zip"
+        # URL default (Public)
+        check_url = f"{R2_BASE_URL}/Database/{appid}.zip"
+        final_url = check_url
+        expires_in = None
 
-        try:
-            async with self.bot.session.head(
-                public_url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
-            ) as resp:
-                if resp.status != 200:
-                    return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
-                size = int(resp.headers.get("Content-Length", 0))
-        except Exception as e:
-            log.error(f"R2 HEAD error for {appid}: {e}")
-            return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
-
+        # 1. BIKIN KUNCI VIP (PRESIGNED URL) DULU SEBELUM NGE-PING!
         if _PRESIGN_ENABLED:
             signed_url = await generate_presigned_url(appid)
             if signed_url:
-                return {"available": True, "url": signed_url, "size_bytes": size, "filename": filename, "expires_in": LINK_EXPIRE_SECONDS}
-            log.warning(f"Presign failed for {appid}, falling back to public URL")
+                check_url = signed_url  # Pakai link khusus ini buat nge-Ping
+                final_url = signed_url  # Link ini juga yang bakal dikasih ke user
+                expires_in = LINK_EXPIRE_SECONDS
+            else:
+                log.warning(f"Presign failed for {appid}, falling back to public URL")
 
-        return {"available": True, "url": public_url, "size_bytes": size, "filename": filename, "expires_in": None}
+        # 2. SEKARANG BARU NGE-PING CLOUDFLARE PAKAI LINK YANG UDAH DIBIKIN
+        try:
+            async with self.bot.session.head(
+                check_url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
+            ) as resp:
+                if resp.status != 200:
+                    return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
+                
+                # Kalau berhasil masuk (Status 200), ambil ukuran file
+                size = int(resp.headers.get("Content-Length", 0))
+                
+                return {"available": True, "url": final_url, "size_bytes": size, "filename": filename, "expires_in": expires_in}
+                
+        except Exception as e:
+            log.error(f"R2 HEAD error for {appid}: {e}")
+            return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
     async def _send_game_info(self, interaction, game_info, found_in_db, has_file, dl):
         protection = extract_protection_type(game_info.get("drm_notice"))
