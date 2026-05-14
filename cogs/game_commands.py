@@ -29,32 +29,19 @@ log = logging.getLogger(__name__)
 
 
 def resolve_country_code(interaction: discord.Interaction) -> str:
-    """
-    Pick the best Steam country code for this interaction.
-
-    Priority:
-      1. Guild locale  — most reliable for a server that explicitly sets its community locale
-      2. User locale   — reliable when the user has set a non-English Discord language
-      3. DEFAULT_CC    — configured in .env (defaults to 'id' for Indonesian servers)
-
-    Discord's user locale defaults to en-US even for Indonesian users who keep
-    the client in English, so we do NOT fall back to 'us' blindly.
-    """
-    # 1. Guild locale (e.g. server community language set to Bahasa Indonesia → 'id')
+    """Pick the best Steam country code for this interaction."""
     guild_locale = getattr(interaction, "guild_locale", None)
     if guild_locale:
         cc = locale_to_country_code(str(guild_locale))
-        if cc != "us":          # 'us' means "not mapped", keep looking
+        if cc != "us":
             return cc
 
-    # 2. User locale — only trust it when it's explicitly non-English
     user_locale = str(interaction.locale)
     if user_locale not in ("en-US", "en-GB", "en"):
         cc = locale_to_country_code(user_locale)
         if cc != "us":
             return cc
 
-    # 3. Configured default
     return DEFAULT_CC
 
 async def autocomplete_games(
@@ -62,30 +49,27 @@ async def autocomplete_games(
     current: str,
 ) -> List[app_commands.Choice[str]]:
     """
-    Instant autocomplete from local database (stays well under Discord's 3-second limit).
-
-    • Empty query  → Top 10 games that have a file in R2, in order added.
-    • With input   → Fuzzy search across all DB entries; R2-available games float first.
+    Instant autocomplete from local database with a Steam fallback 
+    if the database is completely empty (e.g., fresh Railway deploy).
     """
     db = interaction.client.db
     results: List[app_commands.Choice[str]] = []
 
-    q = (current or "").strip()
+    q = (current or "").strip().lower()
 
-    if not q:
-        # ── Default: show top-10 games that have an R2 file ──────────────────
-        top = [g for g in db.game_db if g.get("file") and g.get("name")]
-        for g in top[:10]:
-            label = f"⭐ {g['name']}"[:100]
-            results.append(app_commands.Choice(name=label, value=str(g["id"])))
+    # Fallback if Railway database is completely empty
+    if not db.game_db and q:
+        results.append(app_commands.Choice(name="⚠️ Database is empty. Press Enter to search Steam directly.", value=q))
         return results
 
-    # ── Typed query: search through the whole DB ──────────────────────────────
-    q_lower = q.lower()
-    q_clean = clean_search_string(q_lower)
+    if not q:
+        top = [g for g in db.game_db if g.get("file") and g.get("name")]
+        for g in top[:25]:
+            results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
+        return results
 
-    with_file: List[Dict] = []
-    without_file: List[Dict] = []
+    q_clean = clean_search_string(q)
+    with_file, without_file = [], []
 
     for game in db.game_db:
         name: str = game.get("name", "")
@@ -94,26 +78,18 @@ async def autocomplete_games(
             continue
 
         name_lower = name.lower()
-        if (
-            q_lower in name_lower
-            or q_clean in clean_search_string(name_lower)
-            or q_lower in appid
-        ):
+        if q in name_lower or q_clean in clean_search_string(name_lower) or q in appid:
             if game.get("file"):
                 with_file.append(game)
             else:
                 without_file.append(game)
 
-    # R2-available games first, then the rest; cap at 25 total (Discord limit)
     for g in with_file[:15]:
-        results.append(
-            app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"]))
-        )
+        results.append(app_commands.Choice(name=f"⭐ {g['name']}"[:100], value=str(g["id"])))
+        
     remaining = 25 - len(results)
     for g in without_file[:remaining]:
-        results.append(
-            app_commands.Choice(name=f"📁 {g['name']}"[:100], value=str(g["id"]))
-        )
+        results.append(app_commands.Choice(name=f"📁 {g['name']}"[:100], value=str(g["id"])))
 
     return results
 
@@ -142,12 +118,10 @@ class GameCommands(commands.Cog):
     async def gen(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer()
 
-        # Detect user's region for localised pricing
         cc = resolve_country_code(interaction)
-
         target_id = query.strip()
 
-        # If the user typed a title instead of an App ID → search Steam first
+        # If user typed a title instead of App ID
         if not target_id.isdigit():
             safe_q = urllib.parse.quote(target_id)
             search_results = await self.steam_api.search_games(safe_q, limit=1)
@@ -155,10 +129,7 @@ class GameCommands(commands.Cog):
             if not search_results:
                 embed = discord.Embed(
                     title="❌ Game Not Found",
-                    description=(
-                        f"No results for **`{target_id}`** on Steam.\n"
-                        "Try searching with a different spelling or use the App ID directly."
-                    ),
+                    description=f"No results for **`{target_id}`** on Steam.\nTry searching with a different spelling.",
                     color=COLOR_ERROR,
                 )
                 await interaction.edit_original_response(embed=embed)
@@ -166,7 +137,7 @@ class GameCommands(commands.Cog):
 
             target_id = search_results[0]["id"]
 
-        # Fetch Steam details (with regional pricing)
+        # Fetch Steam details
         steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
         if not steam_data:
             embed = discord.Embed(
@@ -183,13 +154,10 @@ class GameCommands(commands.Cog):
         found_in_db = db_entry is not None
         has_file = db_entry.get("file", False) if found_in_db else False
 
-        # Check whether a real file exists in R2
         dl = await self._find_download(target_id, game_info["name"])
 
-        # Public info embed
         await self._send_game_info(interaction, game_info, found_in_db, has_file, dl)
 
-        # Private download link (ephemeral)
         if dl["available"]:
             self.db.mark_as_starred(target_id, game_info["name"])
             self.db.save()
@@ -253,10 +221,9 @@ class GameCommands(commands.Cog):
             )
             return
 
-        # Regional pricing based on user locale
         cc = resolve_country_code(interaction)
-
         steam_data = await self.steam_api.get_app_details(appid, cc=cc)
+        
         if not steam_data:
             await interaction.followup.send(
                 embed=discord.Embed(
@@ -286,13 +253,16 @@ class GameCommands(commands.Cog):
         embed.add_field(name="🛡️ DRM",         value=protection,                 inline=True)
         embed.add_field(name="👥 Developer",   value=game_info["developers"],    inline=False)
         embed.add_field(name="🏢 Publisher",   value=game_info["publishers"],    inline=False)
+        
         if db_game:
             db_status = "✅ In Database"
             if db_game.get("file"):
                 db_status += " • ⭐ File Available"
             embed.add_field(name="📊 DB Status", value=db_status, inline=False)
+            
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
+            
         embed.set_footer(text=f"SteamTools • App ID: {appid}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
@@ -316,48 +286,33 @@ class GameCommands(commands.Cog):
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     async def _find_download(self, appid: str, game_name: str) -> Dict:
-        """
-        Check whether a file exists in R2 and return the best available URL.
-
-        • If R2 API credentials are set → generates a presigned (expiring) URL.
-        • Otherwise → falls back to the plain public R2_BASE_URL.
-        """
         filename = f"{make_safe_filename(game_name)} [{appid}].zip"
 
         if not R2_BASE_URL:
-            return {"available": False, "url": None, "size_bytes": 0,
-                    "filename": filename, "expires_in": None}
+            return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
         public_url = f"{R2_BASE_URL}/Database/{appid}.zip"
 
-        # ── Quick existence check via HEAD on the public URL ──────────────────
         try:
             async with self.bot.session.head(
-                public_url, timeout=aiohttp.ClientTimeout(total=4), allow_redirects=True
+                public_url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
             ) as resp:
                 if resp.status != 200:
-                    return {"available": False, "url": None, "size_bytes": 0,
-                            "filename": filename, "expires_in": None}
+                    return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
                 size = int(resp.headers.get("Content-Length", 0))
         except Exception as e:
             log.error(f"R2 HEAD error for {appid}: {e}")
-            return {"available": False, "url": None, "size_bytes": 0,
-                    "filename": filename, "expires_in": None}
+            return {"available": False, "url": None, "size_bytes": 0, "filename": filename, "expires_in": None}
 
-        # ── File confirmed to exist; pick the best URL ────────────────────────
         if _PRESIGN_ENABLED:
             signed_url = await generate_presigned_url(appid)
             if signed_url:
-                return {"available": True, "url": signed_url, "size_bytes": size,
-                        "filename": filename, "expires_in": LINK_EXPIRE_SECONDS}
-            # Presign failed (misconfigured creds?) → fall through to public URL
+                return {"available": True, "url": signed_url, "size_bytes": size, "filename": filename, "expires_in": LINK_EXPIRE_SECONDS}
             log.warning(f"Presign failed for {appid}, falling back to public URL")
 
-        return {"available": True, "url": public_url, "size_bytes": size,
-                "filename": filename, "expires_in": None}
+        return {"available": True, "url": public_url, "size_bytes": size, "filename": filename, "expires_in": None}
 
     async def _send_game_info(self, interaction, game_info, found_in_db, has_file, dl):
-        """Public embed shown in the channel."""
         protection = extract_protection_type(game_info.get("drm_notice"))
 
         if dl["available"]:   color = COLOR_DOWNLOAD
@@ -407,10 +362,8 @@ class GameCommands(commands.Cog):
         await interaction.edit_original_response(embed=embed)
 
     async def _send_download_embed(self, interaction, game_info, dl):
-        """Ephemeral embed with the private download link."""
         size_str = format_size(dl["size_bytes"]) if dl["size_bytes"] else "Unknown"
 
-        # Build expiry label
         expires_in = dl.get("expires_in")
         if expires_in:
             mins = expires_in // 60
@@ -434,14 +387,16 @@ class GameCommands(commands.Cog):
         embed.add_field(name="⚠️ Notice",
             value=(
                 "• Do not share this link\n"
-                "• Link may change at any time\n"
-                "• Extract the archive after download completes"
+                "• Link may expire or change\n"
+                "• Extract the archive after download"
             ),
             inline=False,
         )
         embed.add_field(name=expiry_label, value="Download before the link expires.", inline=False)
+        
         if game_info.get("header_image"):
             embed.set_thumbnail(url=game_info["header_image"])
+            
         embed.set_footer(text="SteamTools • This message is for you only")
 
         view = discord.ui.View(timeout=None)
@@ -460,16 +415,15 @@ class GameCommands(commands.Cog):
             description=(
                 f"**{game_name}** is not yet available for download.\n\n"
                 "Possible reasons:\n"
-                "• Not yet added to ManifestHub / R2\n"
-                "• DRM not supported (Denuvo, etc.)\n"
-                "• File is currently being processed\n\n"
-                "Try again later or contact an admin."
+                "• Not yet uploaded to Cloudflare R2\n"
+                "• DRM not supported (e.g. Denuvo)\n"
+                "• File is currently processing\n\n"
+                "Try again later or contact an administrator."
             ),
             color=COLOR_ERROR,
         )
         embed.set_footer(text="This message is only visible to you")
         return embed
-
 
 async def setup(bot):
     await bot.add_cog(GameCommands(bot))
