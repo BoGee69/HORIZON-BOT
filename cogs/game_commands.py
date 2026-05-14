@@ -364,7 +364,7 @@ class GameCommands(commands.Cog):
         if dl["available"]:   sv = "✅ **Download Available**"
         elif has_file:        sv = "✅ Verified"
         elif found_in_db:     sv = "📁 Scanned"
-        else:                 sv = "🌐 Found on Steam"
+        else:                 sv = "❌ Not Available "
 
         embed.add_field(name="📊 Status",  value=sv,                           inline=True)
         embed.add_field(name="📅 Release", value=game_info["release_date"],    inline=True)
@@ -374,16 +374,6 @@ class GameCommands(commands.Cog):
             value=f"{game_info['developers']} • *{game_info['publishers']}*",
             inline=False,
         )
-
-        # UPDATE: Tampilan embed public super bersih tanpa size dan embel-embel link privat
-        if dl["available"]:
-            embed.add_field(
-                name="⬇️ Download",
-                value="✅ Available",
-                inline=False,
-            )
-        else:
-            embed.add_field(name="⬇️ Download", value="❌ File not available", inline=False)
 
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
