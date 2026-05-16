@@ -24,6 +24,7 @@ from utils.alerts import AdminNotifier
 from utils.database import DatabaseManager
 from utils.diagnostics import collect_health
 from utils.legal_pages import PRIVACY_HTML, TERMS_HTML
+from utils.r2_keys import build_r2_key_candidates
 from utils.r2_presign import generate_presigned_url
 
 logging.basicConfig(
@@ -38,15 +39,6 @@ logging.basicConfig(
 logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
-
-# Fallback patterns jika r2_key tidak ada di JWT (backward compat)
-R2_KEY_PATTERNS = [
-    "Database/{appid}.zip",
-    "Database/[{appid}].zip",
-    "[{appid}].zip",
-    "{appid}.zip",
-]
-
 
 class SteamBot(commands.Bot):
     def __init__(self):
@@ -124,7 +116,9 @@ class SteamBot(commands.Bot):
 
         # Ambil r2_key yang sudah diverifikasi dari JWT, atau fallback ke semua pola
         r2_key = payload.get("r2_key")
-        keys_to_try = [r2_key] if r2_key else [p.format(appid=appid) for p in R2_KEY_PATTERNS]
+        game = self.db.get_game(appid) if getattr(self, "db", None) else None
+        game_name = game.get("name") if game else None
+        keys_to_try = [r2_key] if r2_key else build_r2_key_candidates(appid, game_name)
 
         for key in keys_to_try:
             real_url = await generate_presigned_url(key)

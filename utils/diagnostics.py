@@ -77,6 +77,19 @@ async def collect_health(bot) -> dict[str, Any]:
             "bucket_configured": bool(bot_config.R2_BUCKET_NAME),
             "link_expire_seconds": bot_config.LINK_EXPIRE_SECONDS,
         },
+        "r2_maintenance": {
+            "enabled": bool(bot_config.R2_MAINTENANCE_ENABLED),
+            "apply": bool(bot_config.R2_MAINTENANCE_APPLY),
+            "run_on_start": bool(bot_config.R2_MAINTENANCE_RUN_ON_START),
+            "interval_hours": bot_config.R2_MAINTENANCE_INTERVAL_HOURS,
+            "prefix": bot_config.R2_MAINTENANCE_PREFIX,
+            "max_objects": bot_config.R2_MAINTENANCE_MAX_OBJECTS,
+            "rename_objects": bool(bot_config.R2_MAINTENANCE_RENAME_OBJECTS),
+            "clean_lua_comments": bool(bot_config.R2_MAINTENANCE_CLEAN_LUA_COMMENTS),
+            "steam_lookups": bool(bot_config.R2_MAINTENANCE_STEAM_LOOKUPS),
+            "max_steam_lookups": bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS,
+            "steam_delay_seconds": bot_config.R2_MAINTENANCE_STEAM_DELAY_SECONDS,
+        },
     }
 
 

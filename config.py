@@ -99,6 +99,19 @@ R2_ACCOUNT_ID        = os.getenv("R2_ACCOUNT_ID", "")
 R2_BUCKET_NAME       = os.getenv("R2_BUCKET_NAME", "")
 LINK_EXPIRE_SECONDS  = int(os.getenv("LINK_EXPIRE_SECONDS", "3600"))
 
+R2_MAINTENANCE_ENABLED = parse_bool(os.getenv("R2_MAINTENANCE_ENABLED", "false"), False)
+R2_MAINTENANCE_APPLY = parse_bool(os.getenv("R2_MAINTENANCE_APPLY", "false"), False)
+R2_MAINTENANCE_RUN_ON_START = parse_bool(os.getenv("R2_MAINTENANCE_RUN_ON_START", "false"), False)
+R2_MAINTENANCE_INTERVAL_HOURS = float(os.getenv("R2_MAINTENANCE_INTERVAL_HOURS", "24"))
+R2_MAINTENANCE_PREFIX = os.getenv("R2_MAINTENANCE_PREFIX", "Database/")
+R2_MAINTENANCE_MAX_OBJECTS = int(os.getenv("R2_MAINTENANCE_MAX_OBJECTS", "100"))
+R2_MAINTENANCE_MAX_ZIP_MB = int(os.getenv("R2_MAINTENANCE_MAX_ZIP_MB", "50"))
+R2_MAINTENANCE_RENAME_OBJECTS = parse_bool(os.getenv("R2_MAINTENANCE_RENAME_OBJECTS", "true"), True)
+R2_MAINTENANCE_CLEAN_LUA_COMMENTS = parse_bool(os.getenv("R2_MAINTENANCE_CLEAN_LUA_COMMENTS", "true"), True)
+R2_MAINTENANCE_STEAM_LOOKUPS = parse_bool(os.getenv("R2_MAINTENANCE_STEAM_LOOKUPS", "false"), False)
+R2_MAINTENANCE_MAX_STEAM_LOOKUPS = int(os.getenv("R2_MAINTENANCE_MAX_STEAM_LOOKUPS", "25"))
+R2_MAINTENANCE_STEAM_DELAY_SECONDS = float(os.getenv("R2_MAINTENANCE_STEAM_DELAY_SECONDS", "0.12"))
+
 STEAM_API_KEY    = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API  = "https://store.steampowered.com/api/appdetails"
 STEAM_SEARCH_API = "https://store.steampowered.com/api/storesearch"

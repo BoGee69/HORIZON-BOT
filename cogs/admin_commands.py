@@ -111,6 +111,7 @@ class AdminCommands(commands.Cog):
         paths = health["paths"]
         roles = health["roles"]
         r2 = health["r2"]
+        r2_maintenance = health["r2_maintenance"]
 
         embed = discord.Embed(
             title="Runtime Config Status",
@@ -143,6 +144,23 @@ class AdminCommands(commands.Cog):
                 f"Presign: `{yes_no(r2['presign_enabled'])}`\n"
                 f"Bucket: `{yes_no(r2['bucket_configured'])}`\n"
                 f"Link expiry: `{r2['link_expire_seconds']}s`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="R2 Maintenance",
+            value=(
+                f"Enabled: `{r2_maintenance['enabled']}`\n"
+                f"Apply: `{r2_maintenance['apply']}`\n"
+                f"Run on start: `{r2_maintenance['run_on_start']}`\n"
+                f"Interval: `{r2_maintenance['interval_hours']}h`\n"
+                f"Prefix: `{r2_maintenance['prefix']}`\n"
+                f"Max objects: `{r2_maintenance['max_objects']}`\n"
+                f"Rename: `{r2_maintenance['rename_objects']}`\n"
+                f"Clean Lua comments: `{r2_maintenance['clean_lua_comments']}`\n"
+                f"Steam lookups: `{r2_maintenance['steam_lookups']}`\n"
+                f"Max Steam lookups: `{r2_maintenance['max_steam_lookups']}`\n"
+                f"Steam delay: `{r2_maintenance['steam_delay_seconds']}s`"
             ),
             inline=False,
         )

@@ -24,19 +24,11 @@ from utils.helpers import (
     is_admin_interaction, is_valid_appid, truncate_text,
 )
 from utils.gen_limits import DailyGenLimiter
+from utils.r2_keys import build_r2_key_candidates
 from utils.r2_presign import generate_presigned_url, _PRESIGN_ENABLED
 from utils.steam_api import SteamAPI, locale_to_country_code
 
 log = logging.getLogger(__name__)
-
-# Urutan ini harus SAMA PERSIS dengan bot.py agar JWT redirect pakai key yang benar
-R2_KEY_PATTERNS = [
-    "Database/{appid}.zip",
-    "Database/[{appid}].zip",
-    "[{appid}].zip",
-    "{appid}.zip",
-]
-
 
 def resolve_country_code(interaction: discord.Interaction) -> str:
     guild_locale = getattr(interaction, "guild_locale", None)
@@ -167,7 +159,7 @@ class GameCommands(commands.Cog):
         db_entry  = self.db.get_game(target_id)
         has_file  = db_entry.get("file", False) if db_entry else False
 
-        dl = await self._find_download(target_id)
+        dl = await self._find_download(target_id, game_info["name"])
 
         await interaction.edit_original_response(
             embed=self._embed_game_card(game_info, db_entry, dl)
@@ -321,7 +313,7 @@ class GameCommands(commands.Cog):
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
-    async def _find_download(self, appid: str) -> Dict:
+    async def _find_download(self, appid: str, game_name: Optional[str] = None) -> Dict:
         """
         Coba semua pola key R2 secara berurutan.
         Simpan 'r2_key' yang berhasil agar JWT redirect di bot.py pakai key yang sama.
@@ -329,11 +321,7 @@ class GameCommands(commands.Cog):
         if not R2_BASE_URL and not _PRESIGN_ENABLED:
             return self._dl_empty(appid)
 
-        filename = f"[{appid}].zip"
-
-        for pattern in R2_KEY_PATTERNS:
-            key = pattern.format(appid=appid)
-
+        for key in build_r2_key_candidates(appid, game_name):
             presigned = await generate_presigned_url(key)
             check_url = presigned or f"{R2_BASE_URL.rstrip('/')}/{key}"
 
@@ -380,7 +368,7 @@ class GameCommands(commands.Cog):
                             "available":  True,
                             "url":        final_url,
                             "size_bytes": size,
-                            "filename":   filename,
+                            "filename":   key.rsplit("/", 1)[-1],
                             "r2_key":     key,
                             "expires_in": LINK_EXPIRE_SECONDS,
                         }
