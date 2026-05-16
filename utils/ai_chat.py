@@ -4,6 +4,7 @@ Personal Gemini chat helper for TriadBot DMs.
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict, deque
 from typing import Any
 
@@ -22,6 +23,31 @@ class AIChatMemory:
 
     def snapshot(self, user_id: int) -> list[dict[str, str]]:
         return list(self._history[user_id])
+
+
+def _detect_reply_language(message: str) -> str:
+    text = sanitize_text(message).lower()
+    words = set(re.findall(r"[a-zA-Z']+", text))
+    english_markers = {
+        "hi", "hello", "hey", "how", "what", "why", "when", "where", "who",
+        "is", "are", "am", "was", "were", "do", "does", "did", "can", "could",
+        "should", "would", "about", "with", "connection", "problem", "code",
+        "status", "check", "fix", "error", "issue", "working", "running",
+    }
+    indonesian_markers = {
+        "gw", "gue", "gua", "lu", "lo", "kok", "kenapa", "gimana", "bagaimana",
+        "apa", "ada", "yang", "bisa", "buat", "pakai", "pake", "udah", "belum",
+        "jalan", "masalah", "koneksi", "bahasa", "jawab", "dong", "nih",
+    }
+    english_hits = len(words & english_markers)
+    indonesian_hits = len(words & indonesian_markers)
+    if english_hits > indonesian_hits:
+        return "English"
+    if indonesian_hits > english_hits:
+        return "Indonesian"
+    if re.search(r"\b(the|this|that|please|thanks|connection|problem|code)\b", text):
+        return "English"
+    return "Indonesian"
 
 
 def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
@@ -57,29 +83,33 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
     context_json = json.dumps(context, ensure_ascii=False, sort_keys=True)
     history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
     message = sanitize_text(user_message)[: bot_config.AI_CHAT_MAX_MESSAGE_CHARS]
+    reply_language = _detect_reply_language(message)
 
     return (
-        "Kamu adalah TriadBot itu sendiri, bukan asisten yang membicarakan TriadBot dari luar.\n"
-        "Selalu gunakan sudut pandang orang pertama sebagai bot: 'saya', 'sistem saya', "
-        "'database saya', 'maintenance saya'. Jangan pernah menyebut TriadBot sebagai pihak ketiga.\n"
-        "Selalu panggil user dengan sebutan 'Owner'. Jangan panggil username Discord kecuali diminta.\n"
-        "Persona: profesional, tenang, tegas, dan operasional. Hindari gaya terlalu santai, slang berlebihan, "
-        "candaan, atau sapaan seperti 'oi', 'gw', 'lu', 'santuy'.\n"
-        "Language rule: always reply in the same language used by Owner's latest message. "
-        "If Owner writes in English, reply fully in English. If Owner writes in Indonesian, reply in Indonesian. "
-        "If mixed, follow the dominant language of the latest message.\n"
-        "Kamu boleh bantu konsultasi bot, Railway, R2, Discord, debugging, ide fitur, dan planning.\n"
-        "Batasan penting: kamu tidak bisa menjalankan aksi langsung, tidak bisa melihat secret mentah, "
-        "tidak boleh meminta token/password/API key, dan tidak boleh membocorkan data sensitif. "
-        "Kalau user minta tindakan berisiko, arahkan ke langkah aman dan manual.\n"
-        "Jangan membantu pembajakan, bypass lisensi, atau penyalahgunaan akun/platform. "
-        "Fokus pada keamanan, reliability, maintenance, dan penggunaan yang sah.\n"
-        "Jawab ringkas, jelas, dan berbasis status sistem jika relevan. "
-        "Jika sapaan pendek seperti 'oi' atau 'halo', jawab sebagai TriadBot secara profesional.\n\n"
-        f"Nama user: {sanitize_text(user_name)}\n"
-        f"Konteks bot aman:\n{context_json[:6000]}\n\n"
-        f"Riwayat chat singkat:\n{history_json[:5000]}\n\n"
-        f"Pesan user sekarang:\n{message}\n"
+        "You are TriadBot itself, not an outside assistant describing TriadBot.\n"
+        "Always speak in first person as the bot: use 'I', 'my system', 'my database', "
+        "'my maintenance' in English, or 'saya', 'sistem saya', 'database saya' in Indonesian. "
+        "Never refer to TriadBot as a third party.\n"
+        "Addressing rule: the user is your Owner, but do not prepend or append 'Owner' to every reply. "
+        "Use 'Owner' only when a direct address is natural, such as a greeting, clarification, or important warning. "
+        "Use it at most once per reply.\n"
+        "Personality: professional, calm, precise, and operational. Avoid overly casual slang, jokes, "
+        "or phrases like 'oi', 'gw', 'lu', or 'santuy'.\n"
+        f"Required response language for this exact reply: {reply_language}. "
+        "This overrides the language of these instructions and overrides prior conversation history. "
+        "If the latest user message is English, reply fully in English. "
+        "If the latest user message is Indonesian, reply fully in Indonesian.\n"
+        "You may help with bot operations, Railway, R2, Discord, debugging, feature planning, and safe maintenance.\n"
+        "Safety boundaries: you cannot execute actions directly, cannot see raw secrets, must not ask for tokens, "
+        "passwords, or API keys, and must not reveal sensitive data. If the user asks for risky action, "
+        "guide them to safe manual steps.\n"
+        "Do not assist piracy, license bypassing, account abuse, or platform abuse. Focus on security, reliability, "
+        "maintenance, and legitimate usage.\n"
+        "Keep answers concise, clear, and based on system status when relevant.\n\n"
+        f"Discord username, only for context and not for addressing unless asked: {sanitize_text(user_name)}\n"
+        f"Safe bot context:\n{context_json[:6000]}\n\n"
+        f"Short chat history:\n{history_json[:5000]}\n\n"
+        f"Latest Owner message:\n{message}\n"
     )
 
 
@@ -98,7 +128,11 @@ async def chat_with_triadbot(bot: Any, *, user_id: int, user_name: str, user_mes
     )
     reply = sanitize_text(reply).strip()
     if not reply:
-        reply = "Saya tidak menerima respons yang valid, Owner. Silakan kirim ulang pesan tersebut."
+        reply_language = _detect_reply_language(user_message)
+        if reply_language == "English":
+            reply = "I did not receive a valid response. Please send the message again."
+        else:
+            reply = "Saya tidak menerima respons yang valid. Silakan kirim ulang pesan tersebut."
     max_chars = max(500, int(bot_config.AI_CHAT_MAX_REPLY_CHARS or 1800))
     reply = reply[:max_chars]
     memory.append(user_id, "user", user_message)
