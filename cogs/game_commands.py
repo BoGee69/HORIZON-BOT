@@ -14,12 +14,16 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import (
+    ADMIN_IDS, ADMIN_ROLE_NAMES,
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
-    DEFAULT_CC, LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET,
+    DEFAULT_CC, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
+    LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET,
 )
 from utils.helpers import (
-    clean_search_string, extract_protection_type, format_size, truncate_text,
+    clean_search_string, extract_protection_type, format_size, has_any_role_name,
+    is_admin_interaction, is_valid_appid, truncate_text,
 )
+from utils.gen_limits import DailyGenLimiter
 from utils.r2_presign import generate_presigned_url, _PRESIGN_ENABLED
 from utils.steam_api import SteamAPI, locale_to_country_code
 
@@ -107,6 +111,7 @@ class GameCommands(commands.Cog):
         self.bot = bot
         self.db  = bot.db
         self.steam_api: Optional[SteamAPI] = None
+        self.gen_limiter = DailyGenLimiter()
 
     async def cog_load(self):
         if hasattr(self.bot, "session"):
@@ -120,6 +125,16 @@ class GameCommands(commands.Cog):
     @app_commands.autocomplete(query=autocomplete_games)
     @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
     async def gen(self, interaction: discord.Interaction, query: str):
+        if not self._is_gen_limit_exempt(interaction):
+            allowed, _, _ = self.gen_limiter.check(interaction.user.id)
+            if not allowed:
+                await interaction.response.send_message(
+                    embed=self._embed_gen_limited(interaction),
+                    ephemeral=True,
+                )
+                return
+            self.gen_limiter.consume(interaction.user.id)
+
         await interaction.response.defer()
 
         cc        = resolve_country_code(interaction)
@@ -131,6 +146,10 @@ class GameCommands(commands.Cog):
                 await interaction.edit_original_response(embed=self._embed_not_found(target_id))
                 return
             target_id = results[0]["id"]
+
+        if not is_valid_appid(target_id):
+            await interaction.edit_original_response(embed=self._embed_not_found(query))
+            return
 
         steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
         if not steam_data:
@@ -204,7 +223,7 @@ class GameCommands(commands.Cog):
     async def info(self, interaction: discord.Interaction, appid: str):
         await interaction.response.defer(ephemeral=True)
 
-        if not appid.isdigit():
+        if not is_valid_appid(appid):
             await interaction.followup.send(embed=self._embed_not_found(appid), ephemeral=True)
             return
 
@@ -457,6 +476,33 @@ class GameCommands(commands.Cog):
         )
         embed.set_footer(text="triadbot  •  This message is only visible to you")
         return embed
+    def _is_gen_limit_exempt(self, interaction: discord.Interaction) -> bool:
+        if is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_NAMES):
+            return True
+        return has_any_role_name(interaction.user, DONOR_ROLE_NAMES)
+
+    def _embed_gen_limited(self, interaction: discord.Interaction) -> discord.Embed:
+        reset_ts = int(self.gen_limiter.reset_at_utc().timestamp())
+        locale = str(getattr(interaction, "locale", "")).lower()
+        guild_locale = str(getattr(interaction, "guild_locale", "")).lower()
+        is_id = locale.startswith("id") or guild_locale.startswith("id")
+
+        if is_id:
+            title = "Limit /gen harian habis"
+            description = (
+                f"User biasa hanya bisa memakai `/gen` **{GEN_DAILY_LIMIT} kali per hari**.\n"
+                f"Reset global berikutnya: <t:{reset_ts}:F> (<t:{reset_ts}:R>).\n\n"
+                "Role **Donor**, owner server, dan admin tidak terkena limit ini."
+            )
+        else:
+            title = "Daily /gen limit reached"
+            description = (
+                f"Regular users can use `/gen` **{GEN_DAILY_LIMIT} times per day**.\n"
+                f"Next global reset: <t:{reset_ts}:F> (<t:{reset_ts}:R>).\n\n"
+                "**Donor** role members, server owners, and admins are exempt."
+            )
+
+        return discord.Embed(title=title, description=description, color=COLOR_WARNING)
 
 
 async def setup(bot):

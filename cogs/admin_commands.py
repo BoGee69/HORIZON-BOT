@@ -15,22 +15,22 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import (
-    ADMIN_IDS, ADMIN_WEBHOOK, COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO,
+    ADMIN_IDS, ADMIN_ROLE_NAMES, ADMIN_WEBHOOK, COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO,
     COLOR_SUCCESS, COLOR_WARNING, R2_BASE_URL,
 )
-from utils.helpers import format_number, format_size
+from utils.helpers import format_number, format_size, is_admin_interaction
 
 log = logging.getLogger(__name__)
 
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+def is_admin(interaction: discord.Interaction) -> bool:
+    return is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_NAMES)
 
 
 def admin_check():
     """app_commands check — admin only."""
     async def predicate(interaction: discord.Interaction) -> bool:
-        if not is_admin(interaction.user.id):
+        if not is_admin(interaction):
             await interaction.response.send_message(
                 embed=discord.Embed(
                     title="🚫 Access Denied",

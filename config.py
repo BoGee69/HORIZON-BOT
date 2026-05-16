@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+DEFAULT_WEB_URL = "https://triadgames.up.railway.app"
+
 BASE_DIR  = Path(__file__).parent
 DATA_DIR  = BASE_DIR / "data"
 LOGS_DIR  = BASE_DIR / "logs"
@@ -21,6 +23,16 @@ if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN not found in environment variables")
 
 ADMIN_IDS     = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "562612184333680709").split(",") if x.strip()]
+ADMIN_ROLE_NAMES = {
+    x.strip().lower()
+    for x in os.getenv("ADMIN_ROLE_NAMES", "admin,administrator,owner").split(",")
+    if x.strip()
+}
+DONOR_ROLE_NAMES = {
+    x.strip().lower()
+    for x in os.getenv("DONOR_ROLE_NAMES", "donor").split(",")
+    if x.strip()
+}
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
@@ -28,8 +40,8 @@ R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 
 # FIX 3: WEB_URL — WAJIB di-set di Railway env agar JWT link tidak nunjuk ke localhost.
 # Isi dengan URL Railway kamu, e.g. https://triadbot-production.up.railway.app
-WEB_URL    = os.getenv("WEB_URL", "").rstrip("/")
-JWT_SECRET = os.getenv("JWT_SECRET", "super-secret-key")
+WEB_URL    = os.getenv("WEB_URL", DEFAULT_WEB_URL).rstrip("/")
+JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 PORT       = int(os.getenv("PORT", "8080"))
 
 R2_ACCESS_KEY_ID     = os.getenv("R2_ACCESS_KEY_ID", "")
@@ -47,6 +59,7 @@ GITHUB_BRANCHES_URL  = f"{GITHUB_API_BASE}/branches"
 MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHub")
 
 DB_PATH         = DATA_DIR / "games.json"
+GEN_USAGE_PATH  = DATA_DIR / "gen_usage.json"
 BACKFILL_STATE  = DATA_DIR / "backfill_state.json"
 CRAWLER_STATE   = DATA_DIR / "crawler_state.json"
 CACHE_FILE      = DATA_DIR / "cache.json"
@@ -66,6 +79,7 @@ CACHE_DAYS             = int(os.getenv("CACHE_DAYS", "14"))
 
 RATE_LIMIT_REQUESTS = int(os.getenv("RATE_LIMIT_REQUESTS", "100"))
 RATE_LIMIT_WINDOW   = int(os.getenv("RATE_LIMIT_WINDOW", "3600"))
+GEN_DAILY_LIMIT     = int(os.getenv("GEN_DAILY_LIMIT", "10"))
 
 ENABLE_AUTO_BACKUP    = os.getenv("ENABLE_AUTO_BACKUP", "true").lower() == "true"
 BACKUP_RETENTION_DAYS = int(os.getenv("BACKUP_RETENTION_DAYS", "7"))
@@ -86,6 +100,8 @@ def validate_config():
     errors = []
     if not DISCORD_TOKEN:
         errors.append("DISCORD_TOKEN is required")
+    if not JWT_SECRET or JWT_SECRET == "super-secret-key" or len(JWT_SECRET) < 32:
+        errors.append("JWT_SECRET must be set to a random value with at least 32 characters")
     # FIX 3: Peringatan kalau WEB_URL kosong — JWT link tidak akan berfungsi
     if not WEB_URL:
         import logging

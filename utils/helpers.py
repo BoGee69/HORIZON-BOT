@@ -73,6 +73,32 @@ def is_valid_appid(appid: str) -> bool:
     return 0 < appid_int < 10000000  # Steam AppIDs are typically in this range
 
 
+def has_any_role_name(user, role_names) -> bool:
+    """Check Discord member roles by name, case-insensitive."""
+    if not role_names:
+        return False
+    roles = getattr(user, "roles", []) or []
+    member_roles = {getattr(role, "name", "").lower() for role in roles}
+    return bool(member_roles.intersection(role_names))
+
+
+def is_admin_interaction(interaction, admin_ids, admin_role_names) -> bool:
+    """Allow configured IDs, server owner, Administrator permission, or configured admin roles."""
+    user = interaction.user
+    if user.id in admin_ids:
+        return True
+
+    guild = interaction.guild
+    if guild and guild.owner_id == user.id:
+        return True
+
+    permissions = getattr(user, "guild_permissions", None)
+    if permissions and getattr(permissions, "administrator", False):
+        return True
+
+    return has_any_role_name(user, admin_role_names)
+
+
 def parse_github_url(url: str) -> str:
     """Convert GitHub URL to raw content URL"""
     if "github.com" in url and "raw" not in url:
