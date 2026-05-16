@@ -149,7 +149,7 @@ def _extract_steam_app_list(data: dict, appids: set[str]) -> dict[str, str]:
 
 def fetch_steam_app_list(appids: set[str], api_key: str = "", timeout: int = 60) -> dict[str, str]:
     legacy_urls = [
-        "https://api.steampowered.com/ISteamApps/GetAppList/v2/",
+        "https://api.steampowered.com/ISteamApps/GetAppList/v2/?format=json",
         "https://api.steampowered.com/ISteamApps/GetAppList/v0002/?format=json",
     ]
     for url in legacy_urls:
@@ -168,17 +168,28 @@ def fetch_steam_app_list(appids: set[str], api_key: str = "", timeout: int = 60)
     results: dict[str, str] = {}
     last_appid = 0
     while True:
-        query = urllib.parse.urlencode({
-            "key": api_key,
-            "include_games": "true",
-            "max_results": "50000",
-            "last_appid": str(last_appid),
-        })
-        url = f"https://api.steampowered.com/IStoreService/GetAppList/v1/?{query}"
-        try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except Exception:
+        input_json = json.dumps(
+            {
+                "include_games": True,
+                "include_dlc": True,
+                "max_results": 50000,
+                "last_appid": last_appid,
+            }
+        )
+        query = urllib.parse.urlencode({"key": api_key, "input_json": input_json})
+        data = None
+        for base_url in (
+            "https://partner.steam-api.com/IStoreService/GetAppList/v1/",
+            "https://api.steampowered.com/IStoreService/GetAppList/v1/",
+        ):
+            try:
+                with urllib.request.urlopen(f"{base_url}?{query}", timeout=timeout) as response:
+                    data = json.loads(response.read().decode("utf-8"))
+                break
+            except Exception:
+                continue
+
+        if data is None:
             break
 
         results.update(_extract_steam_app_list(data, appids))

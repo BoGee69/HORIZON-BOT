@@ -109,9 +109,11 @@ class AdminCommands(commands.Cog):
         health = await collect_health(self.bot)
         checks = health["checks"]
         paths = health["paths"]
+        database = health["database"]
         roles = health["roles"]
         r2 = health["r2"]
         r2_maintenance = health["r2_maintenance"]
+        steam_db_sync = health["steam_db_sync"]
 
         embed = discord.Embed(
             title="Runtime Config Status",
@@ -134,6 +136,32 @@ class AdminCommands(commands.Cog):
                 f"GEN_USAGE_PATH: `{paths['gen_usage_path']}`\n"
                 f"Writable: `{yes_no(checks['gen_usage_path_writable'])}`\n"
                 f"Status: `{paths['gen_usage_parent_status']}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Database",
+            value=(
+                f"DB_PATH: `{database['db_path']}`\n"
+                f"Total games: `{database['total_games']}`\n"
+                f"With files: `{database['with_files']}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Steam DB Sync",
+            value=(
+                f"Enabled: `{steam_db_sync['enabled']}`\n"
+                f"Apply: `{steam_db_sync['apply']}`\n"
+                f"Run on start: `{steam_db_sync['run_on_start']}`\n"
+                f"Start delay: `{steam_db_sync['start_delay_seconds']}s`\n"
+                f"Interval: `{steam_db_sync['interval_hours']}h`\n"
+                f"Include new: `{steam_db_sync['include_new']}`\n"
+                f"Max new: `{steam_db_sync['max_new']}`\n"
+                f"Max updates: `{steam_db_sync['max_updates']}`\n"
+                f"Page size: `{steam_db_sync['page_size']}`\n"
+                f"Types: `games={steam_db_sync['include_games']}, dlc={steam_db_sync['include_dlc']}, software={steam_db_sync['include_software']}`\n"
+                f"Steam API key: `{yes_no(steam_db_sync['steam_api_key_configured'])}`"
             ),
             inline=False,
         )

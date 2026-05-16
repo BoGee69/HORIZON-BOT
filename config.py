@@ -130,6 +130,20 @@ R2_MAINTENANCE_STEAM_LOOKUPS = parse_bool(os.getenv("R2_MAINTENANCE_STEAM_LOOKUP
 R2_MAINTENANCE_MAX_STEAM_LOOKUPS = int(os.getenv("R2_MAINTENANCE_MAX_STEAM_LOOKUPS", "25"))
 R2_MAINTENANCE_STEAM_DELAY_SECONDS = float(os.getenv("R2_MAINTENANCE_STEAM_DELAY_SECONDS", "0.12"))
 
+STEAM_DB_SYNC_ENABLED = parse_bool(os.getenv("STEAM_DB_SYNC_ENABLED", "false"), False)
+STEAM_DB_SYNC_APPLY = parse_bool(os.getenv("STEAM_DB_SYNC_APPLY", "false"), False)
+STEAM_DB_SYNC_RUN_ON_START = parse_bool(os.getenv("STEAM_DB_SYNC_RUN_ON_START", "true"), True)
+STEAM_DB_SYNC_START_DELAY_SECONDS = float(os.getenv("STEAM_DB_SYNC_START_DELAY_SECONDS", "5"))
+STEAM_DB_SYNC_INTERVAL_HOURS = float(os.getenv("STEAM_DB_SYNC_INTERVAL_HOURS", "24"))
+STEAM_DB_SYNC_INCLUDE_NEW = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_NEW", "true"), True)
+STEAM_DB_SYNC_MAX_NEW = int(os.getenv("STEAM_DB_SYNC_MAX_NEW", "0"))
+STEAM_DB_SYNC_MAX_UPDATES = int(os.getenv("STEAM_DB_SYNC_MAX_UPDATES", "0"))
+STEAM_DB_SYNC_TIMEOUT_SECONDS = int(os.getenv("STEAM_DB_SYNC_TIMEOUT_SECONDS", "120"))
+STEAM_DB_SYNC_PAGE_SIZE = int(os.getenv("STEAM_DB_SYNC_PAGE_SIZE", "50000"))
+STEAM_DB_SYNC_INCLUDE_GAMES = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_GAMES", "true"), True)
+STEAM_DB_SYNC_INCLUDE_DLC = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_DLC", "true"), True)
+STEAM_DB_SYNC_INCLUDE_SOFTWARE = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_SOFTWARE", "false"), False)
+
 STEAM_API_KEY    = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API  = "https://store.steampowered.com/api/appdetails"
 STEAM_SEARCH_API = "https://store.steampowered.com/api/storesearch"
@@ -138,7 +152,7 @@ GITHUB_API_BASE      = "https://api.github.com/repos/SteamAutoCracks/ManifestHub
 GITHUB_BRANCHES_URL  = f"{GITHUB_API_BASE}/branches"
 MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHub")
 
-DB_PATH         = DATA_DIR / "games.json"
+DB_PATH         = env_path("DB_PATH", DATA_DIR / "games.json")
 GEN_USAGE_PATH  = env_path("GEN_USAGE_PATH", DATA_DIR / "gen_usage.json")
 BACKFILL_STATE  = DATA_DIR / "backfill_state.json"
 CRAWLER_STATE   = DATA_DIR / "crawler_state.json"

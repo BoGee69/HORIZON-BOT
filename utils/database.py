@@ -4,6 +4,7 @@ Handles JSON storage, indexing, and backup management
 """
 import json
 import logging
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,14 @@ from typing import Dict, List, Optional
 from config import DB_PATH, DATA_DIR, ENABLE_AUTO_BACKUP, MAX_BACKUPS
 
 log = logging.getLogger(__name__)
+PLACEHOLDER_RE = re.compile(r"^game\s+\d+$", re.IGNORECASE)
+
+
+def is_placeholder_game_name(name: Optional[str], appid: str) -> bool:
+    if not name:
+        return True
+    clean = " ".join(str(name).strip().split())
+    return clean == str(appid) or PLACEHOLDER_RE.match(clean) is not None
 
 
 class DatabaseManager:
@@ -68,6 +77,7 @@ class DatabaseManager:
                 self._create_backup()
             
             # Save database
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
             with open(self.db_path, 'w', encoding='utf-8') as f:
                 json.dump(self.game_db, f, indent=2, ensure_ascii=False)
             
@@ -125,7 +135,7 @@ class DatabaseManager:
         
         if appid_str in self.game_index:
             self.game_index[appid_str]["file"] = True
-            if name and not self.game_index[appid_str].get("name"):
+            if name and is_placeholder_game_name(self.game_index[appid_str].get("name"), appid_str):
                 self.game_index[appid_str]["name"] = name
         else:
             # Add new entry
