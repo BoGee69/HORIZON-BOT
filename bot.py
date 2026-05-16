@@ -21,6 +21,7 @@ from config import (
     JWT_SECRET, PORT,
 )
 from utils.alerts import AdminNotifier
+from utils.ai_caretaker import CaretakerLogHandler, SafeEventRingBuffer, sanitize_data
 from utils.database import DatabaseManager
 from utils.diagnostics import collect_health
 from utils.legal_pages import PRIVACY_HTML, TERMS_HTML
@@ -51,6 +52,16 @@ class SteamBot(commands.Bot):
         self.session: aiohttp.ClientSession | None = None
         self.db         = DatabaseManager()
         self.notifier   = AdminNotifier(self)
+        self.ai_events  = SafeEventRingBuffer(maxlen=60)
+        self.ai_caretaker = None
+        self.last_ai_caretaker_result = None
+        self.last_r2_maintenance_summary = None
+        self.last_steam_db_sync_summary = None
+        self._ai_log_handler = CaretakerLogHandler(self.ai_events)
+        self._ai_log_handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        logging.getLogger().addHandler(self._ai_log_handler)
         self._ready_notified = False
 
     async def setup_hook(self):
@@ -125,10 +136,42 @@ class SteamBot(commands.Bot):
             if real_url:
                 raise web.HTTPFound(real_url)
 
+        self.record_ai_event(
+            "warning",
+            "download",
+            "Download file was not found in R2.",
+            {"appid": str(appid), "candidate_count": len(keys_to_try)},
+        )
+        self.queue_ai_caretaker(
+            "download-file-missing",
+            {"appid": str(appid), "candidate_count": len(keys_to_try)},
+        )
+
         return web.Response(text="❌ File tidak ditemukan di storage.", status=404)
 
     async def notify_admins(self, *args, **kwargs) -> int:
+        try:
+            title = str(args[0] if args else kwargs.get("title", "admin alert"))
+            description = str(args[1] if len(args) > 1 else kwargs.get("description", ""))
+            self.record_ai_event(
+                kwargs.get("level", "warning"),
+                "admin_alert",
+                f"{title}: {description}",
+                kwargs.get("fields"),
+            )
+        except Exception:
+            pass
         return await self.notifier.send(*args, **kwargs)
+
+    def record_ai_event(self, level: str, source: str, message: str, fields: dict | None = None) -> None:
+        if getattr(self, "ai_events", None):
+            self.ai_events.append(level=level, source=source, message=message, fields=fields)
+
+    def queue_ai_caretaker(self, reason: str, context: dict | None = None, *, force: bool = False) -> None:
+        caretaker = getattr(self, "ai_caretaker", None)
+        if not caretaker:
+            return
+        asyncio.create_task(caretaker.trigger(reason, context=sanitize_data(context or {}), force=force))
 
     async def load_cogs(self):
         cogs_dir = Path(__file__).parent / "cogs"
@@ -151,6 +194,8 @@ class SteamBot(commands.Bot):
             self.db.save()
         if self.session and not self.session.closed:
             await self.session.close()
+        if getattr(self, "_ai_log_handler", None):
+            logging.getLogger().removeHandler(self._ai_log_handler)
         await super().close()
 
     async def on_ready(self):
@@ -197,6 +242,16 @@ class SteamBot(commands.Bot):
             },
             key=f"slash-error-{command_name}-{type(error).__name__}",
         )
+        self.queue_ai_caretaker(
+            "slash-command-error",
+            {
+                "command": command_name,
+                "user": user_text,
+                "guild": guild_text,
+                "error": repr(error)[:1000],
+            },
+            force=True,
+        )
 
         embed = discord.Embed(
             title="Command failed",
@@ -220,6 +275,11 @@ class SteamBot(commands.Bot):
             level="error",
             fields={"Traceback": trace[-1000:]},
             key=f"event-error-{event_method}",
+        )
+        self.queue_ai_caretaker(
+            "unhandled-event-error",
+            {"event": event_method, "traceback_tail": trace[-1000:]},
+            force=True,
         )
 
 

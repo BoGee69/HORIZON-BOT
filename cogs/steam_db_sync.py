@@ -148,10 +148,36 @@ class SteamDbSyncCommands(commands.Cog):
                         fields={"Error": repr(exc)[:1000]},
                         key="steam-db-sync-crashed",
                     )
+                if hasattr(self.bot, "queue_ai_caretaker"):
+                    self.bot.queue_ai_caretaker(
+                        "steam-db-sync-crashed",
+                        {"error": repr(exc)[:1000]},
+                        force=True,
+                    )
 
             await asyncio.sleep(interval_seconds)
 
     async def _alert_if_needed(self, summary: SteamDbSyncSummary, *, automatic: bool) -> None:
+        self.bot.last_steam_db_sync_summary = summary
+        if hasattr(self.bot, "record_ai_event"):
+            self.bot.record_ai_event(
+                "error" if summary.errors else "info",
+                "steam_db_sync",
+                "Steam DB sync finished.",
+                {
+                    "automatic": automatic,
+                    "fields": summary.to_fields(),
+                    "errors": summary.errors,
+                    "samples": summary.samples,
+                },
+            )
+        if hasattr(self.bot, "queue_ai_caretaker"):
+            self.bot.queue_ai_caretaker(
+                "steam-db-sync-finished",
+                {"automatic": automatic, "errors": len(summary.errors), "has_changes": summary.has_changes},
+                force=bool(summary.errors),
+            )
+
         notifier = getattr(self.bot, "notify_admins", None)
         if not notifier:
             return

@@ -148,6 +148,26 @@ STEAM_DB_SYNC_INCLUDE_GAMES = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_GAMES"
 STEAM_DB_SYNC_INCLUDE_DLC = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_DLC", "true"), True)
 STEAM_DB_SYNC_INCLUDE_SOFTWARE = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_SOFTWARE", "false"), False)
 
+AI_MAINTENANCE_ENABLED = parse_bool(os.getenv("AI_MAINTENANCE_ENABLED", "false"), False)
+AI_MAINTENANCE_PROVIDER = os.getenv("AI_MAINTENANCE_PROVIDER", "gemini").strip().lower() or "gemini"
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+AI_MAINTENANCE_MODEL = os.getenv("AI_MAINTENANCE_MODEL", "gemini-2.5-flash-lite").strip() or "gemini-2.5-flash-lite"
+AI_MAINTENANCE_INTERVAL_MINUTES = float(os.getenv("AI_MAINTENANCE_INTERVAL_MINUTES", "360"))
+AI_MAINTENANCE_ALERT_IDS = parse_id_list(os.getenv("AI_MAINTENANCE_ALERT_IDS", "")) or ADMIN_IDS[:1]
+AI_MAINTENANCE_MAX_PROMPT_CHARS = int(os.getenv("AI_MAINTENANCE_MAX_PROMPT_CHARS", "12000"))
+AI_MAINTENANCE_DM_ON_OK = parse_bool(os.getenv("AI_MAINTENANCE_DM_ON_OK", "false"), False)
+AI_MAINTENANCE_DM_ON_WARNING = parse_bool(os.getenv("AI_MAINTENANCE_DM_ON_WARNING", "true"), True)
+AI_MAINTENANCE_DM_ON_CRITICAL = parse_bool(os.getenv("AI_MAINTENANCE_DM_ON_CRITICAL", "true"), True)
+AI_MAINTENANCE_COOLDOWN_SECONDS = int(os.getenv("AI_MAINTENANCE_COOLDOWN_SECONDS", "900"))
+AI_MAINTENANCE_START_DELAY_SECONDS = float(os.getenv("AI_MAINTENANCE_START_DELAY_SECONDS", "20"))
+AI_CHAT_ENABLED = parse_bool(os.getenv("AI_CHAT_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "false")), False)
+AI_CHAT_ALLOWED_IDS = parse_id_list(os.getenv("AI_CHAT_ALLOWED_IDS", "")) or AI_MAINTENANCE_ALERT_IDS
+AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", AI_MAINTENANCE_MODEL).strip() or AI_MAINTENANCE_MODEL
+AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "12"))
+AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
+AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))
+AI_CHAT_MAX_MESSAGE_CHARS = int(os.getenv("AI_CHAT_MAX_MESSAGE_CHARS", "1800"))
+
 STEAM_API_KEY    = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API  = "https://store.steampowered.com/api/appdetails"
 STEAM_SEARCH_API = "https://store.steampowered.com/api/storesearch"
@@ -168,7 +188,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.1.0"
+BOT_VERSION     = "9.2.0"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))

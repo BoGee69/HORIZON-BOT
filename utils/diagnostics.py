@@ -112,6 +112,25 @@ async def collect_health(bot) -> dict[str, Any]:
             "blacklist_threshold": bot_config.R2_MAINTENANCE_BLACKLIST_THRESHOLD,
             "state_path": str(bot_config.R2_MAINTENANCE_STATE_PATH),
         },
+        "ai_caretaker": {
+            "enabled": bool(bot_config.AI_MAINTENANCE_ENABLED),
+            "provider": bot_config.AI_MAINTENANCE_PROVIDER,
+            "model": bot_config.AI_MAINTENANCE_MODEL,
+            "interval_minutes": bot_config.AI_MAINTENANCE_INTERVAL_MINUTES,
+            "alert_ids_configured": bool(bot_config.AI_MAINTENANCE_ALERT_IDS),
+            "gemini_api_key_configured": bool(bot_config.GEMINI_API_KEY),
+            "dm_on_ok": bool(bot_config.AI_MAINTENANCE_DM_ON_OK),
+            "dm_on_warning": bool(bot_config.AI_MAINTENANCE_DM_ON_WARNING),
+            "dm_on_critical": bool(bot_config.AI_MAINTENANCE_DM_ON_CRITICAL),
+        },
+        "ai_chat": {
+            "enabled": bool(bot_config.AI_CHAT_ENABLED),
+            "model": bot_config.AI_CHAT_MODEL,
+            "allowed_ids_configured": bool(bot_config.AI_CHAT_ALLOWED_IDS),
+            "max_history": bot_config.AI_CHAT_MAX_HISTORY,
+            "cooldown_seconds": bot_config.AI_CHAT_COOLDOWN_SECONDS,
+            "max_reply_chars": bot_config.AI_CHAT_MAX_REPLY_CHARS,
+        },
     }
 
 

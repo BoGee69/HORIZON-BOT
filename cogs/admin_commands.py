@@ -114,6 +114,8 @@ class AdminCommands(commands.Cog):
         r2 = health["r2"]
         r2_maintenance = health["r2_maintenance"]
         steam_db_sync = health["steam_db_sync"]
+        ai_caretaker = health["ai_caretaker"]
+        ai_chat = health["ai_chat"]
 
         embed = discord.Embed(
             title="Runtime Config Status",
@@ -214,6 +216,29 @@ class AdminCommands(commands.Cog):
                 f"DM admins: `{len(bot_config.ADMIN_ALERT_IDS)}`\n"
                 f"Cooldown: `{bot_config.ADMIN_ALERT_COOLDOWN_SECONDS}s`\n"
                 f"Limit hit alerts: `{bot_config.ALERT_ON_LIMIT_HIT}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="AI Caretaker",
+            value=(
+                f"Enabled: `{ai_caretaker['enabled']}`\n"
+                f"Provider: `{ai_caretaker['provider']}`\n"
+                f"Model: `{ai_caretaker['model']}`\n"
+                f"Interval: `{ai_caretaker['interval_minutes']}m`\n"
+                f"Owner DM IDs: `{yes_no(ai_caretaker['alert_ids_configured'])}`\n"
+                f"Gemini API key: `{yes_no(ai_caretaker['gemini_api_key_configured'])}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="AI Chat",
+            value=(
+                f"Enabled: `{ai_chat['enabled']}`\n"
+                f"Model: `{ai_chat['model']}`\n"
+                f"Allowed IDs: `{yes_no(ai_chat['allowed_ids_configured'])}`\n"
+                f"History: `{ai_chat['max_history']}`\n"
+                f"Cooldown: `{ai_chat['cooldown_seconds']}s`"
             ),
             inline=False,
         )

@@ -171,10 +171,36 @@ class R2MaintenanceCommands(commands.Cog):
                         fields={"Error": repr(exc)[:1000]},
                         key="r2-maintenance-crashed",
                     )
+                if hasattr(self.bot, "queue_ai_caretaker"):
+                    self.bot.queue_ai_caretaker(
+                        "r2-maintenance-crashed",
+                        {"error": repr(exc)[:1000]},
+                        force=True,
+                    )
 
             await asyncio.sleep(interval_seconds)
 
     async def _alert_if_needed(self, summary: R2MaintenanceSummary, *, automatic: bool) -> None:
+        self.bot.last_r2_maintenance_summary = summary
+        if hasattr(self.bot, "record_ai_event"):
+            self.bot.record_ai_event(
+                "error" if summary.errors else "info",
+                "r2_maintenance",
+                "R2 maintenance finished.",
+                {
+                    "automatic": automatic,
+                    "fields": summary.to_fields(),
+                    "errors": summary.errors,
+                    "applied_samples": summary.applied_samples,
+                },
+            )
+        if hasattr(self.bot, "queue_ai_caretaker"):
+            self.bot.queue_ai_caretaker(
+                "r2-maintenance-finished",
+                {"automatic": automatic, "errors": len(summary.errors), "has_changes": summary.has_changes},
+                force=bool(summary.errors),
+            )
+
         notifier = getattr(self.bot, "notify_admins", None)
         if not notifier:
             return
