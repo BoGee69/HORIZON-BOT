@@ -351,10 +351,6 @@ class GameCommands(commands.Cog):
         protection = extract_protection_type(game_info.get("drm_notice"))
 
         embed = discord.Embed(color=color)
-        embed.set_author(
-            name="triadbot  •  Steam Database",
-            icon_url="https://store.steampowered.com/favicon.ico",
-        )
         embed.add_field(
             name=f"🎮  {game_info['name']}",
             value=truncate_text(game_info.get("short_description") or "—", 220),
