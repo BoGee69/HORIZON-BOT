@@ -14,13 +14,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import (
-    ADMIN_IDS, ADMIN_ROLE_NAMES,
+    ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES,
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
-    BOOSTER_ROLE_NAMES, DEFAULT_CC, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
+    BOOSTER_ROLE_IDS, BOOSTER_ROLE_NAMES, DEFAULT_CC, DONOR_ROLE_IDS, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
     LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET,
 )
 from utils.helpers import (
-    clean_search_string, extract_protection_type, format_size, has_any_role_name,
+    clean_search_string, extract_protection_type, format_size, has_any_role,
     is_admin_interaction, is_valid_appid, truncate_text,
 )
 from utils.gen_limits import DailyGenLimiter
@@ -111,7 +111,10 @@ class GameCommands(commands.Cog):
         self.bot = bot
         self.db  = bot.db
         self.steam_api: Optional[SteamAPI] = None
-        self.gen_limiter = DailyGenLimiter()
+        self.gen_limiter = getattr(bot, "gen_limiter", None)
+        if self.gen_limiter is None:
+            self.gen_limiter = DailyGenLimiter()
+            bot.gen_limiter = self.gen_limiter
 
     async def cog_load(self):
         if hasattr(self.bot, "session"):
@@ -511,11 +514,11 @@ class GameCommands(commands.Cog):
         return embed
 
     def _is_gen_limit_exempt(self, interaction: discord.Interaction) -> bool:
-        if is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_NAMES):
+        if is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES):
             return True
         return (
-            has_any_role_name(interaction.user, DONOR_ROLE_NAMES)
-            or has_any_role_name(interaction.user, BOOSTER_ROLE_NAMES)
+            has_any_role(interaction.user, DONOR_ROLE_IDS, DONOR_ROLE_NAMES)
+            or has_any_role(interaction.user, BOOSTER_ROLE_IDS, BOOSTER_ROLE_NAMES)
         )
 
     def _embed_gen_limited(self, interaction: discord.Interaction) -> discord.Embed:

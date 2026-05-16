@@ -15,16 +15,17 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import (
-    ADMIN_IDS, ADMIN_ROLE_NAMES, ADMIN_WEBHOOK, COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO,
-    COLOR_SUCCESS, COLOR_WARNING, R2_BASE_URL,
+    ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES, ADMIN_WEBHOOK, COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO,
+    COLOR_SUCCESS, COLOR_WARNING, GEN_DAILY_LIMIT, GEN_USAGE_PATH, R2_BASE_URL,
 )
 from utils.helpers import format_number, format_size, is_admin_interaction
+from utils.gen_limits import DailyGenLimiter
 
 log = logging.getLogger(__name__)
 
 
 def is_admin(interaction: discord.Interaction) -> bool:
-    return is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_NAMES)
+    return is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES)
 
 
 def admin_check():
@@ -50,6 +51,10 @@ class AdminCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.db = bot.db
+        self.gen_limiter = getattr(bot, "gen_limiter", None)
+        if self.gen_limiter is None:
+            self.gen_limiter = DailyGenLimiter()
+            bot.gen_limiter = self.gen_limiter
 
     # ── /admin status ─────────────────────────────────────────────────────────
 
@@ -79,6 +84,73 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="🔝 Last AppID",   value=format_number(stats["last_appid"]),                    inline=True)
         embed.add_field(name="☁️ R2 URL",       value=R2_BASE_URL or "❌ Not configured",                    inline=False)
         embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    # Daily /gen limit tools
+
+    @app_commands.command(name="limit_status", description="[Admin] Check a user's daily /gen usage")
+    @app_commands.describe(user="Discord user to check")
+    @admin_check()
+    async def limit_status(self, interaction: discord.Interaction, user: discord.User):
+        await interaction.response.defer(ephemeral=True)
+
+        allowed, used, remaining = self.gen_limiter.check(user.id)
+        reset_ts = int(self.gen_limiter.reset_at_utc().timestamp())
+
+        embed = discord.Embed(
+            title="Daily /gen Limit Status",
+            color=COLOR_SUCCESS if allowed else COLOR_WARNING,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="User", value=f"{user.mention}\n`{user.id}`", inline=False)
+        embed.add_field(name="Used", value=f"{used}/{GEN_DAILY_LIMIT}", inline=True)
+        embed.add_field(name="Remaining", value=str(remaining), inline=True)
+        embed.add_field(name="Allowed now?", value="Yes" if allowed else "No", inline=True)
+        embed.add_field(name="Reset", value=f"<t:{reset_ts}:F>\n<t:{reset_ts}:R>", inline=False)
+        embed.add_field(name="Storage", value=f"`{GEN_USAGE_PATH}`", inline=False)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="limit_reset", description="[Admin] Reset daily /gen usage")
+    @app_commands.describe(
+        user="Discord user to reset",
+        reset_all="Reset all users instead of one user",
+    )
+    @admin_check()
+    async def limit_reset(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.User] = None,
+        reset_all: bool = False,
+    ):
+        await interaction.response.defer(ephemeral=True)
+
+        if reset_all:
+            affected = self.gen_limiter.reset_all()
+            embed = discord.Embed(
+                title="Daily /gen Limits Reset",
+                description=f"Reset usage for **{affected}** tracked user(s).",
+                color=COLOR_SUCCESS,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        if not user:
+            embed = discord.Embed(
+                title="Missing User",
+                description="Choose a user, or set `reset_all` to true.",
+                color=COLOR_ERROR,
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+
+        previous, remaining = self.gen_limiter.reset_user(user.id)
+        embed = discord.Embed(
+            title="Daily /gen Limit Reset",
+            description=f"{user.mention} has been reset.",
+            color=COLOR_SUCCESS,
+        )
+        embed.add_field(name="Previous usage", value=str(previous), inline=True)
+        embed.add_field(name="Remaining now", value=str(remaining), inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── /admin check_r2 ───────────────────────────────────────────────────────

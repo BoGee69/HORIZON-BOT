@@ -41,6 +41,11 @@ class DailyGenLimiter:
         remaining = max(0, self.limit - used)
         return used < self.limit, used, remaining
 
+    def get_usage(self, user_id: int) -> Tuple[int, int]:
+        self._rollover_if_needed()
+        used = self.counts.get(str(user_id), 0)
+        return used, max(0, self.limit - used)
+
     def consume(self, user_id: int) -> Tuple[int, int]:
         self._rollover_if_needed()
         key = str(user_id)
@@ -48,6 +53,20 @@ class DailyGenLimiter:
         self.counts[key] = used
         self.save()
         return used, max(0, self.limit - used)
+
+    def reset_user(self, user_id: int) -> Tuple[int, int]:
+        self._rollover_if_needed()
+        key = str(user_id)
+        previous = self.counts.pop(key, 0)
+        self.save()
+        return previous, self.limit
+
+    def reset_all(self) -> int:
+        self._rollover_if_needed()
+        previous = len(self.counts)
+        self.counts = {}
+        self.save()
+        return previous
 
     def reset_at_utc(self) -> datetime:
         now = datetime.now(timezone.utc)

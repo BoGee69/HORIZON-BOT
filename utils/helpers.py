@@ -82,7 +82,21 @@ def has_any_role_name(user, role_names) -> bool:
     return bool(member_roles.intersection(role_names))
 
 
-def is_admin_interaction(interaction, admin_ids, admin_role_names) -> bool:
+def has_any_role_id(user, role_ids) -> bool:
+    """Check Discord member roles by ID."""
+    if not role_ids:
+        return False
+    roles = getattr(user, "roles", []) or []
+    member_role_ids = {getattr(role, "id", None) for role in roles}
+    return bool(member_role_ids.intersection(role_ids))
+
+
+def has_any_role(user, role_ids=None, role_names=None) -> bool:
+    """Check Discord member roles by stable ID first, then fallback names."""
+    return has_any_role_id(user, role_ids or set()) or has_any_role_name(user, role_names or set())
+
+
+def is_admin_interaction(interaction, admin_ids, admin_role_ids=None, admin_role_names=None) -> bool:
     """Allow configured IDs, server owner, Administrator permission, or configured admin roles."""
     user = interaction.user
     if user.id in admin_ids:
@@ -96,7 +110,7 @@ def is_admin_interaction(interaction, admin_ids, admin_role_names) -> bool:
     if permissions and getattr(permissions, "administrator", False):
         return True
 
-    return has_any_role_name(user, admin_role_names)
+    return has_any_role(user, admin_role_ids, admin_role_names)
 
 
 def parse_github_url(url: str) -> str:

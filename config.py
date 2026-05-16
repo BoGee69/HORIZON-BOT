@@ -9,6 +9,28 @@ load_dotenv()
 
 DEFAULT_WEB_URL = "https://triadgames.up.railway.app"
 
+
+def parse_id_list(value: str) -> list[int]:
+    ids = []
+    for item in value.split(","):
+        item = item.strip()
+        if item.isdigit():
+            ids.append(int(item))
+    return ids
+
+
+def parse_id_set(value: str) -> set[int]:
+    return set(parse_id_list(value))
+
+
+def env_path(name: str, default: Path) -> Path:
+    raw = os.getenv(name, "").strip()
+    path = Path(raw) if raw else default
+    if not path.is_absolute():
+        path = Path(__file__).parent / path
+    return path
+
+
 BASE_DIR  = Path(__file__).parent
 DATA_DIR  = BASE_DIR / "data"
 LOGS_DIR  = BASE_DIR / "logs"
@@ -22,18 +44,30 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN not found in environment variables")
 
-ADMIN_IDS     = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "562612184333680709").split(",") if x.strip()]
+ADMIN_IDS = parse_id_list(os.getenv("ADMIN_IDS", "562612184333680709"))
+ADMIN_ROLE_IDS = parse_id_set(os.getenv("ADMIN_ROLE_IDS", ""))
 ADMIN_ROLE_NAMES = {
     x.strip().lower()
     for x in os.getenv("ADMIN_ROLE_NAMES", "admin,administrator,owner").split(",")
     if x.strip()
 }
+DONOR_ROLE_IDS = parse_id_set(os.getenv("DONOR_ROLE_IDS", ""))
 DONOR_ROLE_NAMES = {
     x.strip().lower()
     for x in os.getenv("DONOR_ROLE_NAMES", "donor").split(",")
     if x.strip()
 }
 BOOSTER_ROLE_NAME = os.getenv("BOOSTER_ROLE_NAME", "Booster").strip() or "Booster"
+BOOSTER_ROLE_IDS = parse_id_set(
+    ",".join(
+        item
+        for item in [
+            os.getenv("BOOSTER_ROLE_ID", "").strip(),
+            os.getenv("BOOSTER_ROLE_IDS", "").strip(),
+        ]
+        if item
+    )
+)
 BOOSTER_ROLE_NAMES = {
     x.strip().lower()
     for x in os.getenv("BOOSTER_ROLE_NAMES", BOOSTER_ROLE_NAME).split(",")
@@ -65,7 +99,7 @@ GITHUB_BRANCHES_URL  = f"{GITHUB_API_BASE}/branches"
 MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHub")
 
 DB_PATH         = DATA_DIR / "games.json"
-GEN_USAGE_PATH  = DATA_DIR / "gen_usage.json"
+GEN_USAGE_PATH  = env_path("GEN_USAGE_PATH", DATA_DIR / "gen_usage.json")
 BACKFILL_STATE  = DATA_DIR / "backfill_state.json"
 CRAWLER_STATE   = DATA_DIR / "crawler_state.json"
 CACHE_FILE      = DATA_DIR / "cache.json"

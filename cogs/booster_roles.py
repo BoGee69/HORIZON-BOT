@@ -6,7 +6,7 @@ import logging
 import discord
 from discord.ext import commands
 
-from config import BOOSTER_ROLE_NAME, BOOSTER_ROLE_NAMES
+from config import BOOSTER_ROLE_IDS, BOOSTER_ROLE_NAME, BOOSTER_ROLE_NAMES
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ class BoosterRoles(commands.Cog):
 
         role = await self._get_or_create_booster_role(after.guild)
         if not role:
+            return
+        if not self._can_manage_role(after.guild, role):
             return
 
         try:
@@ -40,6 +42,13 @@ class BoosterRoles(commands.Cog):
             log.warning("Failed to update Booster role for %s: %s", after, exc)
 
     async def _get_or_create_booster_role(self, guild: discord.Guild) -> discord.Role | None:
+        role = discord.utils.find(
+            lambda item: item.id in BOOSTER_ROLE_IDS,
+            guild.roles,
+        )
+        if role:
+            return role
+
         role = discord.utils.find(
             lambda item: item.name.lower() in BOOSTER_ROLE_NAMES,
             guild.roles,
@@ -62,6 +71,21 @@ class BoosterRoles(commands.Cog):
         except discord.HTTPException as exc:
             log.warning("Failed to create Booster role in %s: %s", guild, exc)
         return None
+
+    @staticmethod
+    def _can_manage_role(guild: discord.Guild, role: discord.Role) -> bool:
+        me = guild.me
+        if not me or not me.guild_permissions.manage_roles:
+            log.warning("Cannot manage Booster role in %s: missing Manage Roles permission.", guild)
+            return False
+        if role >= me.top_role:
+            log.warning(
+                "Cannot manage Booster role in %s: bot role must be above '%s'.",
+                guild,
+                role.name,
+            )
+            return False
+        return True
 
 
 async def setup(bot):
