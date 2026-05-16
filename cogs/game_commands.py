@@ -125,7 +125,10 @@ class GameCommands(commands.Cog):
     @app_commands.autocomplete(query=autocomplete_games)
     @app_commands.checks.cooldown(1, 5.0, key=lambda i: i.user.id)
     async def gen(self, interaction: discord.Interaction, query: str):
-        if not self._is_gen_limit_exempt(interaction):
+        is_limit_exempt = self._is_gen_limit_exempt(interaction)
+        limit_status = None
+
+        if not is_limit_exempt:
             allowed, _, _ = self.gen_limiter.check(interaction.user.id)
             if not allowed:
                 await interaction.response.send_message(
@@ -133,7 +136,6 @@ class GameCommands(commands.Cog):
                     ephemeral=True,
                 )
                 return
-            self.gen_limiter.consume(interaction.user.id)
 
         await interaction.response.defer()
 
@@ -169,7 +171,12 @@ class GameCommands(commands.Cog):
         if dl["available"]:
             self.db.mark_as_starred(target_id, game_info["name"])
             self.db.save()
+            if not is_limit_exempt:
+                limit_status = self.gen_limiter.consume(interaction.user.id)
             await self._send_download_followup(interaction, game_info, dl)
+            if limit_status:
+                used, remaining = limit_status
+                await self._send_gen_limit_usage_followup(interaction, used, remaining)
         else:
             await interaction.followup.send(
                 embed=self._embed_unavailable(game_info["name"]),
@@ -447,6 +454,32 @@ class GameCommands(commands.Cog):
         )
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
+    async def _send_gen_limit_usage_followup(
+        self, interaction: discord.Interaction, used: int, remaining: int
+    ):
+        reset_ts = int(self.gen_limiter.reset_at_utc().timestamp())
+        locale = str(getattr(interaction, "locale", "")).lower()
+        guild_locale = str(getattr(interaction, "guild_locale", "")).lower()
+        is_id = locale.startswith("id") or guild_locale.startswith("id")
+
+        if is_id:
+            title = "Sisa limit /gen"
+            description = (
+                f"Terpakai hari ini: **{used}/{GEN_DAILY_LIMIT}**\n"
+                f"Sisa request: **{remaining}**\n"
+                f"Reset global: **00:00 UTC** - <t:{reset_ts}:R>"
+            )
+        else:
+            title = "Daily /gen usage"
+            description = (
+                f"Used today: **{used}/{GEN_DAILY_LIMIT}**\n"
+                f"Remaining requests: **{remaining}**\n"
+                f"Global reset: **00:00 UTC** - <t:{reset_ts}:R>"
+            )
+
+        embed = discord.Embed(title=title, description=description, color=COLOR_INFO)
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
     def _embed_not_found(self, query: str) -> discord.Embed:
         embed = discord.Embed(
             title="❌  Game Not Found",
@@ -476,6 +509,7 @@ class GameCommands(commands.Cog):
         )
         embed.set_footer(text="triadbot  •  This message is only visible to you")
         return embed
+
     def _is_gen_limit_exempt(self, interaction: discord.Interaction) -> bool:
         if is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_NAMES):
             return True
