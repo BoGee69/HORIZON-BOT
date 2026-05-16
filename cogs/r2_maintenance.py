@@ -129,11 +129,14 @@ class R2MaintenanceCommands(commands.Cog):
             await asyncio.sleep(interval_seconds)
 
         while not self.bot.is_closed():
+            if bot_config.R2_MAINTENANCE_RUN_ON_START and bot_config.R2_MAINTENANCE_START_DELAY_SECONDS > 0:
+                await asyncio.sleep(bot_config.R2_MAINTENANCE_START_DELAY_SECONDS)
+
             try:
                 summary = await self._run_threaded(
                     apply_changes=bot_config.R2_MAINTENANCE_APPLY,
                     prefix=bot_config.R2_MAINTENANCE_PREFIX,
-                    limit=max(1, bot_config.R2_MAINTENANCE_MAX_OBJECTS),
+                    limit=max(0, bot_config.R2_MAINTENANCE_MAX_OBJECTS),
                     rename_objects=bot_config.R2_MAINTENANCE_RENAME_OBJECTS,
                     clean_lua=bot_config.R2_MAINTENANCE_CLEAN_LUA_COMMENTS,
                     use_steam=bot_config.R2_MAINTENANCE_STEAM_LOOKUPS,
@@ -178,13 +181,13 @@ class R2MaintenanceCommands(commands.Cog):
             key="r2-maintenance-errors" if summary.errors else "r2-maintenance-applied",
         )
 
-    @app_commands.command(name="r2_maintenance", description="[Admin] Normalize R2 ZIP names and clean Lua comments")
+    @app_commands.command(name="r2_maintenance", description="[Admin] Normalize R2 ZIP names and clean Lua/manifest comments")
     @app_commands.describe(
         apply_changes="True writes changes to R2. False only previews.",
         limit="Maximum ZIP objects to scan this run. Use a small number first.",
         prefix="R2 prefix to scan, for example Database/",
         rename_objects="Rename objects to Game Name (appid).zip",
-        clean_lua="Remove Lua comments inside ZIP files",
+        clean_lua="Remove Lua/manifest comments inside ZIP files",
         use_steam="Fetch missing names from Steam when games.json/cache has no name",
         max_steam_lookups="Maximum Steam name lookups for this run",
     )

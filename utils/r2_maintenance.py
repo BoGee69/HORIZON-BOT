@@ -2,7 +2,7 @@
 R2 database maintenance tools.
 
 This module can normalize ZIP object names to "Game Name (appid).zip" and
-optionally rewrite Lua files inside the ZIPs with comments removed.
+optionally rewrite Lua/manifest files inside the ZIPs with comments removed.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from botocore.exceptions import ClientError
 
 import config as bot_config
 from utils.lua_cleaner import clean_lua_bytes
+from utils.manifest_cleaner import clean_manifest_bytes
 from utils.r2_presign import _BUCKET, _PRESIGN_ENABLED, _make_client
 from utils.rename_database_files import (
     DEFAULT_CACHE_JSON,
@@ -38,8 +39,12 @@ log = logging.getLogger(__name__)
 class ZipCleanResult:
     data: bytes
     changed: bool
+    files_checked: int = 0
+    files_cleaned: int = 0
     lua_files_checked: int = 0
     lua_files_cleaned: int = 0
+    manifest_files_checked: int = 0
+    manifest_files_cleaned: int = 0
 
 
 @dataclass
@@ -50,9 +55,11 @@ class R2MaintenanceSummary:
     processed: int = 0
     rename_planned: int = 0
     rename_applied: int = 0
-    lua_objects_changed: int = 0
-    lua_files_checked: int = 0
+    comment_objects_changed: int = 0
+    comment_files_checked: int = 0
+    comment_files_cleaned: int = 0
     lua_files_cleaned: int = 0
+    manifest_files_cleaned: int = 0
     uploaded: int = 0
     copied: int = 0
     deleted: int = 0
@@ -65,8 +72,10 @@ class R2MaintenanceSummary:
         return bool(
             self.rename_planned
             or self.rename_applied
-            or self.lua_objects_changed
+            or self.comment_objects_changed
+            or self.comment_files_cleaned
             or self.lua_files_cleaned
+            or self.manifest_files_cleaned
             or self.uploaded
             or self.copied
             or self.deleted
@@ -89,7 +98,10 @@ class R2MaintenanceSummary:
             "Processed": str(self.processed),
             "Rename planned": str(self.rename_planned),
             "Rename applied": str(self.rename_applied),
+            "Comment files checked": str(self.comment_files_checked),
+            "Comment files cleaned": str(self.comment_files_cleaned),
             "Lua files cleaned": str(self.lua_files_cleaned),
+            "Manifest files cleaned": str(self.manifest_files_cleaned),
             "Objects uploaded": str(self.uploaded),
             "Skipped": str(self.skipped),
             "Errors": str(len(self.errors)),
@@ -129,23 +141,49 @@ def _copy_zip_info(info: zipfile.ZipInfo) -> zipfile.ZipInfo:
     return copied
 
 
-def clean_zip_lua_comments(data: bytes) -> ZipCleanResult:
+def _cleanable_extension(filename: str) -> str:
+    name = filename.rsplit("/", 1)[-1].lower()
+    if "." not in name:
+        return ""
+    return name.rsplit(".", 1)[-1]
+
+
+def clean_zip_comments(
+    data: bytes,
+    clean_extensions: set[str] | None = None,
+) -> ZipCleanResult:
     changed = False
+    files_checked = 0
+    files_cleaned = 0
     lua_files_checked = 0
     lua_files_cleaned = 0
+    manifest_files_checked = 0
+    manifest_files_cleaned = 0
     out_buffer = BytesIO()
+    extensions = clean_extensions or bot_config.R2_MAINTENANCE_CLEAN_EXTENSIONS
 
     with zipfile.ZipFile(BytesIO(data), "r") as source_zip:
         with zipfile.ZipFile(out_buffer, "w") as target_zip:
             for item in source_zip.infolist():
                 item_data = b"" if item.is_dir() else source_zip.read(item.filename)
-                if not item.is_dir() and item.filename.lower().endswith(".lua"):
-                    lua_files_checked += 1
-                    cleaned = clean_lua_bytes(item_data)
+                ext = _cleanable_extension(item.filename)
+                if not item.is_dir() and ext in extensions:
+                    files_checked += 1
+                    if ext == "lua":
+                        lua_files_checked += 1
+                        cleaned = clean_lua_bytes(item_data)
+                        if cleaned.changed:
+                            lua_files_cleaned += 1
+                    else:
+                        manifest_files_checked += 1
+                        cleaned = clean_manifest_bytes(item_data)
+                        if cleaned.changed:
+                            manifest_files_cleaned += 1
+
                     if cleaned.changed:
                         item_data = cleaned.data
                         changed = True
-                        lua_files_cleaned += 1
+                        files_cleaned += 1
 
                 target_zip.writestr(_copy_zip_info(item), item_data)
 
@@ -153,16 +191,28 @@ def clean_zip_lua_comments(data: bytes) -> ZipCleanResult:
         return ZipCleanResult(
             data=data,
             changed=False,
+            files_checked=files_checked,
+            files_cleaned=0,
             lua_files_checked=lua_files_checked,
             lua_files_cleaned=0,
+            manifest_files_checked=manifest_files_checked,
+            manifest_files_cleaned=0,
         )
 
     return ZipCleanResult(
         data=out_buffer.getvalue(),
         changed=True,
+        files_checked=files_checked,
+        files_cleaned=files_cleaned,
         lua_files_checked=lua_files_checked,
         lua_files_cleaned=lua_files_cleaned,
+        manifest_files_checked=manifest_files_checked,
+        manifest_files_cleaned=manifest_files_cleaned,
     )
+
+
+def clean_zip_lua_comments(data: bytes) -> ZipCleanResult:
+    return clean_zip_comments(data, {"lua"})
 
 
 def _load_games_from_json(path: Path = DEFAULT_DB_JSON) -> list[dict[str, Any]]:
@@ -286,6 +336,7 @@ def run_r2_maintenance(
     max_steam_lookups: int = bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS,
     max_zip_mb: int = bot_config.R2_MAINTENANCE_MAX_ZIP_MB,
     steam_delay_seconds: float = bot_config.R2_MAINTENANCE_STEAM_DELAY_SECONDS,
+    clean_extensions: set[str] | None = None,
 ) -> R2MaintenanceSummary:
     summary = R2MaintenanceSummary(dry_run=not apply, prefix=prefix or "")
     if not _PRESIGN_ENABLED:
@@ -361,21 +412,23 @@ def run_r2_maintenance(
             if clean_lua_comments:
                 if source_size > max_zip_bytes:
                     summary.skipped += 1
-                    summary.add_sample(f"skip lua clean: {source_key} ({source_size} bytes exceeds limit)")
+                    summary.add_sample(f"skip comment clean: {source_key} ({source_size} bytes exceeds limit)")
                 else:
                     response = client.get_object(Bucket=_BUCKET, Key=source_key)
                     body = response["Body"].read()
-                    zip_result = clean_zip_lua_comments(body)
-                    summary.lua_files_checked += zip_result.lua_files_checked
+                    zip_result = clean_zip_comments(body, clean_extensions)
+                    summary.comment_files_checked += zip_result.files_checked
+                    summary.comment_files_cleaned += zip_result.files_cleaned
                     summary.lua_files_cleaned += zip_result.lua_files_cleaned
+                    summary.manifest_files_cleaned += zip_result.manifest_files_cleaned
                     if zip_result.changed:
-                        summary.lua_objects_changed += 1
+                        summary.comment_objects_changed += 1
 
             if summary.dry_run:
                 if needs_rename:
                     summary.add_sample(f"rename: {source_key} -> {target_key}")
                 if zip_result and zip_result.changed:
-                    summary.add_sample(f"clean lua: {source_key} ({zip_result.lua_files_cleaned} file(s))")
+                    summary.add_sample(f"clean comments: {source_key} ({zip_result.files_cleaned} file(s))")
                 continue
 
             if zip_result and zip_result.changed:
@@ -416,7 +469,12 @@ def main() -> int:
     parser.add_argument("--prefix", default=bot_config.R2_MAINTENANCE_PREFIX)
     parser.add_argument("--limit", type=int, default=bot_config.R2_MAINTENANCE_MAX_OBJECTS)
     parser.add_argument("--no-rename", action="store_true")
-    parser.add_argument("--no-clean-lua", action="store_true")
+    parser.add_argument("--no-clean-lua", "--no-clean-comments", action="store_true")
+    parser.add_argument(
+        "--clean-extensions",
+        default=",".join(sorted(bot_config.R2_MAINTENANCE_CLEAN_EXTENSIONS)),
+        help="Comma-separated extensions to clean inside ZIP files.",
+    )
     parser.add_argument("--steam", action="store_true", help="Fetch missing names from Steam.")
     parser.add_argument("--max-steam", type=int, default=bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS)
     parser.add_argument("--steam-delay", type=float, default=bot_config.R2_MAINTENANCE_STEAM_DELAY_SECONDS)
@@ -431,6 +489,7 @@ def main() -> int:
         use_steam=args.steam,
         max_steam_lookups=args.max_steam,
         steam_delay_seconds=args.steam_delay,
+        clean_extensions={item.strip().lower().lstrip(".") for item in args.clean_extensions.split(",") if item.strip()},
     )
 
     print("R2 maintenance summary")

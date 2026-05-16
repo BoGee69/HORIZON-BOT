@@ -29,6 +29,15 @@ def parse_bool(value: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def parse_csv_set(value: str, default: str = "") -> set[str]:
+    raw = value if value is not None else default
+    return {
+        item.strip().lower().lstrip(".")
+        for item in raw.split(",")
+        if item.strip()
+    }
+
+
 def env_path(name: str, default: Path) -> Path:
     raw = os.getenv(name, "").strip()
     path = Path(raw) if raw else default
@@ -101,13 +110,22 @@ LINK_EXPIRE_SECONDS  = int(os.getenv("LINK_EXPIRE_SECONDS", "3600"))
 
 R2_MAINTENANCE_ENABLED = parse_bool(os.getenv("R2_MAINTENANCE_ENABLED", "false"), False)
 R2_MAINTENANCE_APPLY = parse_bool(os.getenv("R2_MAINTENANCE_APPLY", "false"), False)
-R2_MAINTENANCE_RUN_ON_START = parse_bool(os.getenv("R2_MAINTENANCE_RUN_ON_START", "false"), False)
+R2_MAINTENANCE_RUN_ON_START = parse_bool(os.getenv("R2_MAINTENANCE_RUN_ON_START", "true"), True)
+R2_MAINTENANCE_START_DELAY_SECONDS = float(os.getenv("R2_MAINTENANCE_START_DELAY_SECONDS", "10"))
 R2_MAINTENANCE_INTERVAL_HOURS = float(os.getenv("R2_MAINTENANCE_INTERVAL_HOURS", "24"))
 R2_MAINTENANCE_PREFIX = os.getenv("R2_MAINTENANCE_PREFIX", "Database/")
 R2_MAINTENANCE_MAX_OBJECTS = int(os.getenv("R2_MAINTENANCE_MAX_OBJECTS", "100"))
 R2_MAINTENANCE_MAX_ZIP_MB = int(os.getenv("R2_MAINTENANCE_MAX_ZIP_MB", "50"))
 R2_MAINTENANCE_RENAME_OBJECTS = parse_bool(os.getenv("R2_MAINTENANCE_RENAME_OBJECTS", "true"), True)
-R2_MAINTENANCE_CLEAN_LUA_COMMENTS = parse_bool(os.getenv("R2_MAINTENANCE_CLEAN_LUA_COMMENTS", "true"), True)
+R2_MAINTENANCE_CLEAN_COMMENTS = parse_bool(
+    os.getenv("R2_MAINTENANCE_CLEAN_COMMENTS", os.getenv("R2_MAINTENANCE_CLEAN_LUA_COMMENTS", "true")),
+    True,
+)
+R2_MAINTENANCE_CLEAN_LUA_COMMENTS = R2_MAINTENANCE_CLEAN_COMMENTS
+R2_MAINTENANCE_CLEAN_EXTENSIONS = parse_csv_set(
+    os.getenv("R2_MAINTENANCE_CLEAN_EXTENSIONS", "lua,manifest,acf,vdf"),
+    "lua,manifest,acf,vdf",
+)
 R2_MAINTENANCE_STEAM_LOOKUPS = parse_bool(os.getenv("R2_MAINTENANCE_STEAM_LOOKUPS", "false"), False)
 R2_MAINTENANCE_MAX_STEAM_LOOKUPS = int(os.getenv("R2_MAINTENANCE_MAX_STEAM_LOOKUPS", "25"))
 R2_MAINTENANCE_STEAM_DELAY_SECONDS = float(os.getenv("R2_MAINTENANCE_STEAM_DELAY_SECONDS", "0.12"))
