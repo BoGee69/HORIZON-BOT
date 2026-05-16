@@ -4,6 +4,7 @@ Steam Game Database & Download Manager Bot
 import asyncio
 import logging
 import sys
+import traceback
 from pathlib import Path
 
 import discord
@@ -19,7 +20,9 @@ from config import (
     LOG_LEVEL, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT,
     JWT_SECRET, PORT,
 )
+from utils.alerts import AdminNotifier
 from utils.database import DatabaseManager
+from utils.diagnostics import collect_health
 from utils.r2_presign import generate_presigned_url
 
 logging.basicConfig(
@@ -54,12 +57,15 @@ class SteamBot(commands.Bot):
         self.start_time = discord.utils.utcnow()
         self.session: aiohttp.ClientSession | None = None
         self.db         = DatabaseManager()
+        self.notifier   = AdminNotifier(self)
+        self._ready_notified = False
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
         log.info("✅ HTTP session created")
         self.db.load()
         await self.load_cogs()
+        self.tree.on_error = self.on_app_command_error
 
         # FIX: asyncio.create_task() — self.loop deprecated di discord.py 2.x
         asyncio.create_task(self.start_web_server())
@@ -72,12 +78,17 @@ class SteamBot(commands.Bot):
 
     async def start_web_server(self):
         app = web.Application()
+        app.router.add_get("/health", self.handle_health)
         app.router.add_get("/download/{appid}", self.handle_download)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", PORT)
         await site.start()
         log.info(f"🌐 Web API running on port {PORT}")
+
+    async def handle_health(self, request):
+        health = await collect_health(self)
+        return web.json_response(health, status=200 if health["ok"] else 503)
 
     async def handle_download(self, request):
         """
@@ -113,6 +124,9 @@ class SteamBot(commands.Bot):
 
         return web.Response(text="❌ File tidak ditemukan di storage.", status=404)
 
+    async def notify_admins(self, *args, **kwargs) -> int:
+        return await self.notifier.send(*args, **kwargs)
+
     async def load_cogs(self):
         cogs_dir = Path(__file__).parent / "cogs"
         if not cogs_dir.exists():
@@ -144,8 +158,66 @@ class SteamBot(commands.Bot):
             activity=discord.Activity(type=discord.ActivityType.playing, name="/gen to generate game")
         )
 
+        if not self._ready_notified:
+            self._ready_notified = True
+            await self.notify_admins(
+                "triadbot is online",
+                "Bot started successfully and is ready to receive commands.",
+                level="info",
+                fields={
+                    "Version": self.version,
+                    "Guilds": str(len(self.guilds)),
+                    "Health endpoint": "/health",
+                },
+                key="bot-ready",
+                force=True,
+            )
+
     async def on_guild_join(self, guild):
         log.info(f"➕ Joined guild: {guild.name}")
+
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error):
+        command_name = getattr(getattr(interaction, "command", None), "qualified_name", "unknown")
+        user_text = f"{interaction.user} ({interaction.user.id})" if interaction.user else "unknown"
+        guild_text = f"{interaction.guild} ({interaction.guild.id})" if interaction.guild else "DM"
+
+        log.error("Slash command error in %s: %s", command_name, error, exc_info=error)
+        await self.notify_admins(
+            "Slash command error",
+            f"Command `/{command_name}` failed.",
+            level="error",
+            fields={
+                "User": user_text,
+                "Guild": guild_text,
+                "Error": repr(error)[:1000],
+            },
+            key=f"slash-error-{command_name}-{type(error).__name__}",
+        )
+
+        embed = discord.Embed(
+            title="Command failed",
+            description="Something went wrong while processing this command. The admin has been notified.",
+            color=0xE74C3C,
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            pass
+
+    async def on_error(self, event_method, *args, **kwargs):
+        trace = traceback.format_exc()
+        log.error("Unhandled Discord event error in %s:\n%s", event_method, trace)
+        await self.notify_admins(
+            "Unhandled bot event error",
+            f"Event `{event_method}` failed.",
+            level="error",
+            fields={"Traceback": trace[-1000:]},
+            key=f"event-error-{event_method}",
+        )
 
 
 async def main():

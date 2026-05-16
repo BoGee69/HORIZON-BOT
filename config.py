@@ -23,6 +23,12 @@ def parse_id_set(value: str) -> set[int]:
     return set(parse_id_list(value))
 
 
+def parse_bool(value: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def env_path(name: str, default: Path) -> Path:
     raw = os.getenv(name, "").strip()
     path = Path(raw) if raw else default
@@ -45,6 +51,9 @@ if not DISCORD_TOKEN:
     raise ValueError("DISCORD_TOKEN not found in environment variables")
 
 ADMIN_IDS = parse_id_list(os.getenv("ADMIN_IDS", "562612184333680709"))
+ADMIN_ALERT_IDS = parse_id_list(os.getenv("ADMIN_ALERT_IDS", "")) or ADMIN_IDS
+ADMIN_ALERT_COOLDOWN_SECONDS = int(os.getenv("ADMIN_ALERT_COOLDOWN_SECONDS", "300"))
+ALERT_ON_LIMIT_HIT = parse_bool(os.getenv("ALERT_ON_LIMIT_HIT", "true"), True)
 ADMIN_ROLE_IDS = parse_id_set(os.getenv("ADMIN_ROLE_IDS", ""))
 ADMIN_ROLE_NAMES = {
     x.strip().lower()

@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import (
-    ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES,
+    ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES, ALERT_ON_LIMIT_HIT,
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
     BOOSTER_ROLE_IDS, BOOSTER_ROLE_NAMES, DEFAULT_CC, DONOR_ROLE_IDS, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
     LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET,
@@ -134,6 +134,8 @@ class GameCommands(commands.Cog):
         if not is_limit_exempt:
             allowed, _, _ = self.gen_limiter.check(interaction.user.id)
             if not allowed:
+                if ALERT_ON_LIMIT_HIT:
+                    await self._alert_limit_hit(interaction)
                 await interaction.response.send_message(
                     embed=self._embed_gen_limited(interaction),
                     ephemeral=True,
@@ -158,7 +160,7 @@ class GameCommands(commands.Cog):
 
         steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
         if not steam_data:
-            await interaction.edit_original_response(embed=self._embed_not_found(query))
+            await interaction.edit_original_response(embed=self._embed_steam_unavailable(query))
             return
 
         game_info = self.steam_api.extract_game_info(steam_data)
@@ -291,6 +293,31 @@ class GameCommands(commands.Cog):
                 await interaction.response.send_message(embed=embed, ephemeral=True)
         else:
             log.error(f"/gen error: {error}", exc_info=error)
+            notifier = getattr(self.bot, "notify_admins", None)
+            if notifier:
+                await notifier(
+                    "/gen command error",
+                    "A `/gen` request failed unexpectedly.",
+                    level="error",
+                    fields={
+                        "User": f"{interaction.user} ({interaction.user.id})",
+                        "Guild": str(interaction.guild or "DM"),
+                        "Error": repr(error)[:1000],
+                    },
+                    key=f"gen-error-{type(error).__name__}",
+                )
+            embed = discord.Embed(
+                title="Download request failed",
+                description="Something went wrong while processing `/gen`. The admin has been notified.",
+                color=COLOR_ERROR,
+            )
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception:
+                pass
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
@@ -335,6 +362,19 @@ class GameCommands(commands.Cog):
                                 final_url = f"{WEB_URL}/download/{appid}?token={token}"
                             except Exception as jwt_err:
                                 log.warning(f"JWT encode failed: {jwt_err}")
+                                notifier = getattr(self.bot, "notify_admins", None)
+                                if notifier:
+                                    await notifier(
+                                        "JWT download link error",
+                                        "The bot could not create a JWT download link.",
+                                        level="error",
+                                        fields={
+                                            "App ID": str(appid),
+                                            "R2 key": key,
+                                            "Error": repr(jwt_err)[:1000],
+                                        },
+                                        key="jwt-download-link-error",
+                                    )
 
                         return {
                             "available":  True,
@@ -483,6 +523,23 @@ class GameCommands(commands.Cog):
         embed = discord.Embed(title=title, description=description, color=COLOR_INFO)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+    async def _alert_limit_hit(self, interaction: discord.Interaction):
+        notifier = getattr(self.bot, "notify_admins", None)
+        if not notifier:
+            return
+        await notifier(
+            "User hit daily /gen limit",
+            "A regular user tried to use `/gen` after reaching the daily limit.",
+            level="warning",
+            fields={
+                "User": f"{interaction.user} ({interaction.user.id})",
+                "Guild": str(interaction.guild or "DM"),
+                "Limit": str(GEN_DAILY_LIMIT),
+                "Reset": self.gen_limiter.reset_at_utc().isoformat(),
+            },
+            key=f"gen-limit-{interaction.user.id}-{self.gen_limiter.usage_date}",
+        )
+
     def _embed_not_found(self, query: str) -> discord.Embed:
         embed = discord.Embed(
             title="❌  Game Not Found",
@@ -495,6 +552,18 @@ class GameCommands(commands.Cog):
             color=COLOR_ERROR,
         )
         embed.set_footer(text="triadbot  •  Steam Database")
+        return embed
+
+    def _embed_steam_unavailable(self, query: str) -> discord.Embed:
+        embed = discord.Embed(
+            title="Steam Data Unavailable",
+            description=(
+                f"I could not fetch Steam data for **{query}** right now.\n\n"
+                "Please try again in a moment. If this keeps happening, the admin will need to check Steam/API logs."
+            ),
+            color=COLOR_WARNING,
+        )
+        embed.set_footer(text="triadbot  -  Steam Store")
         return embed
 
     def _embed_unavailable(self, game_name: str) -> discord.Embed:

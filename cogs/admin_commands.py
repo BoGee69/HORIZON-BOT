@@ -14,11 +14,13 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import config as bot_config
 from config import (
     ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES, ADMIN_WEBHOOK, COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO,
     COLOR_SUCCESS, COLOR_WARNING, GEN_DAILY_LIMIT, GEN_USAGE_PATH, R2_BASE_URL,
 )
-from utils.helpers import format_number, format_size, is_admin_interaction
+from utils.diagnostics import collect_health, yes_no
+from utils.helpers import format_number, format_size, has_any_role_id, has_any_role_name, is_admin_interaction
 from utils.gen_limits import DailyGenLimiter
 
 log = logging.getLogger(__name__)
@@ -32,6 +34,19 @@ def admin_check():
     """app_commands check — admin only."""
     async def predicate(interaction: discord.Interaction) -> bool:
         if not is_admin(interaction):
+            notifier = getattr(interaction.client, "notify_admins", None)
+            if notifier:
+                await notifier(
+                    "Unauthorized admin command attempt",
+                    "A user tried to run an admin-only command.",
+                    level="warning",
+                    fields={
+                        "User": f"{interaction.user} ({interaction.user.id})",
+                        "Command": getattr(getattr(interaction, "command", None), "qualified_name", "unknown"),
+                        "Guild": str(interaction.guild or "DM"),
+                    },
+                    key=f"unauthorized-admin-{interaction.user.id}",
+                )
             await interaction.response.send_message(
                 embed=discord.Embed(
                     title="🚫 Access Denied",
@@ -84,6 +99,148 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="🔝 Last AppID",   value=format_number(stats["last_appid"]),                    inline=True)
         embed.add_field(name="☁️ R2 URL",       value=R2_BASE_URL or "❌ Not configured",                    inline=False)
         embed.set_footer(text=f"Requested by {interaction.user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="config_status", description="[Admin] Check runtime config, storage, and alerts")
+    @admin_check()
+    async def config_status(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+
+        health = await collect_health(self.bot)
+        checks = health["checks"]
+        paths = health["paths"]
+        roles = health["roles"]
+        r2 = health["r2"]
+
+        embed = discord.Embed(
+            title="Runtime Config Status",
+            color=COLOR_SUCCESS if health["ok"] else COLOR_WARNING,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(
+            name="Core",
+            value=(
+                f"Discord ready: `{yes_no(checks['discord_ready'])}`\n"
+                f"HTTP session: `{yes_no(checks['http_session_open'])}`\n"
+                f"JWT secret: `{yes_no(checks['jwt_secret_configured'])}`\n"
+                f"WEB_URL: `{bot_config.WEB_URL}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Storage",
+            value=(
+                f"GEN_USAGE_PATH: `{paths['gen_usage_path']}`\n"
+                f"Writable: `{yes_no(checks['gen_usage_path_writable'])}`\n"
+                f"Status: `{paths['gen_usage_parent_status']}`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="R2",
+            value=(
+                f"Public URL: `{yes_no(r2['public_base_url_configured'])}`\n"
+                f"Presign: `{yes_no(r2['presign_enabled'])}`\n"
+                f"Bucket: `{yes_no(r2['bucket_configured'])}`\n"
+                f"Link expiry: `{r2['link_expire_seconds']}s`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Roles",
+            value=(
+                f"Admin role IDs: `{roles['admin_role_ids']}`\n"
+                f"Donor role IDs: `{roles['donor_role_ids']}`\n"
+                f"Booster role IDs: `{roles['booster_role_ids']}`\n"
+                f"Fallback names: donor={roles['donor_role_names']}, booster={roles['booster_role_names']}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Alerts",
+            value=(
+                f"DM admins: `{len(bot_config.ADMIN_ALERT_IDS)}`\n"
+                f"Cooldown: `{bot_config.ADMIN_ALERT_COOLDOWN_SECONDS}s`\n"
+                f"Limit hit alerts: `{bot_config.ALERT_ON_LIMIT_HIT}`"
+            ),
+            inline=False,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="role_debug", description="[Admin] Explain why a member is limited or exempt")
+    @app_commands.describe(member="Server member to inspect")
+    @admin_check()
+    async def role_debug(self, interaction: discord.Interaction, member: discord.Member):
+        await interaction.response.defer(ephemeral=True)
+
+        is_admin_user = is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES)
+        target_admin = (
+            member.id in ADMIN_IDS
+            or (interaction.guild and interaction.guild.owner_id == member.id)
+            or bool(getattr(member.guild_permissions, "administrator", False))
+            or has_any_role_id(member, ADMIN_ROLE_IDS)
+            or has_any_role_name(member, ADMIN_ROLE_NAMES)
+        )
+        donor_id = has_any_role_id(member, bot_config.DONOR_ROLE_IDS)
+        donor_name = has_any_role_name(member, bot_config.DONOR_ROLE_NAMES)
+        booster_id = has_any_role_id(member, bot_config.BOOSTER_ROLE_IDS)
+        booster_name = has_any_role_name(member, bot_config.BOOSTER_ROLE_NAMES)
+        exempt = target_admin or donor_id or donor_name or booster_id or booster_name
+        allowed, used, remaining = self.gen_limiter.check(member.id)
+
+        reasons = []
+        if target_admin:
+            reasons.append("admin/owner/admin permission")
+        if donor_id:
+            reasons.append("donor role ID")
+        if donor_name:
+            reasons.append("donor role name")
+        if booster_id:
+            reasons.append("booster role ID")
+        if booster_name:
+            reasons.append("booster role name")
+
+        embed = discord.Embed(
+            title="Role Debug",
+            description=f"{member.mention} (`{member.id}`)",
+            color=COLOR_SUCCESS if exempt or allowed else COLOR_WARNING,
+        )
+        embed.add_field(name="Limit exempt?", value="Yes" if exempt else "No", inline=True)
+        embed.add_field(name="Reason", value=", ".join(reasons) or "No exemption matched", inline=False)
+        embed.add_field(name="Usage", value=f"{used}/{GEN_DAILY_LIMIT} used, {remaining} remaining", inline=False)
+        embed.add_field(
+            name="Role IDs",
+            value=", ".join(str(role.id) for role in member.roles if role.name != "@everyone") or "-",
+            inline=False,
+        )
+        embed.add_field(
+            name="Role names",
+            value=", ".join(role.name for role in member.roles if role.name != "@everyone") or "-",
+            inline=False,
+        )
+        embed.set_footer(text=f"Checked by admin: {interaction.user} | Admin check: {is_admin_user}")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="alert_test", description="[Admin] Send a test DM alert to configured admins")
+    @admin_check()
+    async def alert_test(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        delivered = await self.bot.notify_admins(
+            "Test alert from triadbot",
+            "DM alert delivery is working.",
+            level="info",
+            fields={
+                "Triggered by": f"{interaction.user} ({interaction.user.id})",
+                "Guild": str(interaction.guild or "DM"),
+            },
+            key=f"alert-test-{interaction.user.id}",
+            force=True,
+        )
+        embed = discord.Embed(
+            title="Alert Test Sent" if delivered else "Alert Test Failed",
+            description=f"Delivered to **{delivered}** admin account(s).",
+            color=COLOR_SUCCESS if delivered else COLOR_WARNING,
+        )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # Daily /gen limit tools

@@ -23,7 +23,7 @@ class BoosterRoles(commands.Cog):
         role = await self._get_or_create_booster_role(after.guild)
         if not role:
             return
-        if not self._can_manage_role(after.guild, role):
+        if not await self._can_manage_role(after.guild, role):
             return
 
         try:
@@ -38,8 +38,20 @@ class BoosterRoles(commands.Cog):
                 "Cannot manage Booster role in %s. Check Manage Roles permission and role hierarchy.",
                 after.guild,
             )
+            await self._alert(
+                "Booster role update failed",
+                "Discord rejected the Booster role update.",
+                after.guild,
+                {"Member": f"{after} ({after.id})", "Reason": "Forbidden"},
+            )
         except discord.HTTPException as exc:
             log.warning("Failed to update Booster role for %s: %s", after, exc)
+            await self._alert(
+                "Booster role update failed",
+                "Discord returned an HTTP error while updating Booster role.",
+                after.guild,
+                {"Member": f"{after} ({after.id})", "Error": str(exc)},
+            )
 
     async def _get_or_create_booster_role(self, guild: discord.Guild) -> discord.Role | None:
         role = discord.utils.find(
@@ -59,6 +71,12 @@ class BoosterRoles(commands.Cog):
         me = guild.me
         if not me or not me.guild_permissions.manage_roles:
             log.warning("Cannot create Booster role in %s: missing Manage Roles permission.", guild)
+            await self._alert(
+                "Booster role create failed",
+                "Bot cannot create the Booster role because Manage Roles is missing.",
+                guild,
+                {"Required fix": "Enable Manage Roles for the bot role."},
+            )
             return None
 
         try:
@@ -68,15 +86,32 @@ class BoosterRoles(commands.Cog):
             )
         except discord.Forbidden:
             log.warning("Cannot create Booster role in %s. Check role permissions.", guild)
+            await self._alert(
+                "Booster role create failed",
+                "Discord rejected Booster role creation.",
+                guild,
+                {"Required fix": "Check Manage Roles permission and role hierarchy."},
+            )
         except discord.HTTPException as exc:
             log.warning("Failed to create Booster role in %s: %s", guild, exc)
+            await self._alert(
+                "Booster role create failed",
+                "Discord returned an HTTP error while creating Booster role.",
+                guild,
+                {"Error": str(exc)},
+            )
         return None
 
-    @staticmethod
-    def _can_manage_role(guild: discord.Guild, role: discord.Role) -> bool:
+    async def _can_manage_role(self, guild: discord.Guild, role: discord.Role) -> bool:
         me = guild.me
         if not me or not me.guild_permissions.manage_roles:
             log.warning("Cannot manage Booster role in %s: missing Manage Roles permission.", guild)
+            await self._alert(
+                "Booster role permission problem",
+                "Bot cannot manage Booster role because Manage Roles is missing.",
+                guild,
+                {"Role": f"{role.name} ({role.id})"},
+            )
             return False
         if role >= me.top_role:
             log.warning(
@@ -84,8 +119,32 @@ class BoosterRoles(commands.Cog):
                 guild,
                 role.name,
             )
+            await self._alert(
+                "Booster role hierarchy problem",
+                "Bot cannot manage Booster role because the bot role is not above it.",
+                guild,
+                {
+                    "Booster role": f"{role.name} ({role.id})",
+                    "Bot top role": f"{me.top_role.name} ({me.top_role.id})",
+                    "Required fix": "Move the bot role above the Booster role.",
+                },
+            )
             return False
         return True
+
+    async def _alert(self, title: str, description: str, guild: discord.Guild, fields: dict[str, str]):
+        notifier = getattr(self.bot, "notify_admins", None)
+        if not notifier:
+            return
+        payload = {"Guild": f"{guild.name} ({guild.id})"}
+        payload.update(fields)
+        await notifier(
+            title,
+            description,
+            level="error",
+            fields=payload,
+            key=f"{title}-{guild.id}",
+        )
 
 
 async def setup(bot):
