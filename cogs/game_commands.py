@@ -285,7 +285,7 @@ class GameCommands(commands.Cog):
                 continue
 
             try:
-                async with self.bot.session.head(
+                async with self.bot.session.get(
                     check_url,
                     timeout=aiohttp.ClientTimeout(total=8),
                     allow_redirects=True,
