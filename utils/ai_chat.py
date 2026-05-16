@@ -11,6 +11,7 @@ from typing import Any
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, call_gemini, sanitize_data, sanitize_text
 from utils.diagnostics import collect_health
+from utils.r2_inventory import get_r2_inventory_snapshot_async
 
 
 class AIChatMemory:
@@ -70,7 +71,20 @@ def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
 async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, history: list[dict[str, str]]) -> str:
     health = await collect_health(bot)
     recent_events = getattr(bot, "ai_events", None)
+    r2_inventory = None
+    if bot_config.AI_CHAT_R2_STATS_ENABLED:
+        r2_inventory = await get_r2_inventory_snapshot_async(
+            prefix=bot_config.R2_MAINTENANCE_PREFIX,
+            cache_seconds=bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
+            max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
+        )
     context = {
+        "r2_inventory": sanitize_data(r2_inventory),
+        "counting_notes": {
+            "database_total_games": "games.json / Steam catalog entries, not the R2 ZIP file count",
+            "database_with_files": "games.json entries marked as having a file, not a live R2 object count",
+            "r2_zip_objects_counted": "actual ZIP objects counted live from R2 under the configured prefix when r2_inventory is available",
+        },
         "bot_health": _compact_health(health),
         "recent_events": recent_events.snapshot(8) if recent_events else [],
         "last_r2_maintenance": sanitize_data(
@@ -80,7 +94,7 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
             getattr(getattr(bot, "last_steam_db_sync_summary", None), "to_fields", lambda: None)()
         ),
     }
-    context_json = json.dumps(context, ensure_ascii=False, sort_keys=True)
+    context_json = json.dumps(context, ensure_ascii=False)
     history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
     message = sanitize_text(user_message)[: bot_config.AI_CHAT_MAX_MESSAGE_CHARS]
     reply_language = _detect_reply_language(message)
@@ -106,6 +120,12 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
         "Do not assist piracy, license bypassing, account abuse, or platform abuse. Focus on security, reliability, "
         "maintenance, and legitimate usage.\n"
         "Keep answers concise, clear, and based on system status when relevant.\n\n"
+        "Counting rule: never use bot_health.database.total_games as the count of files, ZIP files, "
+        "or R2 objects. That number is the Steam catalog size in games.json. "
+        "For questions about R2 files, ZIP files, stored objects, or actual uploaded game archives, "
+        "use r2_inventory.zip_objects_counted when available. If r2_inventory has an error or is unavailable, "
+        "say that I cannot verify the live R2 file count right now. "
+        "For questions about catalog/database entries only, use bot_health.database.total_games.\n\n"
         f"Discord username, only for context and not for addressing unless asked: {sanitize_text(user_name)}\n"
         f"Safe bot context:\n{context_json[:6000]}\n\n"
         f"Short chat history:\n{history_json[:5000]}\n\n"

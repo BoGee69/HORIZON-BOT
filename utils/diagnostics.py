@@ -130,6 +130,9 @@ async def collect_health(bot) -> dict[str, Any]:
             "max_history": bot_config.AI_CHAT_MAX_HISTORY,
             "cooldown_seconds": bot_config.AI_CHAT_COOLDOWN_SECONDS,
             "max_reply_chars": bot_config.AI_CHAT_MAX_REPLY_CHARS,
+            "r2_stats_enabled": bool(bot_config.AI_CHAT_R2_STATS_ENABLED),
+            "r2_stats_cache_seconds": bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
+            "r2_stats_max_pages": bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
         },
     }
 

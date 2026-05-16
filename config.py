@@ -167,6 +167,9 @@ AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "12"))
 AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
 AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))
 AI_CHAT_MAX_MESSAGE_CHARS = int(os.getenv("AI_CHAT_MAX_MESSAGE_CHARS", "1800"))
+AI_CHAT_R2_STATS_ENABLED = parse_bool(os.getenv("AI_CHAT_R2_STATS_ENABLED", "true"), True)
+AI_CHAT_R2_STATS_CACHE_SECONDS = int(os.getenv("AI_CHAT_R2_STATS_CACHE_SECONDS", "900"))
+AI_CHAT_R2_STATS_MAX_PAGES = int(os.getenv("AI_CHAT_R2_STATS_MAX_PAGES", "2000"))
 
 STEAM_API_KEY    = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API  = "https://store.steampowered.com/api/appdetails"

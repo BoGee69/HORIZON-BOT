@@ -238,7 +238,9 @@ class AdminCommands(commands.Cog):
                 f"Model: `{ai_chat['model']}`\n"
                 f"Allowed IDs: `{yes_no(ai_chat['allowed_ids_configured'])}`\n"
                 f"History: `{ai_chat['max_history']}`\n"
-                f"Cooldown: `{ai_chat['cooldown_seconds']}s`"
+                f"Cooldown: `{ai_chat['cooldown_seconds']}s`\n"
+                f"R2 file stats: `{ai_chat['r2_stats_enabled']}`\n"
+                f"R2 stats cache: `{ai_chat['r2_stats_cache_seconds']}s`"
             ),
             inline=False,
         )
