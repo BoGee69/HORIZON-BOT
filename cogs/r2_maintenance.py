@@ -73,6 +73,12 @@ def _summary_embed(summary: R2MaintenanceSummary, title: str = "R2 Maintenance")
             value="\n".join(f"- {item}" for item in summary.samples)[:1024],
             inline=False,
         )
+    if summary.applied_samples:
+        embed.add_field(
+            name="Applied samples",
+            value="\n".join(f"- {item}" for item in summary.applied_samples)[:1024],
+            inline=False,
+        )
     if summary.errors:
         embed.add_field(
             name="Errors",
@@ -177,6 +183,8 @@ class R2MaintenanceCommands(commands.Cog):
             return
 
         fields = summary.to_fields()
+        if summary.applied_samples:
+            fields["Applied samples"] = "\n".join(summary.applied_samples)
         if summary.samples:
             fields["Samples"] = "\n".join(summary.samples)
         if summary.errors:

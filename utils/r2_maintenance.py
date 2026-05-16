@@ -71,6 +71,7 @@ class R2MaintenanceSummary:
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
+    applied_samples: list[str] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
@@ -90,6 +91,10 @@ class R2MaintenanceSummary:
     def add_sample(self, message: str, limit: int = 8) -> None:
         if len(self.samples) < limit:
             self.samples.append(message[:300])
+
+    def add_applied_sample(self, message: str, limit: int = 12) -> None:
+        if len(self.applied_samples) < limit:
+            self.applied_samples.append(message[:300])
 
     def add_error(self, message: str, limit: int = 10) -> None:
         log.error(message)
@@ -580,6 +585,9 @@ def run_r2_maintenance(
                 summary.uploaded += 1
                 if needs_rename:
                     summary.rename_applied += 1
+                    summary.add_applied_sample(f"rename+upload: {source_key} -> {target_key}")
+                else:
+                    summary.add_applied_sample(f"clean+upload: {source_key}")
                 _delete_source_if_needed(client, source_key, target_key, summary)
                 continue
 
@@ -592,6 +600,7 @@ def run_r2_maintenance(
                 )
                 summary.copied += 1
                 summary.rename_applied += 1
+                summary.add_applied_sample(f"rename: {source_key} -> {target_key}")
                 _delete_source_if_needed(client, source_key, target_key, summary)
 
         except zipfile.BadZipFile:
@@ -664,6 +673,10 @@ def main() -> int:
     if summary.samples:
         print("\nSamples")
         for sample in summary.samples:
+            print(f"- {sample}")
+    if summary.applied_samples:
+        print("\nApplied samples")
+        for sample in summary.applied_samples:
             print(f"- {sample}")
     if summary.errors:
         print("\nErrors")
