@@ -23,6 +23,7 @@ from config import (
 from utils.alerts import AdminNotifier
 from utils.database import DatabaseManager
 from utils.diagnostics import collect_health
+from utils.legal_pages import PRIVACY_HTML, TERMS_HTML
 from utils.r2_presign import generate_presigned_url
 
 logging.basicConfig(
@@ -79,6 +80,8 @@ class SteamBot(commands.Bot):
     async def start_web_server(self):
         app = web.Application()
         app.router.add_get("/health", self.handle_health)
+        app.router.add_get("/terms", self.handle_terms)
+        app.router.add_get("/privacy", self.handle_privacy)
         app.router.add_get("/download/{appid}", self.handle_download)
         runner = web.AppRunner(app)
         await runner.setup()
@@ -89,6 +92,12 @@ class SteamBot(commands.Bot):
     async def handle_health(self, request):
         health = await collect_health(self)
         return web.json_response(health, status=200 if health["ok"] else 503)
+
+    async def handle_terms(self, request):
+        return web.Response(text=TERMS_HTML, content_type="text/html")
+
+    async def handle_privacy(self, request):
+        return web.Response(text=PRIVACY_HTML, content_type="text/html")
 
     async def handle_download(self, request):
         """
