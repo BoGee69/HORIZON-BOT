@@ -48,6 +48,7 @@ class SteamBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.members = True
         super().__init__(command_prefix=BOT_PREFIX, intents=intents, description=BOT_DESCRIPTION)
         self.version    = BOT_VERSION
         self.start_time = discord.utils.utcnow()

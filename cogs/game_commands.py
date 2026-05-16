@@ -16,7 +16,7 @@ from discord.ext import commands
 from config import (
     ADMIN_IDS, ADMIN_ROLE_NAMES,
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
-    DEFAULT_CC, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
+    BOOSTER_ROLE_NAMES, DEFAULT_CC, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
     LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET,
 )
 from utils.helpers import (
@@ -513,7 +513,10 @@ class GameCommands(commands.Cog):
     def _is_gen_limit_exempt(self, interaction: discord.Interaction) -> bool:
         if is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_NAMES):
             return True
-        return has_any_role_name(interaction.user, DONOR_ROLE_NAMES)
+        return (
+            has_any_role_name(interaction.user, DONOR_ROLE_NAMES)
+            or has_any_role_name(interaction.user, BOOSTER_ROLE_NAMES)
+        )
 
     def _embed_gen_limited(self, interaction: discord.Interaction) -> discord.Embed:
         reset_ts = int(self.gen_limiter.reset_at_utc().timestamp())
@@ -526,14 +529,14 @@ class GameCommands(commands.Cog):
             description = (
                 f"User biasa hanya bisa memakai `/gen` **{GEN_DAILY_LIMIT} kali per hari**.\n"
                 f"Reset global berikutnya: <t:{reset_ts}:F> (<t:{reset_ts}:R>).\n\n"
-                "Role **Donor**, owner server, dan admin tidak terkena limit ini."
+                "Get Donor Role to remove daily limit by donating to the server"
             )
         else:
             title = "Daily /gen limit reached"
             description = (
                 f"Regular users can use `/gen` **{GEN_DAILY_LIMIT} times per day**.\n"
                 f"Next global reset: <t:{reset_ts}:F> (<t:{reset_ts}:R>).\n\n"
-                "**Donor** role members, server owners, and admins are exempt."
+                "Get Donor Role to remove daily limit by donating to the server"
             )
 
         return discord.Embed(title=title, description=description, color=COLOR_WARNING)

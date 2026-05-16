@@ -33,6 +33,12 @@ DONOR_ROLE_NAMES = {
     for x in os.getenv("DONOR_ROLE_NAMES", "donor").split(",")
     if x.strip()
 }
+BOOSTER_ROLE_NAME = os.getenv("BOOSTER_ROLE_NAME", "Booster").strip() or "Booster"
+BOOSTER_ROLE_NAMES = {
+    x.strip().lower()
+    for x in os.getenv("BOOSTER_ROLE_NAMES", BOOSTER_ROLE_NAME).split(",")
+    if x.strip()
+}
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
