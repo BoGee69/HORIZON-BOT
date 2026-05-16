@@ -278,6 +278,15 @@ def _object_exists(client, key: str) -> bool:
         raise
 
 
+def _client_error_code(exc: ClientError) -> str:
+    return str(exc.response.get("Error", {}).get("Code", ""))
+
+
+def _is_access_denied(exc: ClientError) -> bool:
+    code = _client_error_code(exc).lower()
+    return code in {"accessdenied", "403", "forbidden"}
+
+
 def _delete_source_if_needed(client, source_key: str, target_key: str, summary: R2MaintenanceSummary) -> None:
     if source_key == target_key:
         return
@@ -457,6 +466,16 @@ def run_r2_maintenance(
 
         except zipfile.BadZipFile:
             summary.add_error(f"Bad ZIP file: {source_key}")
+        except ClientError as exc:
+            if _is_access_denied(exc):
+                summary.add_error(
+                    "R2 write permission denied. The current R2 access key can read/list objects, "
+                    "but it cannot write, copy, or delete objects. Create a Cloudflare R2 API token "
+                    "with Object Read & Write permission for this bucket, then update "
+                    "R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in Railway."
+                )
+                break
+            summary.add_error(f"Failed processing {source_key}: {exc}")
         except Exception as exc:
             summary.add_error(f"Failed processing {source_key}: {exc}")
 
