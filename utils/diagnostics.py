@@ -107,6 +107,10 @@ async def collect_health(bot) -> dict[str, Any]:
             "steam_lookups": bool(bot_config.R2_MAINTENANCE_STEAM_LOOKUPS),
             "max_steam_lookups": bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS,
             "steam_delay_seconds": bot_config.R2_MAINTENANCE_STEAM_DELAY_SECONDS,
+            "queue_enabled": bool(bot_config.R2_MAINTENANCE_QUEUE_ENABLED),
+            "fallback_to_appid": bool(bot_config.R2_MAINTENANCE_FALLBACK_TO_APPID),
+            "blacklist_threshold": bot_config.R2_MAINTENANCE_BLACKLIST_THRESHOLD,
+            "state_path": str(bot_config.R2_MAINTENANCE_STATE_PATH),
         },
     }
 

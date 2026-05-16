@@ -190,7 +190,11 @@ class AdminCommands(commands.Cog):
                 f"Clean extensions: `{', '.join(r2_maintenance['clean_extensions'])}`\n"
                 f"Steam lookups: `{r2_maintenance['steam_lookups']}`\n"
                 f"Max Steam lookups: `{r2_maintenance['max_steam_lookups']}`\n"
-                f"Steam delay: `{r2_maintenance['steam_delay_seconds']}s`"
+                f"Steam delay: `{r2_maintenance['steam_delay_seconds']}s`\n"
+                f"Queue: `{r2_maintenance['queue_enabled']}`\n"
+                f"Fallback AppID: `{r2_maintenance['fallback_to_appid']}`\n"
+                f"Blacklist threshold: `{r2_maintenance['blacklist_threshold']}`\n"
+                f"State path: `{r2_maintenance['state_path']}`"
             ),
             inline=False,
         )

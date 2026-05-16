@@ -26,6 +26,7 @@ DEFAULT_CACHE_JSON = REPO_DIR / "data" / "appid_names_cache.json"
 
 NUMERIC_RE = re.compile(r"^\s*[\(\[]?(?P<appid>\d{1,10})[\)\]]?\s*$")
 NAMED_APPID_RE = re.compile(r"^(?P<name>.*?)\s*[\(\[](?P<appid>\d{1,10})[\)\]]\s*$")
+GAME_PLACEHOLDER_RE = re.compile(r"^game\s+(?P<appid>\d{1,10})$", re.IGNORECASE)
 PLACEHOLDER_RE = re.compile(r"^game\s+\d+$", re.IGNORECASE)
 INVALID_WINDOWS_CHARS = '<>:"/\\|?*'
 
@@ -51,6 +52,10 @@ def parse_appid_from_stem(stem: str) -> tuple[Optional[str], Optional[str]]:
     numeric = NUMERIC_RE.match(stem)
     if numeric:
         return numeric.group("appid"), None
+
+    placeholder = GAME_PLACEHOLDER_RE.match(stem)
+    if placeholder:
+        return placeholder.group("appid"), None
 
     return None, None
 

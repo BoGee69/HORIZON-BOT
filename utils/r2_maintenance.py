@@ -63,6 +63,11 @@ class R2MaintenanceSummary:
     uploaded: int = 0
     copied: int = 0
     deleted: int = 0
+    steam_lookups: int = 0
+    steam_lookup_failed: int = 0
+    blacklisted: int = 0
+    fallback_renames: int = 0
+    queue_resets: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
@@ -79,6 +84,7 @@ class R2MaintenanceSummary:
             or self.uploaded
             or self.copied
             or self.deleted
+            or self.fallback_renames
         )
 
     def add_sample(self, message: str, limit: int = 8) -> None:
@@ -103,6 +109,11 @@ class R2MaintenanceSummary:
             "Lua files cleaned": str(self.lua_files_cleaned),
             "Manifest files cleaned": str(self.manifest_files_cleaned),
             "Objects uploaded": str(self.uploaded),
+            "Steam lookups": str(self.steam_lookups),
+            "Steam lookup failed": str(self.steam_lookup_failed),
+            "Blacklisted skips": str(self.blacklisted),
+            "Fallback renames": str(self.fallback_renames),
+            "Queue resets": str(self.queue_resets),
             "Skipped": str(self.skipped),
             "Errors": str(len(self.errors)),
         }
@@ -128,6 +139,11 @@ def _target_key(source_key: str, appid: str, name: str) -> Optional[str]:
         return None
     prefix, _ = _split_key(source_key)
     return f"{prefix}{safe_name} ({appid}).zip"
+
+
+def _fallback_key(source_key: str, appid: str) -> str:
+    prefix, _ = _split_key(source_key)
+    return f"{prefix}{appid}.zip"
 
 
 def _copy_zip_info(info: zipfile.ZipInfo) -> zipfile.ZipInfo:
@@ -251,20 +267,90 @@ def _build_name_map(
     return name_map
 
 
-def _list_zip_objects(client, prefix: str, max_objects: int) -> list[dict[str, Any]]:
-    paginator = client.get_paginator("list_objects_v2")
-    objects: list[dict[str, Any]] = []
+def _load_state(path: Path = bot_config.R2_MAINTENANCE_STATE_PATH) -> dict[str, Any]:
+    state = load_json(path, {})
+    if not isinstance(state, dict):
+        state = {}
+    state.setdefault("version", 1)
+    state.setdefault("last_key_by_prefix", {})
+    state.setdefault("steam_failures", {})
+    return state
 
-    for page in paginator.paginate(Bucket=_BUCKET, Prefix=prefix or ""):
+
+def _save_state(state: dict[str, Any], path: Path = bot_config.R2_MAINTENANCE_STATE_PATH) -> None:
+    save_json(path, state)
+
+
+def _failure_record(state: dict[str, Any], appid: str) -> dict[str, Any]:
+    failures = state.setdefault("steam_failures", {})
+    record = failures.get(appid)
+    if not isinstance(record, dict):
+        record = {"count": int(record or 0)}
+        failures[appid] = record
+    record.setdefault("count", 0)
+    return record
+
+
+def _is_blacklisted(state: dict[str, Any], appid: str, threshold: int) -> bool:
+    if threshold <= 0:
+        return False
+    return int(_failure_record(state, appid).get("count", 0) or 0) >= threshold
+
+
+def _record_steam_success(state: dict[str, Any], appid: str) -> None:
+    state.setdefault("steam_failures", {}).pop(appid, None)
+
+
+def _record_steam_failure(state: dict[str, Any], appid: str) -> None:
+    record = _failure_record(state, appid)
+    record["count"] = int(record.get("count", 0) or 0) + 1
+    record["last_failed_at"] = int(time.time())
+
+
+def _list_zip_objects(
+    client,
+    prefix: str,
+    max_objects: int,
+    *,
+    start_after: str = "",
+) -> tuple[list[dict[str, Any]], str, bool]:
+    objects: list[dict[str, Any]] = []
+    next_start_after = start_after
+    reached_end = False
+    remaining = max(0, max_objects)
+
+    while True:
+        kwargs: dict[str, Any] = {
+            "Bucket": _BUCKET,
+            "Prefix": prefix or "",
+            "MaxKeys": min(1000, remaining or 1000),
+        }
+        if next_start_after:
+            kwargs["StartAfter"] = next_start_after
+
+        page = client.list_objects_v2(**kwargs)
         for item in page.get("Contents", []):
             key = item.get("Key", "")
             if not key or key.endswith("/") or not key.lower().endswith(".zip"):
                 continue
             objects.append({"Key": key, "Size": int(item.get("Size") or 0)})
             if max_objects > 0 and len(objects) >= max_objects:
-                return objects
+                return objects, key, False
 
-    return objects
+        if not page.get("IsTruncated"):
+            reached_end = True
+            break
+
+        next_start_after = str(page.get("Contents", [{}])[-1].get("Key", "") or next_start_after)
+        if not next_start_after:
+            break
+        if max_objects > 0:
+            remaining = max_objects - len(objects)
+            if remaining <= 0:
+                break
+
+    last_key = objects[-1]["Key"] if objects else start_after
+    return objects, last_key, reached_end
 
 
 def _object_exists(client, key: str) -> bool:
@@ -300,6 +386,10 @@ def _fill_missing_names_from_steam(
     max_lookups: int,
     delay_seconds: float,
     cache_json: Path,
+    state: dict[str, Any],
+    summary: R2MaintenanceSummary,
+    blacklist_threshold: int,
+    ignore_blacklist: bool = False,
 ) -> None:
     if max_lookups == 0:
         return
@@ -319,13 +409,21 @@ def _fill_missing_names_from_steam(
         appid, _ = parse_appid_from_stem(stem)
         if not appid or appid in name_map:
             continue
+        if not ignore_blacklist and _is_blacklisted(state, appid, blacklist_threshold):
+            summary.blacklisted += 1
+            continue
 
         fetched_count += 1
+        summary.steam_lookups += 1
         name = fetch_steam_name(appid)
         if name:
             cache[appid] = name
             set_name(name_map, appid, name, "steam api", 25)
+            _record_steam_success(state, appid)
             changed = True
+        else:
+            summary.steam_lookup_failed += 1
+            _record_steam_failure(state, appid)
         if delay_seconds > 0:
             time.sleep(delay_seconds)
 
@@ -346,6 +444,10 @@ def run_r2_maintenance(
     max_zip_mb: int = bot_config.R2_MAINTENANCE_MAX_ZIP_MB,
     steam_delay_seconds: float = bot_config.R2_MAINTENANCE_STEAM_DELAY_SECONDS,
     clean_extensions: set[str] | None = None,
+    use_queue: bool = bot_config.R2_MAINTENANCE_QUEUE_ENABLED,
+    fallback_to_appid: bool = bot_config.R2_MAINTENANCE_FALLBACK_TO_APPID,
+    blacklist_threshold: int = bot_config.R2_MAINTENANCE_BLACKLIST_THRESHOLD,
+    ignore_blacklist: bool = False,
 ) -> R2MaintenanceSummary:
     summary = R2MaintenanceSummary(dry_run=not apply, prefix=prefix or "")
     if not _PRESIGN_ENABLED:
@@ -354,9 +456,26 @@ def run_r2_maintenance(
 
     client = _make_client()
     max_zip_bytes = max(1, max_zip_mb) * 1024 * 1024
+    state = _load_state()
+    start_after = ""
+    if use_queue:
+        start_after = str(state.get("last_key_by_prefix", {}).get(prefix or "", "") or "")
 
     try:
-        objects = _list_zip_objects(client, prefix or "", max(0, limit))
+        objects, next_start_after, reached_end = _list_zip_objects(
+            client,
+            prefix or "",
+            max(0, limit),
+            start_after=start_after,
+        )
+        if not objects and start_after:
+            summary.queue_resets += 1
+            objects, next_start_after, reached_end = _list_zip_objects(
+                client,
+                prefix or "",
+                max(0, limit),
+                start_after="",
+            )
     except Exception as exc:
         summary.add_error(f"Failed to list R2 objects: {exc}")
         return summary
@@ -373,6 +492,10 @@ def run_r2_maintenance(
                 max_steam_lookups,
                 steam_delay_seconds,
                 DEFAULT_CACHE_JSON,
+                state,
+                summary,
+                blacklist_threshold,
+                ignore_blacklist,
             )
         except Exception as exc:
             summary.add_error(f"Steam name lookup failed: {exc}")
@@ -396,8 +519,15 @@ def run_r2_maintenance(
                 else:
                     name_info = name_map.get(appid)
                     if not name_info:
-                        summary.skipped += 1
-                        summary.add_sample(f"skip rename: {source_key} (missing game name)")
+                        fallback_key = _fallback_key(source_key, appid)
+                        if fallback_to_appid and fallback_key != source_key:
+                            needs_rename = True
+                            target_key = fallback_key
+                            summary.rename_planned += 1
+                            summary.fallback_renames += 1
+                        elif not fallback_to_appid:
+                            summary.skipped += 1
+                            summary.add_sample(f"skip rename: {source_key} (missing game name)")
                     else:
                         planned_key = _target_key(source_key, appid, name_info[0])
                         if not planned_key:
@@ -479,6 +609,17 @@ def run_r2_maintenance(
         except Exception as exc:
             summary.add_error(f"Failed processing {source_key}: {exc}")
 
+    if use_queue and apply and not summary.errors:
+        last_key_by_prefix = state.setdefault("last_key_by_prefix", {})
+        if reached_end:
+            last_key_by_prefix[prefix or ""] = ""
+            summary.queue_resets += 1
+        elif objects:
+            last_key_by_prefix[prefix or ""] = next_start_after
+        _save_state(state)
+    elif apply and (summary.steam_lookups or summary.steam_lookup_failed or summary.blacklisted):
+        _save_state(state)
+
     return summary
 
 
@@ -497,6 +638,9 @@ def main() -> int:
     parser.add_argument("--steam", action="store_true", help="Fetch missing names from Steam.")
     parser.add_argument("--max-steam", type=int, default=bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS)
     parser.add_argument("--steam-delay", type=float, default=bot_config.R2_MAINTENANCE_STEAM_DELAY_SECONDS)
+    parser.add_argument("--no-queue", action="store_true", help="Do not continue from saved scan position.")
+    parser.add_argument("--no-fallback", action="store_true", help="Skip missing Steam names instead of using AppID.zip.")
+    parser.add_argument("--ignore-blacklist", action="store_true", help="Retry AppIDs with repeated Steam lookup failures.")
     args = parser.parse_args()
 
     summary = run_r2_maintenance(
@@ -509,6 +653,9 @@ def main() -> int:
         max_steam_lookups=args.max_steam,
         steam_delay_seconds=args.steam_delay,
         clean_extensions={item.strip().lower().lstrip(".") for item in args.clean_extensions.split(",") if item.strip()},
+        use_queue=not args.no_queue,
+        fallback_to_appid=not args.no_fallback,
+        ignore_blacklist=args.ignore_blacklist,
     )
 
     print("R2 maintenance summary")

@@ -107,6 +107,9 @@ class R2MaintenanceCommands(commands.Cog):
         clean_lua: bool,
         use_steam: bool,
         max_steam_lookups: int,
+        use_queue: bool,
+        fallback_to_appid: bool,
+        ignore_blacklist: bool,
     ) -> R2MaintenanceSummary:
         async with self._lock:
             return await asyncio.to_thread(
@@ -119,6 +122,9 @@ class R2MaintenanceCommands(commands.Cog):
                 clean_lua_comments=clean_lua,
                 use_steam=use_steam,
                 max_steam_lookups=max_steam_lookups,
+                use_queue=use_queue,
+                fallback_to_appid=fallback_to_appid,
+                ignore_blacklist=ignore_blacklist,
             )
 
     async def _maintenance_loop(self):
@@ -141,6 +147,9 @@ class R2MaintenanceCommands(commands.Cog):
                     clean_lua=bot_config.R2_MAINTENANCE_CLEAN_LUA_COMMENTS,
                     use_steam=bot_config.R2_MAINTENANCE_STEAM_LOOKUPS,
                     max_steam_lookups=bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS,
+                    use_queue=bot_config.R2_MAINTENANCE_QUEUE_ENABLED,
+                    fallback_to_appid=bot_config.R2_MAINTENANCE_FALLBACK_TO_APPID,
+                    ignore_blacklist=False,
                 )
                 await self._alert_if_needed(summary, automatic=True)
             except asyncio.CancelledError:
@@ -190,6 +199,9 @@ class R2MaintenanceCommands(commands.Cog):
         clean_lua="Remove Lua/manifest comments inside ZIP files",
         use_steam="Fetch missing names from Steam when games.json/cache has no name",
         max_steam_lookups="Maximum Steam name lookups for this run",
+        use_queue="Continue from the previous R2 scan position",
+        fallback_to_appid="If Steam has no name, normalize to AppID.zip instead of skipping",
+        ignore_blacklist="Retry AppIDs that were blacklisted after repeated Steam failures",
     )
     @admin_check()
     async def r2_maintenance(
@@ -202,6 +214,9 @@ class R2MaintenanceCommands(commands.Cog):
         clean_lua: bool = True,
         use_steam: bool = False,
         max_steam_lookups: int = 25,
+        use_queue: bool = True,
+        fallback_to_appid: bool = True,
+        ignore_blacklist: bool = False,
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
 
@@ -228,6 +243,9 @@ class R2MaintenanceCommands(commands.Cog):
             clean_lua=clean_lua,
             use_steam=use_steam,
             max_steam_lookups=safe_max_steam,
+            use_queue=use_queue,
+            fallback_to_appid=fallback_to_appid,
+            ignore_blacklist=ignore_blacklist,
         )
         await self._alert_if_needed(summary, automatic=False)
         await interaction.followup.send(embed=_summary_embed(summary), ephemeral=True)
