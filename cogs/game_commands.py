@@ -340,23 +340,18 @@ class GameCommands(commands.Cog):
 
         if dl["available"]:
             color  = COLOR_DOWNLOAD
-            status = "🟢  **Download Available**"
+            status = "**Download Available**"
         elif has_file:
             color  = COLOR_SUCCESS
-            status = "🟡  Verified (cached)"
+            status = "Verified (cached)"
         else:
             color  = COLOR_WARNING
-            status = "🔴  Not Available"
+            status = "Not Available"
 
         protection = extract_protection_type(game_info.get("drm_notice"))
 
-        embed = discord.Embed(color=color)
-        embed.set_author(
-            name="triadbot  •  Steam Database",
-            icon_url="https://store.steampowered.com/favicon.ico",
-        )
         embed.add_field(
-            name=f"🎮  {game_info['name']}",
+            name=f"{game_info['name']}",
             value=truncate_text(game_info.get("short_description") or "—", 220),
             inline=False,
         )
@@ -398,7 +393,7 @@ class GameCommands(commands.Cog):
             expiry_label = "⏱️  No expiry (public link)"
 
         embed = discord.Embed(
-            title=f"📦  {game_info['name']}",
+            title=f"{game_info['name']}",
             description=(
                 "Your download is ready.\n"
                 "**This message is only visible to you** — it won't appear in the channel."
