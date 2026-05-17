@@ -100,7 +100,10 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
     }
     context_json = json.dumps(context, ensure_ascii=False)
     history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
-    message = sanitize_text(user_message)[: bot_config.AI_CHAT_MAX_MESSAGE_CHARS]
+    message_limit = max(500, int(bot_config.AI_CHAT_MAX_MESSAGE_CHARS or 1800))
+    if "[Attachment content]" in user_message:
+        message_limit = max(message_limit, int(bot_config.AI_ATTACHMENT_MAX_TEXT_CHARS or 12000))
+    message = sanitize_text(user_message)[:message_limit]
     reply_language = _detect_reply_language(message)
 
     return (

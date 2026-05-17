@@ -13,6 +13,7 @@ from discord.ext import commands
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
+from utils.attachments import read_message_attachments
 from utils.r2_inventory import get_r2_inventory_snapshot_async
 
 log = logging.getLogger(__name__)
@@ -106,6 +107,24 @@ class AIChat(commands.Cog):
             lines.append("Catatan: scan R2 terpotong karena batas halaman, jadi angka ini belum full bucket.")
         return "\n".join(lines)
 
+    async def _message_text_with_attachments(self, message: discord.Message) -> str:
+        text = sanitize_text(message.content).strip()
+        attachments = list(getattr(message, "attachments", []) or [])
+        if not attachments:
+            return text
+
+        result = await read_message_attachments(
+            self.bot.session,
+            attachments,
+            purpose="personal DM chat context",
+        )
+        parts = [text] if text else []
+        if result.text:
+            parts.append("[Attachment content]\n" + result.text)
+        if result.warnings:
+            parts.append("[Attachment notes]\n" + "; ".join(result.warnings[:4]))
+        return "\n\n".join(parts).strip()
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -116,10 +135,10 @@ class AIChat(commands.Cog):
             return
         if not self._allowed(message.author.id):
             return
-        if not message.content.strip():
-            return
         operator = getattr(self.bot, "ai_operator", None)
         if operator and operator.is_operator_command(message.content, message.author.id):
+            return
+        if not message.content.strip() and not getattr(message, "attachments", None):
             return
         if self._cooling_down(message.author.id):
             return
@@ -132,16 +151,20 @@ class AIChat(commands.Cog):
         async with lock:
             try:
                 async with message.channel.typing():
-                    if self._wants_zip_name_stats(message.content, message.author.id):
+                    user_message = await self._message_text_with_attachments(message)
+                    if not user_message:
+                        await message.channel.send("Saya belum bisa membaca isi attachment itu.")
+                        return
+                    if self._wants_zip_name_stats(user_message, message.author.id):
                         reply = await self._zip_name_stats_reply()
-                        self.memory.append(message.author.id, "user", message.content)
+                        self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
                     else:
                         reply = await chat_with_triadbot(
                             self.bot,
                             user_id=message.author.id,
                             user_name=str(message.author),
-                            user_message=message.content,
+                            user_message=user_message,
                             memory=self.memory,
                         )
                 await self._reply_chunks(message, reply)

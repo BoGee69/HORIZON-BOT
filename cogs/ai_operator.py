@@ -21,6 +21,7 @@ from discord.ext import commands
 import config as bot_config
 from config import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING
 from utils.ai_caretaker import AICaretakerResult, sanitize_data, sanitize_text
+from utils.attachments import read_message_attachments
 
 log = logging.getLogger(__name__)
 
@@ -645,35 +646,94 @@ class AIOperator(commands.Cog):
         if not proposal:
             await message.channel.send("I could not create that proposal. Check whether the AI operator action is enabled.")
 
+    @staticmethod
+    def _is_vague_attachment_request(action: str, text: str) -> bool:
+        content = sanitize_text(text).strip().lower()
+        if not content:
+            return True
+        markers = {
+            "seperti ini",
+            "kayak ini",
+            "seperti gambar",
+            "di file",
+            "in file",
+            "from file",
+            "like this",
+            "this image",
+            "attached",
+            "attachment",
+            "dokumen",
+            "document",
+        }
+        if any(marker in content for marker in markers):
+            return True
+        if action == "update_rules" and len(content) < 160:
+            return True
+        return False
+
+    async def _apply_attachment_content(
+        self,
+        message: discord.Message,
+        action: str,
+        params: dict[str, Any],
+    ) -> list[str]:
+        attachments = list(getattr(message, "attachments", []) or [])
+        if not attachments:
+            return []
+
+        warnings: list[str] = []
+        if action == "send_announcement":
+            for attachment in attachments:
+                content_type = str(getattr(attachment, "content_type", "") or "").lower()
+                filename = str(getattr(attachment, "filename", "") or "").lower()
+                first_url = str(getattr(attachment, "url", "") or "").strip()
+                if (
+                    first_url.startswith(("http://", "https://"))
+                    and (content_type.startswith("image/") or filename.endswith((".png", ".jpg", ".jpeg", ".webp")))
+                ):
+                    params.setdefault("image_url", first_url)
+                    break
+
+        if action not in {"send_announcement", "update_rules"}:
+            return warnings
+
+        existing = str(params.get("content") or "").strip()
+        should_read = action == "update_rules" or not existing
+        if action == "send_announcement":
+            # Read text documents for announcements. If the attachment is only a
+            # decorative image and content already exists, keep it as image_url.
+            should_read = not existing or any(
+                not str(getattr(item, "content_type", "") or "").lower().startswith("image/")
+                for item in attachments
+            )
+        if not should_read:
+            return warnings
+
+        result = await read_message_attachments(
+            self.bot.session,
+            attachments,
+            purpose=f"{ACTION_LABELS.get(action, action)} content",
+        )
+        warnings.extend(result.warnings)
+        extracted = sanitize_text(result.text).strip()
+        if not extracted:
+            return warnings
+
+        if action == "update_rules" and self._is_vague_attachment_request(action, existing):
+            params["content"] = extracted
+        elif not existing:
+            params["content"] = extracted
+        else:
+            params["content"] = f"{existing}\n\n{extracted}".strip()
+        return warnings
+
     async def _create_server_content_proposal(
         self,
         message: discord.Message,
         action: str,
         params: dict[str, Any],
     ) -> None:
-        attachments = list(getattr(message, "attachments", []) or [])
-        if action == "send_announcement" and attachments:
-            first_url = str(getattr(attachments[0], "url", "") or "").strip()
-            if first_url.startswith(("http://", "https://")):
-                params["image_url"] = first_url
-        if action == "update_rules" and attachments:
-            content_hint = str(params.get("content") or "").strip().lower()
-            vague_screenshot_request = (
-                not content_hint
-                or len(content_hint) < 120
-                or any(marker in content_hint for marker in ("seperti ini", "kayak ini", "like this", "this image"))
-            )
-            if vague_screenshot_request:
-                self._drafts[message.author.id] = {
-                    "action": action,
-                    "params": {**params, "content": ""},
-                    "missing": ["content"],
-                }
-                await message.channel.send(
-                    "I can update the rules after approval, but I cannot safely turn screenshots into rules text. "
-                    "Please paste the full rules text as a message, then I will prepare the approval proposal."
-                )
-                return
+        attachment_warnings = await self._apply_attachment_content(message, action, params)
 
         missing = []
         if action in {"send_announcement", "update_rules"} and not str(params.get("content") or "").strip():
@@ -692,9 +752,13 @@ class AIOperator(commands.Cog):
                 "create_channel": "Reply with the channel name.",
                 "pin_message": "Reply with the message ID or include the target channel.",
             }
+            warning_text = ""
+            if attachment_warnings:
+                warning_text = "\nAttachment note: " + "; ".join(attachment_warnings[:3])
             await message.channel.send(
                 f"I need `{', '.join(missing)}` before I can create the proposal. "
                 f"{examples.get(action, 'Reply with the missing value.')}"
+                f"{warning_text}"
             )
             return
 
@@ -715,9 +779,13 @@ class AIOperator(commands.Cog):
             dedupe=False,
         )
         if proposal:
+            warning_text = ""
+            if attachment_warnings:
+                warning_text = "\nAttachment note: " + "; ".join(attachment_warnings[:3])
             await message.channel.send(
                 f"Proposal `{proposal.proposal_id}` is ready for `{ACTION_LABELS[action]}`. "
                 f"Reply `approve {proposal.proposal_id}` to execute it."
+                f"{warning_text}"
             )
         else:
             await message.channel.send("I could not create that proposal. Check whether the action is enabled.")
@@ -727,23 +795,25 @@ class AIOperator(commands.Cog):
         if not draft:
             return False
         text = sanitize_text(message.content).strip()
-        if not text:
+        attachments = list(getattr(message, "attachments", []) or [])
+        if not text and not attachments:
             return True
         action = draft["action"]
         params = dict(draft.get("params") or {})
-        value = self._strip_outer_quotes(
-            re.sub(r"^(?:kirim|send|post|isi|content|topic|topik|name|nama)\s+", "", text, flags=re.I).strip()
-        )
-        value = re.sub(r"\s+(?:aja|saja|please|pls)$", "", value, flags=re.I).strip()
-        value = self._strip_outer_quotes(value)
-        if action in {"send_announcement", "update_rules"}:
-            params["content"] = value
-        elif action == "set_channel_topic":
-            params["topic"] = value
-        elif action == "create_channel":
-            params["name"] = value
-        elif action == "pin_message":
-            params["message_id"] = value
+        if text:
+            value = self._strip_outer_quotes(
+                re.sub(r"^(?:kirim|send|post|isi|content|topic|topik|name|nama)\s+", "", text, flags=re.I).strip()
+            )
+            value = re.sub(r"\s+(?:aja|saja|please|pls)$", "", value, flags=re.I).strip()
+            value = self._strip_outer_quotes(value)
+            if action in {"send_announcement", "update_rules"}:
+                params["content"] = value
+            elif action == "set_channel_topic":
+                params["topic"] = value
+            elif action == "create_channel":
+                params["name"] = value
+            elif action == "pin_message":
+                params["message_id"] = value
         self._drafts.pop(message.author.id, None)
         await self._create_server_content_proposal(message, action, params)
         return True

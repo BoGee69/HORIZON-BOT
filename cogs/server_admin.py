@@ -153,6 +153,71 @@ class ServerAdmin(commands.Cog):
         embed.set_footer(text="TriadBot")
         return embed
 
+    @staticmethod
+    def _split_text(value: str, *, limit: int = 3800) -> list[str]:
+        text = str(value or "").strip()
+        if not text:
+            return []
+
+        chunks: list[str] = []
+        current = ""
+        paragraphs = re.split(r"\n\s*\n", text)
+
+        def add_chunk(chunk: str) -> None:
+            clean = chunk.strip()
+            if clean:
+                chunks.append(clean)
+
+        for paragraph in paragraphs:
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+
+            if len(paragraph) > limit:
+                if current:
+                    add_chunk(current)
+                    current = ""
+                lines = paragraph.splitlines() or [paragraph]
+                line_current = ""
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if len(line) > limit:
+                        if line_current:
+                            add_chunk(line_current)
+                            line_current = ""
+                        for index in range(0, len(line), limit):
+                            add_chunk(line[index : index + limit])
+                        continue
+                    candidate = f"{line_current}\n{line}".strip() if line_current else line
+                    if len(candidate) > limit:
+                        add_chunk(line_current)
+                        line_current = line
+                    else:
+                        line_current = candidate
+                if line_current:
+                    add_chunk(line_current)
+                continue
+
+            candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+            if len(candidate) > limit:
+                add_chunk(current)
+                current = paragraph
+            else:
+                current = candidate
+
+        if current:
+            add_chunk(current)
+        return chunks
+
+    @staticmethod
+    def _rules_chunk_title(title: str, index: int, total: int) -> str:
+        if total <= 1:
+            return title[:256]
+        suffix = f" ({index}/{total})"
+        return f"{title[: max(1, 256 - len(suffix))]}{suffix}"
+
     async def send_announcement(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)
         channel = self._resolve_text_channel(
@@ -177,20 +242,43 @@ class ServerAdmin(commands.Cog):
             fallback_names=bot_config.SERVER_ADMIN_RULES_CHANNEL_NAMES,
         )
         title = str(params.get("title") or "Server Rules").strip()[:256]
-        content = self._require_text(params, "content", max_chars=3800)
-        embed = self._server_embed(title=title, description=content, color=COLOR_INFO)
+        content = self._require_text(params, "content", max_chars=30000)
+        chunks = self._split_text(content, limit=3800)
+        if not chunks:
+            raise ValueError("Rules content is empty after parsing.")
+        if len(chunks) > 10:
+            raise ValueError("Rules content is too long. Maximum is 10 Discord embeds.")
 
-        edited = False
-        async for message in channel.history(limit=40):
-            if message.author.id != self.bot.user.id:
+        old_messages: list[discord.Message] = []
+        base_title = title.lower()
+        async for message in channel.history(limit=100):
+            if not self.bot.user or message.author.id != self.bot.user.id:
                 continue
-            if message.embeds and (message.embeds[0].title or "").lower() == title.lower():
-                await message.edit(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-                edited = True
-                target_message = message
-                break
-        else:
-            target_message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            if not message.embeds:
+                continue
+            old_title = (message.embeds[0].title or "").lower()
+            if old_title == base_title or old_title.startswith(f"{base_title} ("):
+                old_messages.append(message)
+
+        for message in old_messages:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                log.warning("Could not delete old rules message %s in %s", message.id, channel, exc_info=True)
+
+        sent_messages: list[discord.Message] = []
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            embed = self._server_embed(
+                title=self._rules_chunk_title(title, index, total),
+                description=chunk,
+                color=COLOR_INFO,
+            )
+            sent_messages.append(
+                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            )
+
+        target_message = sent_messages[0]
 
         if bool(params.get("pin")):
             try:
@@ -198,8 +286,11 @@ class ServerAdmin(commands.Cog):
             except discord.HTTPException:
                 log.warning("Could not pin rules message in %s", channel, exc_info=True)
 
-        action = "updated" if edited else "posted"
-        return f"Rules {action} in #{channel.name} ({channel.id}). Message ID: {target_message.id}"
+        action = "updated" if old_messages else "posted"
+        return (
+            f"Rules {action} in #{channel.name} ({channel.id}). "
+            f"Messages: {len(sent_messages)}. Characters: {len(content)}. First message ID: {target_message.id}"
+        )
 
     async def pin_message(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)

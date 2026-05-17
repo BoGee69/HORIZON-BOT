@@ -280,6 +280,7 @@ async def call_gemini(
     model: Optional[str] = None,
     temperature: float = 0.2,
     max_output_tokens: int = 900,
+    images: Optional[list[dict[str, str]]] = None,
 ) -> str:
     if not bot_config.GEMINI_API_KEY:
         raise AICaretakerUnavailable("GEMINI_API_KEY is not configured")
@@ -288,8 +289,14 @@ async def call_gemini(
 
     selected_model = model or bot_config.AI_MAINTENANCE_MODEL
     url = GEMINI_API_URL.format(model=selected_model)
+    parts: list[dict[str, Any]] = [{"text": prompt}]
+    for image in images or []:
+        mime_type = str(image.get("mime_type") or "").strip()
+        data = str(image.get("data") or "").strip()
+        if mime_type and data:
+            parts.append({"inline_data": {"mime_type": mime_type, "data": data}})
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": temperature,
             "maxOutputTokens": max_output_tokens,
@@ -330,6 +337,7 @@ async def call_ollama(
     model: Optional[str] = None,
     temperature: float = 0.2,
     max_output_tokens: int = 900,
+    images: Optional[list[dict[str, str]]] = None,
 ) -> str:
     if not bot_config.OLLAMA_API_KEY:
         raise AICaretakerUnavailable("OLLAMA_API_KEY is not configured")
@@ -338,9 +346,14 @@ async def call_ollama(
 
     selected_model = model or bot_config.AI_MAINTENANCE_MODEL
     url = _ollama_chat_url()
+    message: dict[str, Any] = {"role": "user", "content": prompt}
+    if images:
+        image_data = [str(image.get("data") or "").strip() for image in images if image.get("data")]
+        if image_data:
+            message["images"] = image_data
     payload = {
         "model": selected_model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [message],
         "stream": False,
         "options": {
             "temperature": temperature,
@@ -393,6 +406,7 @@ async def call_ai_provider(
     model: Optional[str] = None,
     temperature: float = 0.2,
     max_output_tokens: int = 900,
+    images: Optional[list[dict[str, str]]] = None,
 ) -> str:
     selected_provider = (provider or "").strip().lower()
     if selected_provider == "gemini":
@@ -402,6 +416,7 @@ async def call_ai_provider(
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            images=images,
         )
     if selected_provider == "ollama":
         return await call_ollama(
@@ -410,6 +425,7 @@ async def call_ai_provider(
             model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
+            images=images,
         )
     raise AICaretakerUnavailable(f"Unsupported AI provider: {provider}")
 
