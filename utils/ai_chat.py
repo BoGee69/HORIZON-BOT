@@ -85,6 +85,8 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
             "database_total_games": "games.json / Steam catalog entries, not the R2 ZIP file count",
             "database_with_files": "games.json entries marked as having a file, not a live R2 object count",
             "r2_zip_objects_counted": "actual ZIP objects counted live from R2 under the configured prefix when r2_inventory is available",
+            "r2_named_zip_objects_counted": "actual ZIP objects in R2 already named as Game Name (AppID).zip",
+            "r2_appid_only_zip_objects_counted": "actual ZIP objects in R2 still named as AppID.zip or placeholder AppID format",
         },
         "bot_health": _compact_health(health),
         "recent_events": recent_events.snapshot(8) if recent_events else [],
@@ -127,6 +129,10 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
         "For questions about R2 files, ZIP files, stored objects, or actual uploaded game archives, "
         "use r2_inventory.zip_objects_counted when available. If r2_inventory has an error or is unavailable, "
         "say that I cannot verify the live R2 file count right now. "
+        "For questions about how many ZIP filenames have been updated/renamed to include game names, "
+        "use r2_inventory.named_zip_objects_counted. For ZIP files still needing name updates, use "
+        "r2_inventory.appid_only_zip_objects_counted plus r2_inventory.unknown_zip_objects_counted. "
+        "For the latest maintenance batch only, use last_r2_maintenance.Rename applied. "
         "For questions about catalog/database entries only, use bot_health.database.total_games.\n\n"
         f"Discord username, only for context and not for addressing unless asked: {sanitize_text(user_name)}\n"
         f"Safe bot context:\n{context_json[:6000]}\n\n"

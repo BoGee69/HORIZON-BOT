@@ -11,6 +11,7 @@ from typing import Any
 import config as bot_config
 from utils.ai_caretaker import sanitize_text
 from utils.r2_presign import _BUCKET, _PRESIGN_ENABLED, _make_client
+from utils.rename_database_files import parse_appid_from_stem
 
 _CACHE_LOCK = Lock()
 _CACHE: dict[str, Any] = {
@@ -32,6 +33,9 @@ def _count_objects_sync(prefix: str, max_pages: int) -> dict[str, Any]:
             "prefix": prefix,
             "objects_counted": 0,
             "zip_objects_counted": 0,
+            "named_zip_objects_counted": 0,
+            "appid_only_zip_objects_counted": 0,
+            "unknown_zip_objects_counted": 0,
             "pages_scanned": 0,
             "truncated": False,
             "source": "unavailable",
@@ -43,6 +47,9 @@ def _count_objects_sync(prefix: str, max_pages: int) -> dict[str, Any]:
     pages_scanned = 0
     objects_counted = 0
     zip_objects_counted = 0
+    named_zip_objects_counted = 0
+    appid_only_zip_objects_counted = 0
+    unknown_zip_objects_counted = 0
     truncated = False
 
     while True:
@@ -63,6 +70,15 @@ def _count_objects_sync(prefix: str, max_pages: int) -> dict[str, Any]:
             objects_counted += 1
             if key.lower().endswith(".zip"):
                 zip_objects_counted += 1
+                filename = key.rsplit("/", 1)[-1]
+                stem = filename[:-4]
+                appid, game_name = parse_appid_from_stem(stem)
+                if appid and game_name:
+                    named_zip_objects_counted += 1
+                elif appid:
+                    appid_only_zip_objects_counted += 1
+                else:
+                    unknown_zip_objects_counted += 1
 
         token = response.get("NextContinuationToken")
         has_more = bool(response.get("IsTruncated") and token)
@@ -79,6 +95,9 @@ def _count_objects_sync(prefix: str, max_pages: int) -> dict[str, Any]:
         "prefix": prefix,
         "objects_counted": objects_counted,
         "zip_objects_counted": zip_objects_counted,
+        "named_zip_objects_counted": named_zip_objects_counted,
+        "appid_only_zip_objects_counted": appid_only_zip_objects_counted,
+        "unknown_zip_objects_counted": unknown_zip_objects_counted,
         "pages_scanned": pages_scanned,
         "truncated": truncated,
         "source": "live-r2-list-objects",
@@ -116,6 +135,9 @@ def get_r2_inventory_snapshot(
                 "prefix": prefix,
                 "objects_counted": 0,
                 "zip_objects_counted": 0,
+                "named_zip_objects_counted": 0,
+                "appid_only_zip_objects_counted": 0,
+                "unknown_zip_objects_counted": 0,
                 "pages_scanned": 0,
                 "truncated": False,
                 "source": "error",

@@ -69,6 +69,8 @@ class R2MaintenanceSummary:
     fallback_renames: int = 0
     queue_resets: int = 0
     skipped: int = 0
+    total_rename_applied: int = 0
+    total_comment_files_cleaned: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
     applied_samples: list[str] = field(default_factory=list)
@@ -120,6 +122,8 @@ class R2MaintenanceSummary:
             "Fallback renames": str(self.fallback_renames),
             "Queue resets": str(self.queue_resets),
             "Skipped": str(self.skipped),
+            "Total rename applied": str(self.total_rename_applied),
+            "Total comment files cleaned": str(self.total_comment_files_cleaned),
             "Errors": str(len(self.errors)),
         }
 
@@ -279,6 +283,7 @@ def _load_state(path: Path = bot_config.R2_MAINTENANCE_STATE_PATH) -> dict[str, 
     state.setdefault("version", 1)
     state.setdefault("last_key_by_prefix", {})
     state.setdefault("steam_failures", {})
+    state.setdefault("totals", {})
     return state
 
 
@@ -462,6 +467,9 @@ def run_r2_maintenance(
     client = _make_client()
     max_zip_bytes = max(1, max_zip_mb) * 1024 * 1024
     state = _load_state()
+    totals = state.setdefault("totals", {})
+    summary.total_rename_applied = int(totals.get("rename_applied", 0) or 0)
+    summary.total_comment_files_cleaned = int(totals.get("comment_files_cleaned", 0) or 0)
     start_after = ""
     if use_queue:
         start_after = str(state.get("last_key_by_prefix", {}).get(prefix or "", "") or "")
@@ -618,6 +626,19 @@ def run_r2_maintenance(
         except Exception as exc:
             summary.add_error(f"Failed processing {source_key}: {exc}")
 
+    state_changed = False
+    if apply:
+        if summary.rename_applied:
+            totals["rename_applied"] = int(totals.get("rename_applied", 0) or 0) + summary.rename_applied
+            summary.total_rename_applied = int(totals["rename_applied"])
+            state_changed = True
+        if summary.comment_files_cleaned:
+            totals["comment_files_cleaned"] = (
+                int(totals.get("comment_files_cleaned", 0) or 0) + summary.comment_files_cleaned
+            )
+            summary.total_comment_files_cleaned = int(totals["comment_files_cleaned"])
+            state_changed = True
+
     if use_queue and apply and not summary.errors:
         last_key_by_prefix = state.setdefault("last_key_by_prefix", {})
         if reached_end:
@@ -625,8 +646,11 @@ def run_r2_maintenance(
             summary.queue_resets += 1
         elif objects:
             last_key_by_prefix[prefix or ""] = next_start_after
-        _save_state(state)
+        state_changed = True
     elif apply and (summary.steam_lookups or summary.steam_lookup_failed or summary.blacklisted):
+        state_changed = True
+
+    if state_changed:
         _save_state(state)
 
     return summary

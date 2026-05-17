@@ -13,6 +13,7 @@ from discord.ext import commands
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
+from utils.r2_inventory import get_r2_inventory_snapshot_async
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +47,58 @@ class AIChat(commands.Cog):
         for chunk in chunks[:3]:
             await message.channel.send(chunk)
 
+    def _wants_zip_name_stats(self, text: str) -> bool:
+        lower = sanitize_text(text).lower()
+        if "zip" not in lower:
+            return False
+        has_count = any(word in lower for word in ("berapa", "total", "how many", "count", "jumlah"))
+        has_name_update = any(
+            word in lower
+            for word in ("nama", "name", "update", "updated", "rename", "renamed", "ganti")
+        )
+        return has_count and has_name_update
+
+    async def _zip_name_stats_reply(self) -> str:
+        inventory = await get_r2_inventory_snapshot_async(
+            prefix=bot_config.R2_MAINTENANCE_PREFIX,
+            cache_seconds=0,
+            max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
+        )
+        if inventory.get("error"):
+            return (
+                "Saya belum bisa memverifikasi jumlah nama ZIP langsung dari R2 saat ini.\n"
+                f"Error: `{sanitize_text(inventory.get('error'))[:400]}`"
+            )
+
+        total_zip = int(inventory.get("zip_objects_counted") or 0)
+        named_zip = int(inventory.get("named_zip_objects_counted") or 0)
+        appid_only = int(inventory.get("appid_only_zip_objects_counted") or 0)
+        unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
+        remaining = appid_only + unknown
+        last_summary = getattr(self.bot, "last_r2_maintenance_summary", None)
+        last_renamed = getattr(last_summary, "rename_applied", None)
+        total_renamed_by_bot = getattr(last_summary, "total_rename_applied", None)
+
+        lines = [
+            "Saya hitung langsung dari R2, bukan dari total katalog games.json:",
+            "",
+            f"- Total ZIP di R2: `{total_zip:,}`",
+            f"- ZIP yang sudah format `Nama Game (AppID).zip`: `{named_zip:,}`",
+            f"- ZIP yang masih AppID-only: `{appid_only:,}`",
+            f"- ZIP dengan format belum dikenali: `{unknown:,}`",
+            f"- Estimasi ZIP yang masih perlu dirapikan: `{remaining:,}`",
+        ]
+        if last_renamed is not None:
+            lines.append(f"- Rename applied pada run maintenance terakhir: `{int(last_renamed):,}`")
+        if total_renamed_by_bot:
+            lines.append(
+                f"- Total rename yang dicatat bot sejak counter aktif: `{int(total_renamed_by_bot):,}`"
+            )
+        if inventory.get("truncated"):
+            lines.append("")
+            lines.append("Catatan: scan R2 terpotong karena batas halaman, jadi angka ini belum full bucket.")
+        return "\n".join(lines)
+
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot:
@@ -72,13 +125,16 @@ class AIChat(commands.Cog):
         async with lock:
             try:
                 async with message.channel.typing():
-                    reply = await chat_with_triadbot(
-                        self.bot,
-                        user_id=message.author.id,
-                        user_name=str(message.author),
-                        user_message=message.content,
-                        memory=self.memory,
-                    )
+                    if self._wants_zip_name_stats(message.content):
+                        reply = await self._zip_name_stats_reply()
+                    else:
+                        reply = await chat_with_triadbot(
+                            self.bot,
+                            user_id=message.author.id,
+                            user_name=str(message.author),
+                            user_message=message.content,
+                            memory=self.memory,
+                        )
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(
