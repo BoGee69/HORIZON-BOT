@@ -640,7 +640,7 @@ class AIOperator(commands.Cog):
                 "It uses Discord premium_since status and current role hierarchy."
             ),
             "send_announcement": "This sends an embed announcement to the selected announcement channel.",
-            "update_rules": "This posts or updates the rules embed in the configured rules channel.",
+            "update_rules": "This posts or updates the rules message in the configured rules channel.",
             "pin_message": "This pins the selected message, or the latest message in the selected channel if no message ID is provided.",
             "set_channel_topic": "This updates the selected text channel topic.",
             "create_channel": "This creates a new text channel in the server.",
@@ -795,7 +795,7 @@ class AIOperator(commands.Cog):
 
         impact = {
             "send_announcement": "This sends a public announcement embed to the selected channel after approval.",
-            "update_rules": "This posts or edits the server rules embed after approval.",
+            "update_rules": "This posts or edits the server rules as plain messages after approval.",
             "pin_message": "This pins a message in the selected channel after approval.",
             "set_channel_topic": "This changes the selected channel topic after approval.",
             "create_channel": "This creates a text channel after approval.",

@@ -241,24 +241,18 @@ class ServerAdmin(commands.Cog):
             params,
             fallback_names=bot_config.SERVER_ADMIN_RULES_CHANNEL_NAMES,
         )
-        title = str(params.get("title") or "Server Rules").strip()[:256]
         content = self._require_text(params, "content", max_chars=30000)
-        chunks = self._split_text(content, limit=3800)
+        chunks = self._split_text(content, limit=1900)
         if not chunks:
             raise ValueError("Rules content is empty after parsing.")
-        if len(chunks) > 10:
-            raise ValueError("Rules content is too long. Maximum is 10 Discord embeds.")
+        if len(chunks) > 16:
+            raise ValueError("Rules content is too long. Maximum is 16 Discord messages.")
 
         old_messages: list[discord.Message] = []
-        base_title = title.lower()
         async for message in channel.history(limit=100):
             if not self.bot.user or message.author.id != self.bot.user.id:
                 continue
-            if not message.embeds:
-                continue
-            old_title = (message.embeds[0].title or "").lower()
-            if old_title == base_title or old_title.startswith(f"{base_title} ("):
-                old_messages.append(message)
+            old_messages.append(message)
 
         for message in old_messages:
             try:
@@ -267,15 +261,9 @@ class ServerAdmin(commands.Cog):
                 log.warning("Could not delete old rules message %s in %s", message.id, channel, exc_info=True)
 
         sent_messages: list[discord.Message] = []
-        total = len(chunks)
-        for index, chunk in enumerate(chunks, start=1):
-            embed = self._server_embed(
-                title=self._rules_chunk_title(title, index, total),
-                description=chunk,
-                color=COLOR_INFO,
-            )
+        for chunk in chunks:
             sent_messages.append(
-                await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+                await channel.send(content=chunk, allowed_mentions=discord.AllowedMentions.none())
             )
 
         target_message = sent_messages[0]
@@ -289,7 +277,7 @@ class ServerAdmin(commands.Cog):
         action = "updated" if old_messages else "posted"
         return (
             f"Rules {action} in #{channel.name} ({channel.id}). "
-            f"Messages: {len(sent_messages)}. Characters: {len(content)}. First message ID: {target_message.id}"
+            f"Plain messages: {len(sent_messages)}. Characters: {len(content)}. First message ID: {target_message.id}"
         )
 
     async def pin_message(self, params: dict[str, Any]) -> str:
