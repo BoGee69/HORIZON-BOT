@@ -281,7 +281,7 @@ async def read_message_attachments(
             if not text:
                 result.warnings.append(f"{filename} did not contain readable text.")
                 continue
-            chunks.append(f"[Attachment: {sanitize_text(filename)}]\n{text}")
+            chunks.append(text)
             result.notes.append(f"Read {filename}")
         except AICaretakerUnavailable as exc:
             result.warnings.append(
