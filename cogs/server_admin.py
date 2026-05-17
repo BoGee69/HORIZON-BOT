@@ -343,8 +343,8 @@ class ServerAdmin(commands.Cog):
 
         if not staff_roles:
             raise ValueError(
-                "No Admin or Moderator role was found. Configure ADMIN_ROLE_IDS/MODERATOR_ROLE_IDS "
-                "or make sure the role names match ADMIN_ROLE_NAMES/MODERATOR_ROLE_NAMES."
+                "No Admin role was found. Configure ADMIN_ROLE_IDS or make sure the role name matches "
+                "ADMIN_ROLE_NAMES."
             )
 
         everyone = guild.default_role
@@ -367,12 +367,30 @@ class ServerAdmin(commands.Cog):
             role_overwrite.read_message_history = True
             role_overwrite.send_messages = True
             role_overwrite.create_public_threads = True
+            role_overwrite.create_private_threads = True
             role_overwrite.send_messages_in_threads = True
             await channel.set_permissions(
                 role,
                 overwrite=role_overwrite,
                 reason="Owner-approved channel access configuration",
             )
+
+        bot_member = guild.me
+        bot_access_note = ""
+        if bot_member:
+            bot_overwrite = channel.overwrites_for(bot_member)
+            bot_overwrite.view_channel = True
+            bot_overwrite.read_message_history = True
+            bot_overwrite.send_messages = True
+            bot_overwrite.create_public_threads = True
+            bot_overwrite.create_private_threads = True
+            bot_overwrite.send_messages_in_threads = True
+            await channel.set_permissions(
+                bot_member,
+                overwrite=bot_overwrite,
+                reason="Owner-approved channel access configuration",
+            )
+            bot_access_note = f" Bot access granted to {bot_member.display_name}."
 
         topic = str(params.get("topic") or "").strip()
         if topic:
@@ -383,13 +401,13 @@ class ServerAdmin(commands.Cog):
         missing_groups = []
         if not admin_roles:
             missing_groups.append("Admin")
-        if not moderator_roles:
+        if not moderator_roles and bot_config.MODERATOR_ROLE_REQUIRED:
             missing_groups.append("Moderator")
         role_names = ", ".join(role.name for role in staff_roles)
         note = f" Missing configured role group(s): {', '.join(missing_groups)}." if missing_groups else ""
         return (
             f"Configured #{channel.name} ({channel.id}) so everyone can read but only staff roles can send. "
-            f"Allowed roles: {role_names}.{note}"
+            f"Allowed staff roles: {role_names}.{bot_access_note}{note}"
         )
 
     async def create_channel(self, params: dict[str, Any]) -> str:

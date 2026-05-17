@@ -91,6 +91,7 @@ async def collect_health(bot) -> dict[str, Any]:
         "roles": {
             "admin_role_ids": len(bot_config.ADMIN_ROLE_IDS),
             "moderator_role_ids": len(bot_config.MODERATOR_ROLE_IDS),
+            "moderator_role_required": bool(bot_config.MODERATOR_ROLE_REQUIRED),
             "donor_role_ids": len(bot_config.DONOR_ROLE_IDS),
             "booster_role_ids": len(bot_config.BOOSTER_ROLE_IDS),
             "admin_role_names": sorted(bot_config.ADMIN_ROLE_NAMES),

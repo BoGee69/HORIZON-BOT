@@ -79,6 +79,7 @@ MODERATOR_ROLE_NAMES = {
     for x in os.getenv("MODERATOR_ROLE_NAMES", "moderator,mod").split(",")
     if x.strip()
 }
+MODERATOR_ROLE_REQUIRED = parse_bool(os.getenv("MODERATOR_ROLE_REQUIRED", "false"), False)
 DONOR_ROLE_IDS = parse_id_set(os.getenv("DONOR_ROLE_IDS", ""))
 DONOR_ROLE_NAMES = {
     x.strip().lower()

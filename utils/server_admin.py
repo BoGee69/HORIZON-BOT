@@ -156,12 +156,15 @@ async def audit_guild(guild: discord.Guild) -> GuildAudit:
         elif booster_role >= me.top_role:
             audit.role_issues.append("Bot role is not above the Booster role.")
 
-    for role_name, role_ids, role_names in (
+    role_checks = [
         ("Admin", bot_config.ADMIN_ROLE_IDS, bot_config.ADMIN_ROLE_NAMES),
-        ("Moderator", bot_config.MODERATOR_ROLE_IDS, bot_config.MODERATOR_ROLE_NAMES),
         ("Donor", bot_config.DONOR_ROLE_IDS, bot_config.DONOR_ROLE_NAMES),
         ("Booster", bot_config.BOOSTER_ROLE_IDS, bot_config.BOOSTER_ROLE_NAMES),
-    ):
+    ]
+    if bot_config.MODERATOR_ROLE_REQUIRED:
+        role_checks.append(("Moderator", bot_config.MODERATOR_ROLE_IDS, bot_config.MODERATOR_ROLE_NAMES))
+
+    for role_name, role_ids, role_names in role_checks:
         role = _find_role(guild, role_ids, role_names)
         if not role and (role_ids or role_names):
             audit.role_issues.append(f"{role_name} role was not found by configured IDs/names.")
