@@ -198,6 +198,11 @@ AI_OPERATOR_ALLOW_STEAM_DB_SYNC = parse_bool(os.getenv("AI_OPERATOR_ALLOW_STEAM_
 AI_OPERATOR_ALLOW_AI_RECHECK = parse_bool(os.getenv("AI_OPERATOR_ALLOW_AI_RECHECK", "true"), True)
 AI_OPERATOR_ALLOW_SERVER_AUDIT = parse_bool(os.getenv("AI_OPERATOR_ALLOW_SERVER_AUDIT", "true"), True)
 AI_OPERATOR_ALLOW_BOOSTER_SYNC = parse_bool(os.getenv("AI_OPERATOR_ALLOW_BOOSTER_SYNC", "true"), True)
+AI_OPERATOR_ALLOW_SEND_ANNOUNCEMENT = parse_bool(os.getenv("AI_OPERATOR_ALLOW_SEND_ANNOUNCEMENT", "true"), True)
+AI_OPERATOR_ALLOW_UPDATE_RULES = parse_bool(os.getenv("AI_OPERATOR_ALLOW_UPDATE_RULES", "true"), True)
+AI_OPERATOR_ALLOW_PIN_MESSAGE = parse_bool(os.getenv("AI_OPERATOR_ALLOW_PIN_MESSAGE", "true"), True)
+AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC = parse_bool(os.getenv("AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC", "true"), True)
+AI_OPERATOR_ALLOW_CREATE_CHANNEL = parse_bool(os.getenv("AI_OPERATOR_ALLOW_CREATE_CHANNEL", "true"), True)
 
 SERVER_ADMIN_ENABLED = parse_bool(os.getenv("SERVER_ADMIN_ENABLED", "false"), False)
 SERVER_ADMIN_GUILD_IDS = parse_id_set(os.getenv("SERVER_ADMIN_GUILD_IDS", ""))
@@ -205,12 +210,22 @@ SERVER_ADMIN_AUDIT_ON_START = parse_bool(os.getenv("SERVER_ADMIN_AUDIT_ON_START"
 SERVER_ADMIN_AUDIT_INTERVAL_HOURS = float(os.getenv("SERVER_ADMIN_AUDIT_INTERVAL_HOURS", "6"))
 SERVER_ADMIN_START_DELAY_SECONDS = float(os.getenv("SERVER_ADMIN_START_DELAY_SECONDS", "30"))
 SERVER_ADMIN_ALERT_ON_ISSUES = parse_bool(os.getenv("SERVER_ADMIN_ALERT_ON_ISSUES", "true"), True)
+SERVER_ADMIN_RULES_CHANNEL_NAMES = {
+    item.lower()
+    for item in parse_str_list(os.getenv("SERVER_ADMIN_RULES_CHANNEL_NAMES", "rules,rule,server-rules"))
+}
+SERVER_ADMIN_ANNOUNCEMENT_CHANNEL_NAMES = {
+    item.lower()
+    for item in parse_str_list(
+        os.getenv("SERVER_ADMIN_ANNOUNCEMENT_CHANNEL_NAMES", "announcement,announcements,pengumuman")
+    )
+}
 SERVER_ADMIN_REQUIRED_PERMISSIONS = {
     item.strip().lower()
     for item in parse_str_list(
         os.getenv(
             "SERVER_ADMIN_REQUIRED_PERMISSIONS",
-            "manage_roles,send_messages,embed_links,read_message_history,manage_messages,moderate_members",
+            "administrator,manage_roles,manage_channels,send_messages,embed_links,read_message_history,manage_messages,moderate_members",
         )
     )
 }
