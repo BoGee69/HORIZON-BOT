@@ -347,6 +347,75 @@ class AIOperator(commands.Cog):
             },
         )
 
+    @staticmethod
+    def _is_read_only_rules_request(text: str) -> bool:
+        clean = sanitize_text(text).strip()
+        lower = clean.lower()
+        if not clean or not re.search(r"\brules?\b|\bperaturan\b", lower):
+            return False
+
+        write_intent = any(
+            phrase in lower
+            for phrase in (
+                "buat rules",
+                "buat peraturan",
+                "bikin rules",
+                "bikin peraturan",
+                "make rules",
+                "make it rules",
+                "create rules",
+                "update rules",
+                "update peraturan",
+                "ubah rules",
+                "ubah peraturan",
+                "ganti rules",
+                "ganti peraturan",
+                "post rules",
+                "post peraturan",
+                "kirim rules",
+                "kirim peraturan",
+                "pasang rules",
+                "pasang peraturan",
+                "copy the text and make it rules",
+                "salin teks",
+                "ambil teks",
+            )
+        )
+        if write_intent:
+            return False
+
+        read_intent = any(
+            phrase in lower
+            for phrase in (
+                "jelaskan",
+                "explain",
+                "apa",
+                "what",
+                "how",
+                "gimana",
+                "bagaimana",
+                "tampilkan",
+                "show",
+                "lihat",
+                "cek",
+                "check",
+                "list",
+                "daftar",
+                "rangkum",
+                "summarize",
+                "sebutkan",
+                "kasih tahu",
+                "beri tahu",
+                "tell me",
+            )
+        )
+        if read_intent or "?" in clean:
+            return True
+
+        normalized = re.sub(r"[^a-z0-9\s]", " ", lower)
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized in {"rules", "server rules", "rules server", "peraturan", "peraturan server"}
+
     def _parse_server_content_request(self, text: str) -> tuple[Optional[str], dict[str, Any]]:
         clean = sanitize_text(text).strip()
         lower = clean.lower()
@@ -409,6 +478,8 @@ class AIOperator(commands.Cog):
             return "send_announcement", {"channel": channel, "content": content, "title": "Announcement"}
 
         if re.search(r"\brules?\b|\bperaturan\b", lower):
+            if self._is_read_only_rules_request(clean):
+                return None, {}
             channel, content = self._extract_channel_and_content(clean)
             if not content and not channel:
                 match = re.search(r"(?:rules?|peraturan)(?:\s+server)?\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
