@@ -1,5 +1,5 @@
 """
-Personal DM chat with TriadBot through Gemini.
+Personal DM chat with TriadBot through the configured AI provider.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from discord.ext import commands
 
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
-from utils.ai_chat import AIChatMemory, build_local_fallback_reply, chat_with_triadbot
+from utils.ai_chat import AIChatMemory, chat_with_triadbot
 
 log = logging.getLogger(__name__)
 
@@ -86,12 +86,11 @@ class AIChat(commands.Cog):
                     )
             except AICaretakerUnavailable as exc:
                 log.warning("AI chat unavailable: %s", exc)
-                fallback = await build_local_fallback_reply(
-                    self.bot,
-                    user_message=message.content,
-                    unavailable_reason=str(exc),
+                await message.channel.send(
+                    "AI provider utama belum siap. "
+                    f"Provider: `{bot_config.AI_CHAT_PROVIDER}`, model: `{bot_config.AI_CHAT_MODEL}`. "
+                    "Cek API key, quota, dan nama model di Railway variables."
                 )
-                await self._reply_chunks(message, fallback)
             except Exception as exc:
                 log.exception("AI chat failed")
                 await message.channel.send("Saya mengalami error saat menyusun jawaban. Silakan coba lagi sebentar.")

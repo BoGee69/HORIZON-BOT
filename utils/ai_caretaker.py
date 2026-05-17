@@ -24,6 +24,7 @@ from utils.diagnostics import collect_health
 log = logging.getLogger(__name__)
 
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+OLLAMA_CHAT_PATH = "/api/chat"
 REDACTED = "[REDACTED]"
 MAX_EVENT_CHARS = 1600
 
@@ -141,6 +142,7 @@ def _known_secret_values() -> set[str]:
         bot_config.STEAM_API_KEY,
         bot_config.ADMIN_WEBHOOK,
         bot_config.GEMINI_API_KEY,
+        bot_config.OLLAMA_API_KEY,
     }
     for name, value in os.environ.items():
         if _is_sensitive_key(name) and value:
@@ -283,6 +285,86 @@ async def call_gemini(
         raise AICaretakerUnavailable(f"Could not parse Gemini response: {exc}") from exc
 
 
+async def call_ollama(
+    session: aiohttp.ClientSession,
+    prompt: str,
+    *,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    max_output_tokens: int = 900,
+) -> str:
+    if not bot_config.OLLAMA_API_KEY:
+        raise AICaretakerUnavailable("OLLAMA_API_KEY is not configured")
+    if not session or session.closed:
+        raise AICaretakerUnavailable("HTTP session is not available")
+
+    selected_model = model or bot_config.AI_MAINTENANCE_MODEL
+    host = bot_config.OLLAMA_HOST.rstrip("/")
+    url = f"{host}{OLLAMA_CHAT_PATH}"
+    payload = {
+        "model": selected_model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_output_tokens,
+        },
+    }
+    timeout = aiohttp.ClientTimeout(total=60)
+    async with session.post(
+        url,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {bot_config.OLLAMA_API_KEY}",
+        },
+        json=payload,
+        timeout=timeout,
+    ) as response:
+        response_text = await response.text()
+        if response.status >= 400:
+            raise AICaretakerUnavailable(
+                f"Ollama API HTTP {response.status}: {sanitize_text(response_text[:600])}"
+            )
+
+    try:
+        data = json.loads(response_text)
+        text = data.get("message", {}).get("content") or data.get("response") or ""
+        if not text:
+            raise KeyError("empty response text")
+        return sanitize_text(text)
+    except Exception as exc:
+        raise AICaretakerUnavailable(f"Could not parse Ollama response: {exc}") from exc
+
+
+async def call_ai_provider(
+    session: aiohttp.ClientSession,
+    prompt: str,
+    *,
+    provider: str,
+    model: Optional[str] = None,
+    temperature: float = 0.2,
+    max_output_tokens: int = 900,
+) -> str:
+    selected_provider = (provider or "").strip().lower()
+    if selected_provider == "gemini":
+        return await call_gemini(
+            session,
+            prompt,
+            model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+    if selected_provider == "ollama":
+        return await call_ollama(
+            session,
+            prompt,
+            model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+        )
+    raise AICaretakerUnavailable(f"Unsupported AI provider: {provider}")
+
+
 def _strip_json_fence(text: str) -> str:
     clean = text.strip()
     if clean.startswith("```"):
@@ -299,7 +381,7 @@ def parse_ai_result(text: str) -> AICaretakerResult:
         return AICaretakerResult(
             status="WARNING",
             title="AI caretaker report",
-            summary=safe_text[:1500] or "Gemini returned a non-JSON report.",
+            summary=safe_text[:1500] or "The AI provider returned a non-JSON report.",
             raw_text=safe_text,
         )
 
@@ -327,10 +409,12 @@ def parse_ai_result(text: str) -> AICaretakerResult:
 
 
 async def analyze_bot(bot: Any, *, reason: str, context: Optional[dict[str, Any]] = None) -> AICaretakerResult:
-    if bot_config.AI_MAINTENANCE_PROVIDER != "gemini":
-        raise AICaretakerUnavailable(f"Unsupported AI provider: {bot_config.AI_MAINTENANCE_PROVIDER}")
-
     snapshot = await build_operational_snapshot(bot, reason=reason, context=context)
     prompt = build_prompt(snapshot)
-    raw_text = await call_gemini(bot.session, prompt)
+    raw_text = await call_ai_provider(
+        bot.session,
+        prompt,
+        provider=bot_config.AI_MAINTENANCE_PROVIDER,
+        model=bot_config.AI_MAINTENANCE_MODEL,
+    )
     return parse_ai_result(raw_text)

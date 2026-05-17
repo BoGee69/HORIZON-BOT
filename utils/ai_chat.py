@@ -1,5 +1,5 @@
 """
-Personal Gemini chat helper for TriadBot DMs.
+Personal AI chat helper for TriadBot DMs.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 import config as bot_config
-from utils.ai_caretaker import AICaretakerUnavailable, call_gemini, sanitize_data, sanitize_text
+from utils.ai_caretaker import call_ai_provider, sanitize_data, sanitize_text
 from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
 
@@ -51,32 +51,6 @@ def _detect_reply_language(message: str) -> str:
     return "Indonesian"
 
 
-def _format_number(value: Any, language: str) -> str:
-    try:
-        number = int(value or 0)
-    except (TypeError, ValueError):
-        number = 0
-    text = f"{number:,}"
-    if language == "Indonesian":
-        return text.replace(",", ".")
-    return text
-
-
-def _summarize_ai_unavailable(reason: str, language: str) -> str:
-    safe = sanitize_text(reason).lower()
-    if "429" in safe or "quota" in safe or "rate" in safe:
-        return "quota/rate limit" if language == "English" else "quota/rate limit"
-    if "403" in safe or "api_key" in safe or "api key" in safe or "permission" in safe:
-        return "API key or permission issue" if language == "English" else "masalah API key atau permission"
-    if "404" in safe or "model" in safe:
-        return "model unavailable" if language == "English" else "model tidak tersedia"
-    if "http session" in safe or "session" in safe:
-        return "HTTP session unavailable" if language == "English" else "HTTP session tidak tersedia"
-    if "not configured" in safe:
-        return "GEMINI_API_KEY is not configured" if language == "English" else "GEMINI_API_KEY belum dikonfigurasi"
-    return "provider unavailable" if language == "English" else "provider tidak tersedia"
-
-
 def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
     return sanitize_data(
         {
@@ -92,151 +66,6 @@ def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
             "checks": health.get("checks"),
         }
     )
-
-
-async def build_local_fallback_reply(
-    bot: Any,
-    *,
-    user_message: str,
-    unavailable_reason: str = "",
-) -> str:
-    message = sanitize_text(user_message)
-    lower = message.lower()
-    language = _detect_reply_language(message)
-
-    asks_database = any(
-        marker in lower
-        for marker in ("database", "db", "game title", "game titles", "games", "entry", "entries", "appid")
-    )
-    asks_r2 = any(
-        marker in lower
-        for marker in ("r2", "zip", "file", "files", "object", "objects", "archive", "archives", "bucket")
-    )
-    asks_maintenance = any(marker in lower for marker in ("maintenance", "maintain", "rawat", "pemeliharaan"))
-    asks_status = any(
-        marker in lower
-        for marker in ("status", "health", "running", "jalan", "koneksi", "connection", "how many", "berapa", "jumlah")
-    )
-
-    if not (asks_database or asks_r2 or asks_maintenance or asks_status):
-        reason = _summarize_ai_unavailable(unavailable_reason, language)
-        if language == "English":
-            return (
-                f"Gemini is temporarily unavailable ({reason}). "
-                "I can still answer operational status questions from local diagnostics."
-            )
-        return (
-            f"Gemini sementara tidak tersedia ({reason}). "
-            "Saya tetap bisa menjawab pertanyaan status operasional dari diagnostik lokal."
-        )
-
-    health = await collect_health(bot)
-    database = health.get("database", {})
-    r2 = health.get("r2", {})
-    r2_maintenance = health.get("r2_maintenance", {})
-    checks = health.get("checks", {})
-    reason = _summarize_ai_unavailable(unavailable_reason, language)
-
-    r2_inventory = None
-    if asks_r2 or asks_maintenance or "file" in lower or "zip" in lower:
-        r2_inventory = await get_r2_inventory_snapshot_async(
-            prefix=bot_config.R2_MAINTENANCE_PREFIX,
-            cache_seconds=bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
-            max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
-        )
-
-    if language == "English":
-        lines = [f"Gemini is temporarily unavailable ({reason}), so I am answering from local diagnostics."]
-        if asks_status:
-            lines.append(
-                "Core status: "
-                f"Discord ready={checks.get('discord_ready')}, "
-                f"HTTP session={checks.get('http_session_open')}, "
-                f"R2 configured={checks.get('r2_public_or_presign_configured')}."
-            )
-        if asks_database or asks_status:
-            lines.append(
-                "Database catalog: "
-                f"{_format_number(database.get('total_games'), language)} Steam catalog entries in games.json; "
-                f"{_format_number(database.get('with_files'), language)} entries marked with files."
-            )
-            lines.append("That catalog count is not the same as the real R2 ZIP/object count.")
-        if r2_inventory:
-            if r2_inventory.get("error"):
-                lines.append(f"R2 live inventory: unavailable ({r2_inventory.get('error')}).")
-            else:
-                source = r2_inventory.get("source", "unknown")
-                age = r2_inventory.get("cache_age_seconds", 0)
-                lines.append(
-                    "R2 live inventory: "
-                    f"{_format_number(r2_inventory.get('zip_objects_counted'), language)} ZIP objects and "
-                    f"{_format_number(r2_inventory.get('objects_counted'), language)} total objects under "
-                    f"`{r2_inventory.get('prefix')}`. Source: {source}, cache age: {age}s."
-                )
-        elif asks_r2:
-            lines.append(
-                "R2 live inventory is not enabled for AI chat, so I cannot verify the real ZIP count from here."
-            )
-        if asks_maintenance or asks_status:
-            lines.append(
-                "R2 maintenance: "
-                f"enabled={r2_maintenance.get('enabled')}, apply={r2_maintenance.get('apply')}, "
-                f"run_on_start={r2_maintenance.get('run_on_start')}, "
-                f"interval={r2_maintenance.get('interval_hours')}h, "
-                f"prefix=`{r2_maintenance.get('prefix')}`, max_objects={r2_maintenance.get('max_objects')}."
-            )
-        if asks_r2 and not r2_inventory:
-            lines.append(
-                "R2 config: "
-                f"public_url={r2.get('public_base_url_configured')}, "
-                f"presign={r2.get('presign_enabled')}, bucket={r2.get('bucket_configured')}."
-            )
-        return "\n".join(lines)
-
-    lines = [f"Gemini sementara tidak tersedia ({reason}), jadi saya jawab dari diagnostik lokal."]
-    if asks_status:
-        lines.append(
-            "Status inti: "
-            f"Discord ready={checks.get('discord_ready')}, "
-            f"HTTP session={checks.get('http_session_open')}, "
-            f"R2 configured={checks.get('r2_public_or_presign_configured')}."
-        )
-    if asks_database or asks_status:
-        lines.append(
-            "Katalog database: "
-            f"{_format_number(database.get('total_games'), language)} entry katalog Steam di games.json; "
-            f"{_format_number(database.get('with_files'), language)} entry ditandai punya file."
-        )
-        lines.append("Angka katalog itu bukan jumlah ZIP/object asli di R2.")
-    if r2_inventory:
-        if r2_inventory.get("error"):
-            lines.append(f"Inventory live R2: belum bisa dicek ({r2_inventory.get('error')}).")
-        else:
-            source = r2_inventory.get("source", "unknown")
-            age = r2_inventory.get("cache_age_seconds", 0)
-            lines.append(
-                "Inventory live R2: "
-                f"{_format_number(r2_inventory.get('zip_objects_counted'), language)} ZIP object dan "
-                f"{_format_number(r2_inventory.get('objects_counted'), language)} total object di prefix "
-                f"`{r2_inventory.get('prefix')}`. Source: {source}, cache age: {age}s."
-            )
-    elif asks_r2:
-        lines.append("Inventory live R2 belum aktif untuk AI chat, jadi saya belum bisa verifikasi jumlah ZIP asli dari sini.")
-    if asks_maintenance or asks_status:
-        lines.append(
-            "R2 maintenance: "
-            f"enabled={r2_maintenance.get('enabled')}, apply={r2_maintenance.get('apply')}, "
-            f"run_on_start={r2_maintenance.get('run_on_start')}, "
-            f"interval={r2_maintenance.get('interval_hours')}h, "
-            f"prefix=`{r2_maintenance.get('prefix')}`, max_objects={r2_maintenance.get('max_objects')}."
-        )
-    if asks_r2 and not r2_inventory:
-        lines.append(
-            "Config R2: "
-            f"public_url={r2.get('public_base_url_configured')}, "
-            f"presign={r2.get('presign_enabled')}, bucket={r2.get('bucket_configured')}."
-        )
-    return "\n".join(lines)
 
 
 async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, history: list[dict[str, str]]) -> str:
@@ -305,14 +134,12 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
 
 
 async def chat_with_triadbot(bot: Any, *, user_id: int, user_name: str, user_message: str, memory: AIChatMemory) -> str:
-    if not bot_config.GEMINI_API_KEY:
-        raise AICaretakerUnavailable("GEMINI_API_KEY is not configured")
-
     history = memory.snapshot(user_id)
     prompt = await build_chat_prompt(bot, user_name=user_name, user_message=user_message, history=history)
-    reply = await call_gemini(
+    reply = await call_ai_provider(
         bot.session,
         prompt,
+        provider=bot_config.AI_CHAT_PROVIDER,
         model=bot_config.AI_CHAT_MODEL,
         temperature=0.75,
         max_output_tokens=900,

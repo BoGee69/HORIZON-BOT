@@ -149,9 +149,15 @@ STEAM_DB_SYNC_INCLUDE_DLC = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_DLC", "t
 STEAM_DB_SYNC_INCLUDE_SOFTWARE = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_SOFTWARE", "false"), False)
 
 AI_MAINTENANCE_ENABLED = parse_bool(os.getenv("AI_MAINTENANCE_ENABLED", "false"), False)
-AI_MAINTENANCE_PROVIDER = os.getenv("AI_MAINTENANCE_PROVIDER", "gemini").strip().lower() or "gemini"
+AI_PROVIDER = os.getenv("AI_PROVIDER", "ollama").strip().lower() or "ollama"
+AI_MAINTENANCE_PROVIDER = os.getenv("AI_MAINTENANCE_PROVIDER", AI_PROVIDER).strip().lower() or AI_PROVIDER
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-AI_MAINTENANCE_MODEL = os.getenv("AI_MAINTENANCE_MODEL", "gemini-2.5-flash-lite").strip() or "gemini-2.5-flash-lite"
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
+OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com").strip().rstrip("/") or "https://ollama.com"
+AI_MAINTENANCE_MODEL = os.getenv(
+    "AI_MAINTENANCE_MODEL",
+    "gpt-oss:120b" if AI_MAINTENANCE_PROVIDER == "ollama" else "gemini-2.5-flash-lite",
+).strip() or ("gpt-oss:120b" if AI_MAINTENANCE_PROVIDER == "ollama" else "gemini-2.5-flash-lite")
 AI_MAINTENANCE_INTERVAL_MINUTES = float(os.getenv("AI_MAINTENANCE_INTERVAL_MINUTES", "360"))
 AI_MAINTENANCE_ALERT_IDS = parse_id_list(os.getenv("AI_MAINTENANCE_ALERT_IDS", "")) or ADMIN_IDS[:1]
 AI_MAINTENANCE_MAX_PROMPT_CHARS = int(os.getenv("AI_MAINTENANCE_MAX_PROMPT_CHARS", "12000"))
@@ -162,7 +168,11 @@ AI_MAINTENANCE_COOLDOWN_SECONDS = int(os.getenv("AI_MAINTENANCE_COOLDOWN_SECONDS
 AI_MAINTENANCE_START_DELAY_SECONDS = float(os.getenv("AI_MAINTENANCE_START_DELAY_SECONDS", "20"))
 AI_CHAT_ENABLED = parse_bool(os.getenv("AI_CHAT_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "false")), False)
 AI_CHAT_ALLOWED_IDS = parse_id_list(os.getenv("AI_CHAT_ALLOWED_IDS", "")) or AI_MAINTENANCE_ALERT_IDS
-AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", AI_MAINTENANCE_MODEL).strip() or AI_MAINTENANCE_MODEL
+AI_CHAT_PROVIDER = os.getenv("AI_CHAT_PROVIDER", AI_PROVIDER).strip().lower() or AI_PROVIDER
+AI_CHAT_MODEL = os.getenv(
+    "AI_CHAT_MODEL",
+    "gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL,
+).strip() or ("gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL)
 AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "12"))
 AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
 AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))

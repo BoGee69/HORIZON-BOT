@@ -227,7 +227,7 @@ class AdminCommands(commands.Cog):
                 f"Model: `{ai_caretaker['model']}`\n"
                 f"Interval: `{ai_caretaker['interval_minutes']}m`\n"
                 f"Owner DM IDs: `{yes_no(ai_caretaker['alert_ids_configured'])}`\n"
-                f"Gemini API key: `{yes_no(ai_caretaker['gemini_api_key_configured'])}`"
+                f"Provider API key: `{yes_no(ai_caretaker['provider_api_key_configured'])}`"
             ),
             inline=False,
         )
@@ -235,8 +235,10 @@ class AdminCommands(commands.Cog):
             name="AI Chat",
             value=(
                 f"Enabled: `{ai_chat['enabled']}`\n"
+                f"Provider: `{ai_chat['provider']}`\n"
                 f"Model: `{ai_chat['model']}`\n"
                 f"Allowed IDs: `{yes_no(ai_chat['allowed_ids_configured'])}`\n"
+                f"Provider API key: `{yes_no(ai_chat['provider_api_key_configured'])}`\n"
                 f"History: `{ai_chat['max_history']}`\n"
                 f"Cooldown: `{ai_chat['cooldown_seconds']}s`\n"
                 f"R2 file stats: `{ai_chat['r2_stats_enabled']}`\n"

@@ -27,6 +27,15 @@ def _configured(value: Any) -> bool:
     return bool(str(value or "").strip())
 
 
+def _ai_provider_key_configured(provider: str) -> bool:
+    provider = str(provider or "").lower()
+    if provider == "gemini":
+        return bool(bot_config.GEMINI_API_KEY)
+    if provider == "ollama":
+        return bool(bot_config.OLLAMA_API_KEY)
+    return False
+
+
 async def collect_health(bot) -> dict[str, Any]:
     usage_parent = bot_config.GEN_USAGE_PATH.parent
     usage_writable, usage_message = _writable(usage_parent)
@@ -119,14 +128,18 @@ async def collect_health(bot) -> dict[str, Any]:
             "interval_minutes": bot_config.AI_MAINTENANCE_INTERVAL_MINUTES,
             "alert_ids_configured": bool(bot_config.AI_MAINTENANCE_ALERT_IDS),
             "gemini_api_key_configured": bool(bot_config.GEMINI_API_KEY),
+            "ollama_api_key_configured": bool(bot_config.OLLAMA_API_KEY),
+            "provider_api_key_configured": _ai_provider_key_configured(bot_config.AI_MAINTENANCE_PROVIDER),
             "dm_on_ok": bool(bot_config.AI_MAINTENANCE_DM_ON_OK),
             "dm_on_warning": bool(bot_config.AI_MAINTENANCE_DM_ON_WARNING),
             "dm_on_critical": bool(bot_config.AI_MAINTENANCE_DM_ON_CRITICAL),
         },
         "ai_chat": {
             "enabled": bool(bot_config.AI_CHAT_ENABLED),
+            "provider": bot_config.AI_CHAT_PROVIDER,
             "model": bot_config.AI_CHAT_MODEL,
             "allowed_ids_configured": bool(bot_config.AI_CHAT_ALLOWED_IDS),
+            "provider_api_key_configured": _ai_provider_key_configured(bot_config.AI_CHAT_PROVIDER),
             "max_history": bot_config.AI_CHAT_MAX_HISTORY,
             "cooldown_seconds": bot_config.AI_CHAT_COOLDOWN_SECONDS,
             "max_reply_chars": bot_config.AI_CHAT_MAX_REPLY_CHARS,

@@ -1,5 +1,5 @@
 """
-Automatic Gemini-based caretaker for operational bot health.
+Automatic AI caretaker for operational bot health.
 """
 from __future__ import annotations
 
@@ -78,12 +78,14 @@ class AICaretaker(commands.Cog):
         message = sanitize_text(str(exc))[:1000]
         await self._owner_notifier.send(
             "AI caretaker unavailable",
-            "Gemini could not analyze the bot right now. The bot is still running normally.",
+            "The configured AI provider could not analyze the bot right now. The bot is still running normally.",
             level="warning",
             fields={
                 "Trigger": reason,
+                "Provider": bot_config.AI_MAINTENANCE_PROVIDER,
+                "Model": bot_config.AI_MAINTENANCE_MODEL,
                 "Error": message,
-                "Next step": "Check `GEMINI_API_KEY`, free-tier quota, or Gemini API availability.",
+                "Next step": "Check the selected provider API key, quota, and model name in Railway variables.",
             },
             key="ai-caretaker-unavailable",
         )
@@ -132,7 +134,7 @@ class AICaretaker(commands.Cog):
         if self._should_dm(result):
             await self._owner_notifier.send(
                 result.title or "AI caretaker report",
-                result.summary or "Gemini returned an empty summary.",
+                result.summary or "The AI provider returned an empty summary.",
                 level=result.level,
                 fields=self._result_fields(result, reason),
                 key=f"ai-caretaker-{result.status.lower()}-{reason}",
