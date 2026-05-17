@@ -47,16 +47,23 @@ class AIChat(commands.Cog):
         for chunk in chunks[:3]:
             await message.channel.send(chunk)
 
-    def _wants_zip_name_stats(self, text: str) -> bool:
+    def _wants_zip_name_stats(self, text: str, user_id: int) -> bool:
         lower = sanitize_text(text).lower()
-        if "zip" not in lower:
-            return False
         has_count = any(word in lower for word in ("berapa", "total", "how many", "count", "jumlah"))
         has_name_update = any(
             word in lower
             for word in ("nama", "name", "update", "updated", "rename", "renamed", "ganti")
         )
-        return has_count and has_name_update
+        if "zip" in lower and has_count and has_name_update:
+            return True
+        if has_count and any(word in lower for word in ("sekarang", "current", "now", "saat ini")):
+            recent = " ".join(item["text"] for item in self.memory.snapshot(user_id)[-4:]).lower()
+            if any(marker in recent for marker in ("zip", "r2", "rename", "nama game", "appid")):
+                return True
+            # In owner DM, short follow-ups like "totalnya sekarang berapa?"
+            # usually refer to the active R2/ZIP maintenance topic.
+            return "total" in lower or "berapa" in lower
+        return False
 
     async def _zip_name_stats_reply(self) -> str:
         inventory = await get_r2_inventory_snapshot_async(
@@ -125,8 +132,10 @@ class AIChat(commands.Cog):
         async with lock:
             try:
                 async with message.channel.typing():
-                    if self._wants_zip_name_stats(message.content):
+                    if self._wants_zip_name_stats(message.content, message.author.id):
                         reply = await self._zip_name_stats_reply()
+                        self.memory.append(message.author.id, "user", message.content)
+                        self.memory.append(message.author.id, "assistant", reply)
                     else:
                         reply = await chat_with_triadbot(
                             self.bot,

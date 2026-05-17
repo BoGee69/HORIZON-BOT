@@ -21,6 +21,13 @@ _CACHE: dict[str, Any] = {
 }
 
 
+def invalidate_r2_inventory_cache() -> None:
+    with _CACHE_LOCK:
+        _CACHE["prefix"] = None
+        _CACHE["fetched_at"] = 0.0
+        _CACHE["snapshot"] = None
+
+
 def _count_objects_sync(prefix: str, max_pages: int) -> dict[str, Any]:
     prefix = (prefix or "").lstrip("/")
     max_pages = max(1, int(max_pages or 1))

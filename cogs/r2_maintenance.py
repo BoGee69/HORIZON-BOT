@@ -22,6 +22,7 @@ from config import (
     COLOR_WARNING,
 )
 from utils.helpers import is_admin_interaction
+from utils.r2_inventory import invalidate_r2_inventory_cache
 from utils.r2_maintenance import R2MaintenanceSummary, run_r2_maintenance
 
 log = logging.getLogger(__name__)
@@ -182,6 +183,8 @@ class R2MaintenanceCommands(commands.Cog):
 
     async def _alert_if_needed(self, summary: R2MaintenanceSummary, *, automatic: bool) -> None:
         self.bot.last_r2_maintenance_summary = summary
+        if summary.has_changes or summary.processed:
+            invalidate_r2_inventory_cache()
         if hasattr(self.bot, "record_ai_event"):
             self.bot.record_ai_event(
                 "error" if summary.errors else "info",
