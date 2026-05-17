@@ -172,6 +172,11 @@ async def collect_health(bot) -> dict[str, Any]:
             "allow_ai_recheck": bool(bot_config.AI_OPERATOR_ALLOW_AI_RECHECK),
             "allow_server_audit": bool(bot_config.AI_OPERATOR_ALLOW_SERVER_AUDIT),
             "allow_booster_sync": bool(bot_config.AI_OPERATOR_ALLOW_BOOSTER_SYNC),
+            "allow_send_announcement": bool(bot_config.AI_OPERATOR_ALLOW_SEND_ANNOUNCEMENT),
+            "allow_update_rules": bool(bot_config.AI_OPERATOR_ALLOW_UPDATE_RULES),
+            "allow_pin_message": bool(bot_config.AI_OPERATOR_ALLOW_PIN_MESSAGE),
+            "allow_set_channel_topic": bool(bot_config.AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC),
+            "allow_create_channel": bool(bot_config.AI_OPERATOR_ALLOW_CREATE_CHANNEL),
         },
     }
 

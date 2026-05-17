@@ -30,9 +30,31 @@ ACTION_LABELS = {
     "run_ai_check": "Run AI caretaker check",
     "run_server_audit": "Run Discord server audit",
     "sync_booster_roles": "Sync Booster roles",
+    "send_announcement": "Send announcement",
+    "update_rules": "Update rules message",
+    "pin_message": "Pin message",
+    "set_channel_topic": "Set channel topic",
+    "create_channel": "Create text channel",
 }
 
-WRITE_ACTIONS = {"run_r2_maintenance", "run_steam_db_sync", "sync_booster_roles"}
+WRITE_ACTIONS = {
+    "run_r2_maintenance",
+    "run_steam_db_sync",
+    "sync_booster_roles",
+    "send_announcement",
+    "update_rules",
+    "pin_message",
+    "set_channel_topic",
+    "create_channel",
+}
+
+SERVER_CONTENT_ACTIONS = {
+    "send_announcement",
+    "update_rules",
+    "pin_message",
+    "set_channel_topic",
+    "create_channel",
+}
 
 
 @dataclass
@@ -60,6 +82,7 @@ class AIOperator(commands.Cog):
         self.bot = bot
         self._pending: dict[str, OperatorProposal] = {}
         self._recent_signatures: dict[str, float] = {}
+        self._drafts: dict[int, dict[str, Any]] = {}
         self._execution_lock = asyncio.Lock()
         bot.ai_operator = self
 
@@ -81,6 +104,16 @@ class AIOperator(commands.Cog):
             return bool(bot_config.AI_OPERATOR_ALLOW_SERVER_AUDIT)
         if action == "sync_booster_roles":
             return bool(bot_config.AI_OPERATOR_ALLOW_BOOSTER_SYNC)
+        if action == "send_announcement":
+            return bool(bot_config.AI_OPERATOR_ALLOW_SEND_ANNOUNCEMENT)
+        if action == "update_rules":
+            return bool(bot_config.AI_OPERATOR_ALLOW_UPDATE_RULES)
+        if action == "pin_message":
+            return bool(bot_config.AI_OPERATOR_ALLOW_PIN_MESSAGE)
+        if action == "set_channel_topic":
+            return bool(bot_config.AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC)
+        if action == "create_channel":
+            return bool(bot_config.AI_OPERATOR_ALLOW_CREATE_CHANNEL)
         return False
 
     def _cleanup(self) -> None:
@@ -107,12 +140,97 @@ class AIOperator(commands.Cog):
         match = re.fullmatch(r"(approve|approved|acc|setuju|yes)\s+([a-f0-9]{6})", lower)
         if match:
             return ("approve", match.group(2))
+        if lower in {"approve", "approved", "acc", "setuju", "yes", "ya", "oke", "ok"}:
+            return ("approve", None)
         match = re.fullmatch(r"(reject|rejected|deny|cancel|tolak|batal|no)\s+([a-f0-9]{6})", lower)
         if match:
             return ("reject", match.group(2))
+        if lower in {"reject", "rejected", "deny", "cancel", "tolak", "batal", "no"}:
+            return ("reject", None)
         if lower in {"pending approvals", "pending approval", "approval pending", "daftar approval", "approval"}:
             return ("pending", None)
         return ("", None)
+
+    @staticmethod
+    def _strip_outer_quotes(value: str) -> str:
+        text = value.strip()
+        if len(text) >= 2 and text[0] == text[-1] and text[0] in {"'", '"'}:
+            return text[1:-1].strip()
+        return text
+
+    def _extract_channel_and_content(self, text: str) -> tuple[str, str]:
+        clean = sanitize_text(text).strip()
+        channel = ""
+        content = ""
+        match = re.search(r"(?:di|to|ke|in)\s+(<#\d+>|#[\w-]+|[\w-]+)\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
+        if match:
+            return match.group(1).strip(), self._strip_outer_quotes(match.group(2))
+        match = re.search(r"(?:di|to|ke|in)\s+(<#\d+>|#[\w-]+|[\w-]+)", clean, re.I)
+        if match:
+            channel = match.group(1).strip()
+            content = clean[match.end() :].strip(" :-")
+        else:
+            match = re.search(r"(<#\d+>|#[\w-]+)", clean)
+            if match:
+                channel = match.group(1).strip()
+                content = clean[match.end() :].strip(" :-")
+        return channel, self._strip_outer_quotes(content)
+
+    def _parse_server_content_request(self, text: str) -> tuple[Optional[str], dict[str, Any]]:
+        clean = sanitize_text(text).strip()
+        lower = clean.lower()
+        if not clean:
+            return None, {}
+
+        if re.search(r"(?:buat|create|bikin|add)\s+(?:text\s+)?channel", lower):
+            name = ""
+            topic = ""
+            match = re.search(
+                r"(?:channel)\s+(?:baru\s+)?[#`'\"]?([a-zA-Z0-9 _-]{2,100}?)(?:\s+(?:topic|topik)\b|$)",
+                clean,
+                re.I,
+            )
+            if match:
+                name = match.group(1).strip(" `\"'")
+            topic_match = re.search(r"(?:topic|topik)\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
+            if topic_match:
+                topic = self._strip_outer_quotes(topic_match.group(1))
+            return "create_channel", {"name": name, "topic": topic}
+
+        if "topic" in lower or "topik" in lower:
+            channel, topic = self._extract_channel_and_content(clean)
+            return "set_channel_topic", {"channel": channel, "topic": topic}
+
+        if "pin" in lower:
+            channel_match = re.search(r"(<#\d+>|#[\w-]+)", clean)
+            channel = channel_match.group(1).strip() if channel_match else ""
+            if not channel:
+                channel, _ = self._extract_channel_and_content(clean)
+            message_id = ""
+            match = re.search(r"\b(\d{16,25})\b", clean)
+            if match:
+                message_id = match.group(1)
+            return "pin_message", {"channel": channel, "message_id": message_id}
+
+        if any(word in lower for word in ("announce", "announcement", "pengumuman")):
+            channel, content = self._extract_channel_and_content(clean)
+            if not content and not channel:
+                match = re.search(
+                    r"\b(?:announcement|announce|pengumuman|kirim|send|post)(?:kan)?(?:\s+lagi)?\s*(?:pesan)?\s*(?:[:\-]\s*)?(.+)\Z",
+                    clean,
+                    re.I | re.S,
+                )
+                content = self._strip_outer_quotes(match.group(1)) if match else ""
+            return "send_announcement", {"channel": channel, "content": content, "title": "Announcement"}
+
+        if re.search(r"\brules?\b|\bperaturan\b", lower):
+            channel, content = self._extract_channel_and_content(clean)
+            if not content and not channel:
+                match = re.search(r"(?:rules?|peraturan)(?:\s+server)?\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
+                content = self._strip_outer_quotes(match.group(1)) if match else ""
+            return "update_rules", {"channel": channel, "content": content, "title": "Server Rules", "pin": True}
+
+        return None, {}
 
     def _parse_action_request(self, text: str) -> Optional[str]:
         lower = sanitize_text(text).lower()
@@ -142,13 +260,21 @@ class AIOperator(commands.Cog):
             return "run_server_audit"
         if "booster" in lower and ("sync" in lower or "sinkron" in lower or "rapikan" in lower):
             return "sync_booster_roles"
+        action, _ = self._parse_server_content_request(text)
+        if action:
+            return action
         return None
 
     def is_operator_command(self, text: str, user_id: int) -> bool:
         if not bot_config.AI_OPERATOR_ENABLED or not self._is_owner(user_id):
             return False
         command, _ = self._parse_operator_command(text)
-        return bool(command or self._parse_action_request(text))
+        if command:
+            return True
+        if user_id in self._drafts:
+            return True
+        action, _ = self._parse_server_content_request(text)
+        return bool(action or self._parse_action_request(text))
 
     async def propose_from_ai_result(self, result: AICaretakerResult, *, reason: str) -> None:
         if not bot_config.AI_OPERATOR_ENABLED:
@@ -261,7 +387,20 @@ class AIOperator(commands.Cog):
             lines.append(f"`{proposal.proposal_id}` - {ACTION_LABELS[proposal.action]} - expires in {ttl}s")
         await channel.send("Pending approvals:\n" + "\n".join(lines[:10]))
 
-    async def _reject(self, proposal_id: str, user_id: int, channel: discord.abc.Messageable) -> None:
+    def _resolve_single_pending_id(self, proposal_id: Optional[str]) -> Optional[str]:
+        self._cleanup()
+        if proposal_id:
+            return proposal_id
+        pending = [item.proposal_id for item in self._pending.values() if item.status == "pending"]
+        if len(pending) == 1:
+            return pending[0]
+        return None
+
+    async def _reject(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
+        proposal_id = self._resolve_single_pending_id(proposal_id)
+        if not proposal_id:
+            await channel.send("Tell me which proposal to reject, for example `reject abc123`.")
+            return
         proposal = self._pending.pop(proposal_id, None)
         if not proposal or proposal.expired:
             await channel.send(f"Proposal `{proposal_id}` is not pending or has expired.")
@@ -270,7 +409,11 @@ class AIOperator(commands.Cog):
         proposal.approved_by = user_id
         await channel.send(f"Rejected proposal `{proposal_id}`. No changes were made.")
 
-    async def _approve(self, proposal_id: str, user_id: int, channel: discord.abc.Messageable) -> None:
+    async def _approve(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
+        proposal_id = self._resolve_single_pending_id(proposal_id)
+        if not proposal_id:
+            await channel.send("Tell me which proposal to approve, for example `approve abc123`.")
+            return
         proposal = self._pending.get(proposal_id)
         if not proposal or proposal.expired:
             self._pending.pop(proposal_id, None)
@@ -389,6 +532,21 @@ class AIOperator(commands.Cog):
                 ]
             )
 
+        if proposal.action in SERVER_CONTENT_ACTIONS:
+            cog = self.bot.get_cog("ServerAdmin")
+            if not cog:
+                raise RuntimeError("Server admin cog is not loaded")
+            if proposal.action == "send_announcement":
+                return await cog.send_announcement(proposal.params)
+            if proposal.action == "update_rules":
+                return await cog.update_rules(proposal.params)
+            if proposal.action == "pin_message":
+                return await cog.pin_message(proposal.params)
+            if proposal.action == "set_channel_topic":
+                return await cog.set_channel_topic(proposal.params)
+            if proposal.action == "create_channel":
+                return await cog.create_channel(proposal.params)
+
         if proposal.action == "run_r2_maintenance":
             cog = self.bot.get_cog("R2MaintenanceCommands")
             if not cog:
@@ -459,6 +617,11 @@ class AIOperator(commands.Cog):
                 "This can add the Booster role to current boosters and remove it from members who no longer boost. "
                 "It uses Discord premium_since status and current role hierarchy."
             ),
+            "send_announcement": "This sends an embed announcement to the selected announcement channel.",
+            "update_rules": "This posts or updates the rules embed in the configured rules channel.",
+            "pin_message": "This pins the selected message, or the latest message in the selected channel if no message ID is provided.",
+            "set_channel_topic": "This updates the selected text channel topic.",
+            "create_channel": "This creates a new text channel in the server.",
         }
         proposal = await self.create_proposal(
             action=action,
@@ -471,6 +634,85 @@ class AIOperator(commands.Cog):
         )
         if not proposal:
             await message.channel.send("I could not create that proposal. Check whether the AI operator action is enabled.")
+
+    async def _create_server_content_proposal(
+        self,
+        message: discord.Message,
+        action: str,
+        params: dict[str, Any],
+    ) -> None:
+        missing = []
+        if action in {"send_announcement", "update_rules"} and not str(params.get("content") or "").strip():
+            missing.append("content")
+        if action == "set_channel_topic" and not str(params.get("topic") or "").strip():
+            missing.append("topic")
+        if action == "create_channel" and not str(params.get("name") or "").strip():
+            missing.append("name")
+
+        if missing:
+            self._drafts[message.author.id] = {"action": action, "params": params, "missing": missing}
+            examples = {
+                "send_announcement": 'Reply with the announcement text, for example: `Test`',
+                "update_rules": "Reply with the full rules text.",
+                "set_channel_topic": "Reply with the new topic text.",
+                "create_channel": "Reply with the channel name.",
+                "pin_message": "Reply with the message ID or include the target channel.",
+            }
+            await message.channel.send(
+                f"I need `{', '.join(missing)}` before I can create the proposal. "
+                f"{examples.get(action, 'Reply with the missing value.')}"
+            )
+            return
+
+        impact = {
+            "send_announcement": "This sends a public announcement embed to the selected channel after approval.",
+            "update_rules": "This posts or edits the server rules embed after approval.",
+            "pin_message": "This pins a message in the selected channel after approval.",
+            "set_channel_topic": "This changes the selected channel topic after approval.",
+            "create_channel": "This creates a text channel after approval.",
+        }.get(action, "This changes Discord server content after approval.")
+        proposal = await self.create_proposal(
+            action=action,
+            reason=f"Owner requested Discord server content action from DM: {sanitize_text(message.content)[:220]}",
+            impact=impact,
+            params=params,
+            source="owner-dm",
+            requested_by=message.author.id,
+            dedupe=False,
+        )
+        if proposal:
+            await message.channel.send(
+                f"Proposal `{proposal.proposal_id}` is ready for `{ACTION_LABELS[action]}`. "
+                f"Reply `approve {proposal.proposal_id}` to execute it."
+            )
+        else:
+            await message.channel.send("I could not create that proposal. Check whether the action is enabled.")
+
+    async def _continue_draft(self, message: discord.Message) -> bool:
+        draft = self._drafts.get(message.author.id)
+        if not draft:
+            return False
+        text = sanitize_text(message.content).strip()
+        if not text:
+            return True
+        action = draft["action"]
+        params = dict(draft.get("params") or {})
+        value = self._strip_outer_quotes(
+            re.sub(r"^(?:kirim|send|post|isi|content|topic|topik|name|nama)\s+", "", text, flags=re.I).strip()
+        )
+        value = re.sub(r"\s+(?:aja|saja|please|pls)$", "", value, flags=re.I).strip()
+        value = self._strip_outer_quotes(value)
+        if action in {"send_announcement", "update_rules"}:
+            params["content"] = value
+        elif action == "set_channel_topic":
+            params["topic"] = value
+        elif action == "create_channel":
+            params["name"] = value
+        elif action == "pin_message":
+            params["message_id"] = value
+        self._drafts.pop(message.author.id, None)
+        await self._create_server_content_proposal(message, action, params)
+        return True
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -490,6 +732,20 @@ class AIOperator(commands.Cog):
             return
         if command == "approve" and proposal_id:
             await self._approve(proposal_id, message.author.id, message.channel)
+            return
+        if command == "approve":
+            await self._approve(None, message.author.id, message.channel)
+            return
+        if command == "reject":
+            await self._reject(None, message.author.id, message.channel)
+            return
+
+        if await self._continue_draft(message):
+            return
+
+        server_action, params = self._parse_server_content_request(message.content)
+        if server_action:
+            await self._create_server_content_proposal(message, server_action, params)
             return
 
         action = self._parse_action_request(message.content)

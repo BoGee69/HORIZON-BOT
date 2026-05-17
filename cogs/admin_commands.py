@@ -276,7 +276,10 @@ class AdminCommands(commands.Cog):
                 f"Steam DB sync: `{ai_operator['allow_steam_db_sync']}`\n"
                 f"AI re-check: `{ai_operator['allow_ai_recheck']}`\n"
                 f"Server audit: `{ai_operator['allow_server_audit']}`\n"
-                f"Booster sync: `{ai_operator['allow_booster_sync']}`"
+                f"Booster sync: `{ai_operator['allow_booster_sync']}`\n"
+                f"Announcement: `{ai_operator['allow_send_announcement']}`\n"
+                f"Rules/topic/channel: `rules={ai_operator['allow_update_rules']}, "
+                f"topic={ai_operator['allow_set_channel_topic']}, create={ai_operator['allow_create_channel']}`"
             ),
             inline=False,
         )
