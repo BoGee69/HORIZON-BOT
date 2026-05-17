@@ -113,10 +113,16 @@ class ServerAdmin(commands.Cog):
             channel = guild.get_channel(int(target))
         if not channel and target:
             normalized = self._normalize_channel_name(target)
-            channel = discord.utils.find(lambda item: item.name.lower() == normalized, guild.text_channels)
+            channel = discord.utils.find(
+                lambda item: self._normalize_channel_name(item.name) == normalized,
+                guild.text_channels,
+            )
         if not channel and fallback_names:
             lowered = {self._normalize_channel_name(item) for item in fallback_names}
-            channel = discord.utils.find(lambda item: item.name.lower() in lowered, guild.text_channels)
+            channel = discord.utils.find(
+                lambda item: self._normalize_channel_name(item.name) in lowered,
+                guild.text_channels,
+            )
         if not isinstance(channel, discord.TextChannel):
             raise ValueError("Target text channel was not found.")
         return channel
