@@ -13,7 +13,7 @@ from discord.ext import commands
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
-from utils.attachments import read_message_attachments
+from utils.attachments import read_message_attachments, store_attachment_text
 from utils.r2_inventory import get_r2_inventory_snapshot_async
 
 log = logging.getLogger(__name__)
@@ -118,6 +118,8 @@ class AIChat(commands.Cog):
             attachments,
             purpose="personal DM chat context",
         )
+        if result.text:
+            store_attachment_text(self.bot, message.author.id, result, source="ai-chat-dm")
         parts = [text] if text else []
         if result.text:
             parts.append("[Attachment content]\n" + result.text)

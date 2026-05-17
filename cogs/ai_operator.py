@@ -21,7 +21,12 @@ from discord.ext import commands
 import config as bot_config
 from config import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING
 from utils.ai_caretaker import AICaretakerResult, sanitize_data, sanitize_text
-from utils.attachments import read_message_attachments
+from utils.attachments import (
+    clear_recent_attachment_text,
+    get_recent_attachment_text,
+    read_message_attachments,
+    store_attachment_text,
+)
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +177,12 @@ class AIOperator(commands.Cog):
         clean = sanitize_text(text).strip()
         channel = ""
         content = ""
+        explicit_channel = re.search(r"(<#\d+>|#[\w-]+)", clean)
+        if explicit_channel:
+            channel = explicit_channel.group(1).strip()
+            content = clean[explicit_channel.end() :].strip(" :-?")
+            return channel, self._strip_outer_quotes(content)
+
         match = re.search(r"(?:di|to|ke|in)\s+(<#\d+>|#[\w-]+|[\w-]+)\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
         if match:
             return match.group(1).strip(), self._strip_outer_quotes(match.group(2))
@@ -653,17 +664,27 @@ class AIOperator(commands.Cog):
             return True
         markers = {
             "seperti ini",
+            "seperti tadi",
             "kayak ini",
+            "kayak tadi",
             "seperti gambar",
+            "gambar tadi",
             "di file",
             "in file",
             "from file",
             "like this",
+            "from this",
             "this image",
+            "that image",
+            "previous image",
             "attached",
             "attachment",
             "dokumen",
             "document",
+            "copy text",
+            "copy the text",
+            "salin teks",
+            "ambil teks",
         }
         if any(marker in content for marker in markers):
             return True
@@ -678,10 +699,17 @@ class AIOperator(commands.Cog):
         params: dict[str, Any],
     ) -> list[str]:
         attachments = list(getattr(message, "attachments", []) or [])
-        if not attachments:
-            return []
-
         warnings: list[str] = []
+        if not attachments:
+            cached = get_recent_attachment_text(self.bot, message.author.id)
+            if action in {"send_announcement", "update_rules"} and cached:
+                existing = str(params.get("content") or "").strip()
+                if self._is_vague_attachment_request(action, existing):
+                    params["content"] = sanitize_text(str(cached.get("text") or "")).strip()
+                    params["_attachment_cache_used"] = True
+                    warnings.append("Using text from the most recent readable attachment.")
+            return warnings
+
         if action == "send_announcement":
             for attachment in attachments:
                 content_type = str(getattr(attachment, "content_type", "") or "").lower()
@@ -715,6 +743,8 @@ class AIOperator(commands.Cog):
             purpose=f"{ACTION_LABELS.get(action, action)} content",
         )
         warnings.extend(result.warnings)
+        if result.text:
+            store_attachment_text(self.bot, message.author.id, result, source="ai-operator-dm")
         extracted = sanitize_text(result.text).strip()
         if not extracted:
             return warnings
@@ -734,6 +764,7 @@ class AIOperator(commands.Cog):
         params: dict[str, Any],
     ) -> None:
         attachment_warnings = await self._apply_attachment_content(message, action, params)
+        attachment_cache_used = bool(params.pop("_attachment_cache_used", False))
 
         missing = []
         if action in {"send_announcement", "update_rules"} and not str(params.get("content") or "").strip():
@@ -779,6 +810,8 @@ class AIOperator(commands.Cog):
             dedupe=False,
         )
         if proposal:
+            if attachment_cache_used:
+                clear_recent_attachment_text(self.bot, message.author.id)
             warning_text = ""
             if attachment_warnings:
                 warning_text = "\nAttachment note: " + "; ".join(attachment_warnings[:3])

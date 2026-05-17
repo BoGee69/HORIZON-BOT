@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -44,6 +45,54 @@ class AttachmentReadResult:
     text: str = ""
     notes: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+def _get_attachment_cache(bot: Any) -> dict[int, dict[str, Any]]:
+    cache = getattr(bot, "ai_attachment_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        setattr(bot, "ai_attachment_cache", cache)
+    return cache
+
+
+def store_attachment_text(
+    bot: Any,
+    user_id: int,
+    result: AttachmentReadResult,
+    *,
+    source: str = "owner-dm",
+) -> None:
+    text = sanitize_text(result.text).strip()
+    if not text:
+        return
+    cache = _get_attachment_cache(bot)
+    cache[int(user_id)] = {
+        "text": text,
+        "notes": list(result.notes or [])[:5],
+        "warnings": list(result.warnings or [])[:5],
+        "source": sanitize_text(source)[:80],
+        "created_at": time.time(),
+    }
+
+
+def get_recent_attachment_text(bot: Any, user_id: int) -> dict[str, Any] | None:
+    cache = _get_attachment_cache(bot)
+    item = cache.get(int(user_id))
+    if not isinstance(item, dict):
+        return None
+    ttl = max(30, int(getattr(bot_config, "AI_ATTACHMENT_CACHE_SECONDS", 900) or 900))
+    if time.time() - float(item.get("created_at") or 0) > ttl:
+        cache.pop(int(user_id), None)
+        return None
+    text = sanitize_text(str(item.get("text") or "")).strip()
+    if not text:
+        cache.pop(int(user_id), None)
+        return None
+    return item
+
+
+def clear_recent_attachment_text(bot: Any, user_id: int) -> None:
+    _get_attachment_cache(bot).pop(int(user_id), None)
 
 
 def _attachment_name(attachment: Any) -> str:
