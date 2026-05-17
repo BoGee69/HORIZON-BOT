@@ -6,6 +6,7 @@ import logging
 import discord
 from discord.ext import commands
 
+import config as bot_config
 from config import BOOSTER_ROLE_IDS, BOOSTER_ROLE_NAME, BOOSTER_ROLE_NAMES
 
 log = logging.getLogger(__name__)
@@ -52,6 +53,53 @@ class BoosterRoles(commands.Cog):
                 after.guild,
                 {"Member": f"{after} ({after.id})", "Error": str(exc)},
             )
+
+    async def sync_guild(self, guild: discord.Guild) -> dict[str, int | str]:
+        role = await self._get_or_create_booster_role(guild)
+        if not role:
+            return {"guild": guild.name, "checked": 0, "added": 0, "removed": 0, "errors": 1}
+        if not await self._can_manage_role(guild, role):
+            return {"guild": guild.name, "checked": 0, "added": 0, "removed": 0, "errors": 1}
+
+        checked = added = removed = errors = 0
+        members = list(guild.members)
+        if not members and guild.chunked is False:
+            try:
+                members = [member async for member in guild.fetch_members(limit=None)]
+            except discord.HTTPException:
+                members = list(guild.members)
+
+        for member in members:
+            if member.bot:
+                continue
+            checked += 1
+            has_role = role in member.roles
+            is_booster = bool(member.premium_since)
+            try:
+                if is_booster and not has_role:
+                    await member.add_roles(role, reason="Owner-approved Booster role sync")
+                    added += 1
+                elif not is_booster and has_role:
+                    await member.remove_roles(role, reason="Owner-approved Booster role sync")
+                    removed += 1
+            except (discord.Forbidden, discord.HTTPException):
+                errors += 1
+
+        return {
+            "guild": guild.name,
+            "checked": checked,
+            "added": added,
+            "removed": removed,
+            "errors": errors,
+        }
+
+    async def sync_all_guilds(self) -> list[dict[str, int | str]]:
+        results = []
+        for guild in self.bot.guilds:
+            if bot_config.SERVER_ADMIN_GUILD_IDS and guild.id not in bot_config.SERVER_ADMIN_GUILD_IDS:
+                continue
+            results.append(await self.sync_guild(guild))
+        return results
 
     async def _get_or_create_booster_role(self, guild: discord.Guild) -> discord.Role | None:
         role = discord.utils.find(

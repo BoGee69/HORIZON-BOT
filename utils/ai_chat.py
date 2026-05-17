@@ -62,6 +62,7 @@ def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
             "r2": health.get("r2"),
             "r2_maintenance": health.get("r2_maintenance"),
             "steam_db_sync": health.get("steam_db_sync"),
+            "server_admin": health.get("server_admin"),
             "ai_caretaker": health.get("ai_caretaker"),
             "ai_operator": health.get("ai_operator"),
             "checks": health.get("checks"),
@@ -120,7 +121,8 @@ async def build_chat_prompt(bot: Any, *, user_name: str, user_message: str, hist
         "Safety boundaries: you cannot execute actions directly, cannot see raw secrets, must not ask for tokens, "
         "passwords, or API keys, and must not reveal sensitive data. If the Owner asks for a bot-changing action, "
         "explain that I can prepare an owner-approval proposal. Whitelisted proposal requests include R2 maintenance, "
-        "Steam DB sync, and AI caretaker checks; the Owner must approve the proposal before anything changes.\n"
+        "Steam DB sync, AI caretaker checks, server audits, and Booster role sync; the Owner must approve the proposal "
+        "before anything changes.\n"
         "Do not assist piracy, license bypassing, account abuse, or platform abuse. Focus on security, reliability, "
         "maintenance, and legitimate usage.\n"
         "Keep answers concise, clear, and based on system status when relevant.\n\n"

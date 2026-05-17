@@ -28,7 +28,13 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model
 OLLAMA_CHAT_PATH = "/api/chat"
 REDACTED = "[REDACTED]"
 MAX_EVENT_CHARS = 1600
-ALLOWED_PROPOSED_ACTIONS = {"run_r2_maintenance", "run_steam_db_sync", "run_ai_check"}
+ALLOWED_PROPOSED_ACTIONS = {
+    "run_r2_maintenance",
+    "run_steam_db_sync",
+    "run_ai_check",
+    "run_server_audit",
+    "sync_booster_roles",
+}
 
 _SENSITIVE_NAME_PARTS = (
     "token",
@@ -214,6 +220,7 @@ async def build_operational_snapshot(bot: Any, *, reason: str, context: Optional
         "health": health,
         "last_r2_maintenance": _summary_to_dict(getattr(bot, "last_r2_maintenance_summary", None)),
         "last_steam_db_sync": _summary_to_dict(getattr(bot, "last_steam_db_sync_summary", None)),
+        "last_server_admin": getattr(getattr(bot, "last_server_admin_summary", None), "to_dict", lambda: None)(),
         "recent_events": events.snapshot() if events else [],
     }
     return sanitize_data(snapshot)
@@ -240,7 +247,8 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         "Jika masalahnya bisa diperbaiki owner, beri langkah manual yang singkat dan aman.\n"
         "Kamu juga boleh mengusulkan aksi terkontrol melalui proposed_actions, tapi aksi itu hanya proposal "
         "dan tetap wajib disetujui owner sebelum dijalankan. Jangan pernah mengaku sudah menjalankan aksi.\n"
-        "Aksi yang valid hanya: run_r2_maintenance, run_steam_db_sync, run_ai_check.\n"
+        "Aksi yang valid hanya: run_r2_maintenance, run_steam_db_sync, run_ai_check, "
+        "run_server_audit, sync_booster_roles.\n"
         "Status harus salah satu: OK, WARNING, CRITICAL.\n"
         "Balas hanya JSON valid tanpa markdown dengan bentuk:\n"
         "{\n"
@@ -251,7 +259,7 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         '  "actions": ["langkah manual"],\n'
         '  "env_to_check": ["NAMA_ENV jika perlu"],\n'
         '  "proposed_actions": [\n'
-        '    {"action": "run_r2_maintenance|run_steam_db_sync|run_ai_check", "reason": "alasan", "impact": "dampak aman", "params": {}}\n'
+        '    {"action": "run_r2_maintenance|run_steam_db_sync|run_ai_check|run_server_audit|sync_booster_roles", "reason": "alasan", "impact": "dampak aman", "params": {}}\n'
         "  ]\n"
         "}\n\n"
         "Snapshot:\n"

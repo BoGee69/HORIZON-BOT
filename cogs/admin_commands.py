@@ -114,6 +114,7 @@ class AdminCommands(commands.Cog):
         r2 = health["r2"]
         r2_maintenance = health["r2_maintenance"]
         steam_db_sync = health["steam_db_sync"]
+        server_admin = health["server_admin"]
         ai_caretaker = health["ai_caretaker"]
         ai_chat = health["ai_chat"]
         ai_operator = health["ai_operator"]
@@ -211,6 +212,21 @@ class AdminCommands(commands.Cog):
             ),
             inline=False,
         )
+        last_server_admin = server_admin.get("last_summary") or {}
+        last_server_fields = last_server_admin.get("fields") if isinstance(last_server_admin, dict) else {}
+        embed.add_field(
+            name="Server Admin",
+            value=(
+                f"Enabled: `{server_admin['enabled']}`\n"
+                f"Guild filter: `{server_admin['guild_filter_count']}`\n"
+                f"Audit on start: `{server_admin['audit_on_start']}`\n"
+                f"Interval: `{server_admin['interval_hours']}h`\n"
+                f"Alert on issues: `{server_admin['alert_on_issues']}`\n"
+                f"Required perms: `{', '.join(server_admin['required_permissions']) or '-'}`\n"
+                f"Last checked: `{last_server_fields.get('Guilds checked', 'not yet')}`"
+            ),
+            inline=False,
+        )
         embed.add_field(
             name="Alerts",
             value=(
@@ -258,7 +274,9 @@ class AdminCommands(commands.Cog):
                 f"TTL: `{ai_operator['approval_ttl_seconds']}s`\n"
                 f"R2 maintenance: `{ai_operator['allow_r2_maintenance']}`\n"
                 f"Steam DB sync: `{ai_operator['allow_steam_db_sync']}`\n"
-                f"AI re-check: `{ai_operator['allow_ai_recheck']}`"
+                f"AI re-check: `{ai_operator['allow_ai_recheck']}`\n"
+                f"Server audit: `{ai_operator['allow_server_audit']}`\n"
+                f"Booster sync: `{ai_operator['allow_booster_sync']}`"
             ),
             inline=False,
         )

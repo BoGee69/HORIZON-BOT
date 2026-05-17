@@ -38,6 +38,10 @@ def parse_csv_set(value: str, default: str = "") -> set[str]:
     }
 
 
+def parse_str_list(value: str) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
+
 def env_path(name: str, default: Path) -> Path:
     raw = os.getenv(name, "").strip()
     path = Path(raw) if raw else default
@@ -192,6 +196,24 @@ AI_OPERATOR_MAX_PENDING = int(os.getenv("AI_OPERATOR_MAX_PENDING", "10"))
 AI_OPERATOR_ALLOW_R2_MAINTENANCE = parse_bool(os.getenv("AI_OPERATOR_ALLOW_R2_MAINTENANCE", "true"), True)
 AI_OPERATOR_ALLOW_STEAM_DB_SYNC = parse_bool(os.getenv("AI_OPERATOR_ALLOW_STEAM_DB_SYNC", "true"), True)
 AI_OPERATOR_ALLOW_AI_RECHECK = parse_bool(os.getenv("AI_OPERATOR_ALLOW_AI_RECHECK", "true"), True)
+AI_OPERATOR_ALLOW_SERVER_AUDIT = parse_bool(os.getenv("AI_OPERATOR_ALLOW_SERVER_AUDIT", "true"), True)
+AI_OPERATOR_ALLOW_BOOSTER_SYNC = parse_bool(os.getenv("AI_OPERATOR_ALLOW_BOOSTER_SYNC", "true"), True)
+
+SERVER_ADMIN_ENABLED = parse_bool(os.getenv("SERVER_ADMIN_ENABLED", "false"), False)
+SERVER_ADMIN_GUILD_IDS = parse_id_set(os.getenv("SERVER_ADMIN_GUILD_IDS", ""))
+SERVER_ADMIN_AUDIT_ON_START = parse_bool(os.getenv("SERVER_ADMIN_AUDIT_ON_START", "true"), True)
+SERVER_ADMIN_AUDIT_INTERVAL_HOURS = float(os.getenv("SERVER_ADMIN_AUDIT_INTERVAL_HOURS", "6"))
+SERVER_ADMIN_START_DELAY_SECONDS = float(os.getenv("SERVER_ADMIN_START_DELAY_SECONDS", "30"))
+SERVER_ADMIN_ALERT_ON_ISSUES = parse_bool(os.getenv("SERVER_ADMIN_ALERT_ON_ISSUES", "true"), True)
+SERVER_ADMIN_REQUIRED_PERMISSIONS = {
+    item.strip().lower()
+    for item in parse_str_list(
+        os.getenv(
+            "SERVER_ADMIN_REQUIRED_PERMISSIONS",
+            "manage_roles,send_messages,embed_links,read_message_history,manage_messages,moderate_members",
+        )
+    )
+}
 
 STEAM_API_KEY    = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API  = "https://store.steampowered.com/api/appdetails"

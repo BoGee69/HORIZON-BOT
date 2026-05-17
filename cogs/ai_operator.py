@@ -28,9 +28,11 @@ ACTION_LABELS = {
     "run_r2_maintenance": "Run R2 maintenance",
     "run_steam_db_sync": "Run Steam DB sync",
     "run_ai_check": "Run AI caretaker check",
+    "run_server_audit": "Run Discord server audit",
+    "sync_booster_roles": "Sync Booster roles",
 }
 
-WRITE_ACTIONS = {"run_r2_maintenance", "run_steam_db_sync"}
+WRITE_ACTIONS = {"run_r2_maintenance", "run_steam_db_sync", "sync_booster_roles"}
 
 
 @dataclass
@@ -75,6 +77,10 @@ class AIOperator(commands.Cog):
             return bool(bot_config.AI_OPERATOR_ALLOW_STEAM_DB_SYNC)
         if action == "run_ai_check":
             return bool(bot_config.AI_OPERATOR_ALLOW_AI_RECHECK)
+        if action == "run_server_audit":
+            return bool(bot_config.AI_OPERATOR_ALLOW_SERVER_AUDIT)
+        if action == "sync_booster_roles":
+            return bool(bot_config.AI_OPERATOR_ALLOW_BOOSTER_SYNC)
         return False
 
     def _cleanup(self) -> None:
@@ -132,6 +138,10 @@ class AIOperator(commands.Cog):
             return "run_steam_db_sync"
         if ("ai" in lower or "caretaker" in lower) and ("check" in lower or "cek" in lower):
             return "run_ai_check"
+        if ("server" in lower or "discord" in lower) and ("audit" in lower or "cek" in lower or "check" in lower):
+            return "run_server_audit"
+        if "booster" in lower and ("sync" in lower or "sinkron" in lower or "rapikan" in lower):
+            return "sync_booster_roles"
         return None
 
     def is_operator_command(self, text: str, user_id: int) -> bool:
@@ -329,6 +339,56 @@ class AIOperator(commands.Cog):
                 return "AI caretaker did not return a report. The provider may be unavailable or already busy."
             return f"{result.status}: {result.title} - {result.summary}"
 
+        if proposal.action == "run_server_audit":
+            cog = self.bot.get_cog("ServerAdmin")
+            if not cog:
+                raise RuntimeError("Server admin cog is not loaded")
+            summary = await cog.run_audit(automatic=False)
+            return self._summary_text(summary)
+
+        if proposal.action == "sync_booster_roles":
+            cog = self.bot.get_cog("BoosterRoles")
+            if not cog:
+                raise RuntimeError("Booster role cog is not loaded")
+            results = await cog.sync_all_guilds()
+            if not results:
+                return "No guilds were available for Booster role sync."
+            lines = []
+            total_added = total_removed = total_errors = total_checked = 0
+            for item in results:
+                checked = int(item.get("checked", 0) or 0)
+                added = int(item.get("added", 0) or 0)
+                removed = int(item.get("removed", 0) or 0)
+                errors = int(item.get("errors", 0) or 0)
+                total_checked += checked
+                total_added += added
+                total_removed += removed
+                total_errors += errors
+                lines.append(
+                    f"{item.get('guild')}: checked={checked}, added={added}, removed={removed}, errors={errors}"
+                )
+            if hasattr(self.bot, "record_ai_event"):
+                self.bot.record_ai_event(
+                    "warning" if total_errors else "info",
+                    "server_admin",
+                    "Owner-approved Booster role sync finished.",
+                    {
+                        "checked": total_checked,
+                        "added": total_added,
+                        "removed": total_removed,
+                        "errors": total_errors,
+                    },
+                )
+            return "\n".join(
+                [
+                    f"Checked: {total_checked}",
+                    f"Added: {total_added}",
+                    f"Removed: {total_removed}",
+                    f"Errors: {total_errors}",
+                    *lines[:5],
+                ]
+            )
+
         if proposal.action == "run_r2_maintenance":
             cog = self.bot.get_cog("R2MaintenanceCommands")
             if not cog:
@@ -394,6 +454,11 @@ class AIOperator(commands.Cog):
                 "It uses the current Railway variables."
             ),
             "run_ai_check": "This only asks the caretaker to re-check the current sanitized bot status.",
+            "run_server_audit": "This is read-only and checks Discord server permissions, roles, channels, and Booster role consistency.",
+            "sync_booster_roles": (
+                "This can add the Booster role to current boosters and remove it from members who no longer boost. "
+                "It uses Discord premium_since status and current role hierarchy."
+            ),
         }
         proposal = await self.create_proposal(
             action=action,

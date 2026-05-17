@@ -96,6 +96,15 @@ async def collect_health(bot) -> dict[str, Any]:
             "donor_role_names": sorted(bot_config.DONOR_ROLE_NAMES),
             "booster_role_names": sorted(bot_config.BOOSTER_ROLE_NAMES),
         },
+        "server_admin": {
+            "enabled": bool(bot_config.SERVER_ADMIN_ENABLED),
+            "guild_filter_count": len(bot_config.SERVER_ADMIN_GUILD_IDS),
+            "audit_on_start": bool(bot_config.SERVER_ADMIN_AUDIT_ON_START),
+            "interval_hours": bot_config.SERVER_ADMIN_AUDIT_INTERVAL_HOURS,
+            "alert_on_issues": bool(bot_config.SERVER_ADMIN_ALERT_ON_ISSUES),
+            "required_permissions": sorted(bot_config.SERVER_ADMIN_REQUIRED_PERMISSIONS),
+            "last_summary": getattr(getattr(bot, "last_server_admin_summary", None), "to_dict", lambda: None)(),
+        },
         "r2": {
             "public_base_url_configured": bool(bot_config.R2_BASE_URL),
             "presign_enabled": bool(_PRESIGN_ENABLED),
@@ -161,6 +170,8 @@ async def collect_health(bot) -> dict[str, Any]:
             "allow_r2_maintenance": bool(bot_config.AI_OPERATOR_ALLOW_R2_MAINTENANCE),
             "allow_steam_db_sync": bool(bot_config.AI_OPERATOR_ALLOW_STEAM_DB_SYNC),
             "allow_ai_recheck": bool(bot_config.AI_OPERATOR_ALLOW_AI_RECHECK),
+            "allow_server_audit": bool(bot_config.AI_OPERATOR_ALLOW_SERVER_AUDIT),
+            "allow_booster_sync": bool(bot_config.AI_OPERATOR_ALLOW_BOOSTER_SYNC),
         },
     }
 
