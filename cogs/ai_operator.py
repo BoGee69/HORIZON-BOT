@@ -218,7 +218,7 @@ class AIOperator(commands.Cog):
                 topic = self._strip_outer_quotes(topic_match.group(1))
             return "create_channel", {"name": name, "topic": topic}
 
-        if "topic" in lower or "topik" in lower:
+        if re.search(r"\b(?:set|atur|ubah|update|ganti)\s+(?:channel\s+)?(?:topic|topik)\b", lower):
             channel, topic = self._extract_channel_and_content(clean)
             return "set_channel_topic", {"channel": channel, "topic": topic}
 
