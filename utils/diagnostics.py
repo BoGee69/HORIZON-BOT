@@ -151,6 +151,17 @@ async def collect_health(bot) -> dict[str, Any]:
             "r2_stats_cache_seconds": bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
             "r2_stats_max_pages": bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
         },
+        "ai_operator": {
+            "enabled": bool(bot_config.AI_OPERATOR_ENABLED),
+            "allowed_ids_configured": bool(bot_config.AI_OPERATOR_ALLOWED_IDS),
+            "require_confirmation": bool(bot_config.AI_OPERATOR_REQUIRE_CONFIRMATION),
+            "approval_ttl_seconds": bot_config.AI_OPERATOR_APPROVAL_TTL_SECONDS,
+            "proposal_cooldown_seconds": bot_config.AI_OPERATOR_PROPOSAL_COOLDOWN_SECONDS,
+            "max_pending": bot_config.AI_OPERATOR_MAX_PENDING,
+            "allow_r2_maintenance": bool(bot_config.AI_OPERATOR_ALLOW_R2_MAINTENANCE),
+            "allow_steam_db_sync": bool(bot_config.AI_OPERATOR_ALLOW_STEAM_DB_SYNC),
+            "allow_ai_recheck": bool(bot_config.AI_OPERATOR_ALLOW_AI_RECHECK),
+        },
     }
 
 

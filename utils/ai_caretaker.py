@@ -28,6 +28,7 @@ GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model
 OLLAMA_CHAT_PATH = "/api/chat"
 REDACTED = "[REDACTED]"
 MAX_EVENT_CHARS = 1600
+ALLOWED_PROPOSED_ACTIONS = {"run_r2_maintenance", "run_steam_db_sync", "run_ai_check"}
 
 _SENSITIVE_NAME_PARTS = (
     "token",
@@ -63,6 +64,7 @@ class AICaretakerResult:
     causes: list[str] = field(default_factory=list)
     actions: list[str] = field(default_factory=list)
     env_to_check: list[str] = field(default_factory=list)
+    proposed_actions: list[dict[str, Any]] = field(default_factory=list)
     raw_text: str = ""
 
     @property
@@ -228,6 +230,9 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         "Tugasmu hanya menganalisis snapshot operasional yang sudah disanitasi. "
         "Jangan menyarankan tindakan ilegal, jangan meminta secret, dan jangan mengarang nilai env.\n"
         "Jika masalahnya bisa diperbaiki owner, beri langkah manual yang singkat dan aman.\n"
+        "Kamu juga boleh mengusulkan aksi terkontrol melalui proposed_actions, tapi aksi itu hanya proposal "
+        "dan tetap wajib disetujui owner sebelum dijalankan. Jangan pernah mengaku sudah menjalankan aksi.\n"
+        "Aksi yang valid hanya: run_r2_maintenance, run_steam_db_sync, run_ai_check.\n"
         "Status harus salah satu: OK, WARNING, CRITICAL.\n"
         "Balas hanya JSON valid tanpa markdown dengan bentuk:\n"
         "{\n"
@@ -236,7 +241,10 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         '  "summary": "ringkasan singkat",\n'
         '  "causes": ["kemungkinan penyebab"],\n'
         '  "actions": ["langkah manual"],\n'
-        '  "env_to_check": ["NAMA_ENV jika perlu"]\n'
+        '  "env_to_check": ["NAMA_ENV jika perlu"],\n'
+        '  "proposed_actions": [\n'
+        '    {"action": "run_r2_maintenance|run_steam_db_sync|run_ai_check", "reason": "alasan", "impact": "dampak aman", "params": {}}\n'
+        "  ]\n"
         "}\n\n"
         "Snapshot:\n"
         f"{body}"
@@ -416,6 +424,27 @@ def parse_ai_result(text: str) -> AICaretakerResult:
             return [sanitize_text(item)[:300] for item in value if str(item).strip()][:8]
         return []
 
+    proposed_actions: list[dict[str, Any]] = []
+    raw_actions = payload.get("proposed_actions", [])
+    if isinstance(raw_actions, dict):
+        raw_actions = [raw_actions]
+    if isinstance(raw_actions, list):
+        for item in raw_actions[:5]:
+            if not isinstance(item, dict):
+                continue
+            action = sanitize_text(item.get("action", "")).strip().lower()
+            if action not in ALLOWED_PROPOSED_ACTIONS:
+                continue
+            params = item.get("params", {})
+            proposed_actions.append(
+                {
+                    "action": action,
+                    "reason": sanitize_text(item.get("reason", ""))[:500],
+                    "impact": sanitize_text(item.get("impact", ""))[:500],
+                    "params": sanitize_data(params if isinstance(params, dict) else {}),
+                }
+            )
+
     return AICaretakerResult(
         status=status,
         title=sanitize_text(payload.get("title", "AI caretaker report"))[:120],
@@ -423,6 +452,7 @@ def parse_ai_result(text: str) -> AICaretakerResult:
         causes=listify("causes"),
         actions=listify("actions"),
         env_to_check=listify("env_to_check"),
+        proposed_actions=proposed_actions,
         raw_text=safe_text,
     )
 

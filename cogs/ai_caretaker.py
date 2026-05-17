@@ -140,6 +140,9 @@ class AICaretaker(commands.Cog):
                 key=f"ai-caretaker-{result.status.lower()}-{reason}",
                 force=result.status == "CRITICAL",
             )
+        operator = getattr(self.bot, "ai_operator", None)
+        if operator and result.proposed_actions:
+            await operator.propose_from_ai_result(result, reason=reason)
         return result
 
 

@@ -116,6 +116,7 @@ class AdminCommands(commands.Cog):
         steam_db_sync = health["steam_db_sync"]
         ai_caretaker = health["ai_caretaker"]
         ai_chat = health["ai_chat"]
+        ai_operator = health["ai_operator"]
 
         embed = discord.Embed(
             title="Runtime Config Status",
@@ -245,6 +246,19 @@ class AdminCommands(commands.Cog):
                 f"Ollama timeout: `{ai_chat['ollama_timeout_seconds']}s`\n"
                 f"R2 file stats: `{ai_chat['r2_stats_enabled']}`\n"
                 f"R2 stats cache: `{ai_chat['r2_stats_cache_seconds']}s`"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="AI Operator",
+            value=(
+                f"Enabled: `{ai_operator['enabled']}`\n"
+                f"Owner IDs: `{yes_no(ai_operator['allowed_ids_configured'])}`\n"
+                f"Confirmation: `{ai_operator['require_confirmation']}`\n"
+                f"TTL: `{ai_operator['approval_ttl_seconds']}s`\n"
+                f"R2 maintenance: `{ai_operator['allow_r2_maintenance']}`\n"
+                f"Steam DB sync: `{ai_operator['allow_steam_db_sync']}`\n"
+                f"AI re-check: `{ai_operator['allow_ai_recheck']}`"
             ),
             inline=False,
         )

@@ -58,6 +58,9 @@ class AIChat(commands.Cog):
             return
         if not message.content.strip():
             return
+        operator = getattr(self.bot, "ai_operator", None)
+        if operator and operator.is_operator_command(message.content, message.author.id):
+            return
         if self._cooling_down(message.author.id):
             return
 
