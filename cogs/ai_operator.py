@@ -173,6 +173,53 @@ class AIOperator(commands.Cog):
             return text[1:-1].strip()
         return text
 
+    def _strip_value_prefix(self, text: str, *, field: str | None = None) -> str:
+        clean = sanitize_text(text).strip()
+        if not clean:
+            return ""
+
+        patterns: list[str]
+        if field == "name":
+            patterns = [
+                r"^(?:nama\s*(?:nya)?|namanya|name(?:\s+is)?|channel\s+name)\s*[:=\-]?\s*",
+            ]
+        elif field == "topic":
+            patterns = [
+                r"^(?:topic|topik)(?:\s*(?:nya|is))?\s*[:=\-]?\s*",
+            ]
+        else:
+            patterns = [
+                r"^(?:kirim|send|post|isi|content|konten)\s*[:=\-]?\s*",
+                r"^(?:topic|topik)(?:\s*(?:nya|is))?\s*[:=\-]?\s*",
+                r"^(?:nama\s*(?:nya)?|namanya|name(?:\s+is)?|channel\s+name)\s*[:=\-]?\s*",
+            ]
+
+        for pattern in patterns:
+            clean = re.sub(pattern, "", clean, flags=re.I).strip()
+        clean = re.sub(r"\s+(?:aja|saja|please|pls)$", "", clean, flags=re.I).strip()
+        return self._strip_outer_quotes(clean)
+
+    @staticmethod
+    def _looks_like_channel_purpose(value: str) -> bool:
+        lower = sanitize_text(value).strip().lower()
+        if not lower:
+            return False
+        if re.match(r"^(?:untuk|buat|for|to)\b", lower):
+            return True
+        return any(
+            phrase in lower
+            for phrase in (
+                "menyambut",
+                "orang baru",
+                "baru join",
+                "new member",
+                "new members",
+                "welcome member",
+                "welcome members",
+                "member baru",
+            )
+        )
+
     def _extract_channel_and_content(self, text: str) -> tuple[str, str]:
         clean = sanitize_text(text).strip()
         channel = ""
@@ -206,16 +253,26 @@ class AIOperator(commands.Cog):
         if re.search(r"(?:buat|create|bikin|add)\s+(?:text\s+)?channel", lower):
             name = ""
             topic = ""
+            name_match = re.search(
+                r"(?:nama\s*(?:nya)?|namanya|name(?:\s+is)?|channel\s+name)\s*[:=\-]?\s*(.+)\Z",
+                clean,
+                re.I | re.S,
+            )
+            if name_match:
+                name = self._strip_value_prefix(name_match.group(1), field="name")
             match = re.search(
-                r"(?:channel)\s+(?:baru\s+)?[#`'\"]?([a-zA-Z0-9 _-]{2,100}?)(?:\s+(?:topic|topik)\b|$)",
+                r"(?:channel)\s+(?:baru\s+)?[#`'\"]?(.{2,100}?)(?:\s+(?:topic|topik)\b|$)",
                 clean,
                 re.I,
             )
-            if match:
+            if match and not name:
                 name = match.group(1).strip(" `\"'")
             topic_match = re.search(r"(?:topic|topik)\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
             if topic_match:
                 topic = self._strip_outer_quotes(topic_match.group(1))
+            if self._looks_like_channel_purpose(name):
+                topic = topic or name
+                name = ""
             return "create_channel", {"name": name, "topic": topic}
 
         if re.search(r"\b(?:set|atur|ubah|update|ganti)\s+(?:channel\s+)?(?:topic|topik)\b", lower):
@@ -286,6 +343,72 @@ class AIOperator(commands.Cog):
             return action
         return None
 
+    def _single_pending_for_user(
+        self,
+        user_id: int,
+        *,
+        action: str | None = None,
+    ) -> Optional[OperatorProposal]:
+        self._cleanup()
+        pending = [
+            item
+            for item in self._pending.values()
+            if item.status == "pending"
+            and not item.expired
+            and item.requested_by == user_id
+            and (not action or item.action == action)
+        ]
+        if len(pending) == 1:
+            return pending[0]
+        return None
+
+    def _parse_pending_update(
+        self,
+        text: str,
+        user_id: int,
+    ) -> tuple[Optional[OperatorProposal], dict[str, Any]]:
+        clean = sanitize_text(text).strip()
+        if not clean:
+            return None, {}
+
+        lower = clean.lower()
+        explicit_channel_update = bool(
+            re.match(
+                r"^(?:nama\s*(?:nya)?|namanya|name(?:\s+is)?|channel\s+name|topic|topik)\b",
+                clean,
+                re.I,
+            )
+        )
+        proposal = self._single_pending_for_user(user_id)
+        if not proposal and explicit_channel_update:
+            proposal = self._single_pending_for_user(user_id, action="create_channel")
+        if not proposal:
+            return None, {}
+
+        if proposal.action == "create_channel":
+            name_match = re.match(
+                r"^(?:nama\s*(?:nya)?|namanya|name(?:\s+is)?|channel\s+name)\s*[:=\-]?\s*(.+)\Z",
+                clean,
+                re.I | re.S,
+            )
+            if name_match:
+                name = self._strip_value_prefix(name_match.group(1), field="name")
+                return proposal, {"name": name} if name else {}
+
+            topic_match = re.match(r"^(?:topic|topik)(?:\s*(?:nya|is))?\s*[:=\-]?\s*(.+)\Z", clean, re.I | re.S)
+            if topic_match:
+                topic = self._strip_value_prefix(topic_match.group(1), field="topic")
+                return proposal, {"topic": topic} if topic else {}
+
+            if (
+                len(clean) <= 100
+                and len(clean.split()) <= 5
+                and not any(word in lower for word in ("buat", "create", "bikin", "announce", "rules", "approve", "reject"))
+            ):
+                return proposal, {"name": self._strip_outer_quotes(clean)}
+
+        return None, {}
+
     def is_operator_command(self, text: str, user_id: int) -> bool:
         if not bot_config.AI_OPERATOR_ENABLED or not self._is_owner(user_id):
             return False
@@ -293,6 +416,9 @@ class AIOperator(commands.Cog):
         if command:
             return True
         if user_id in self._drafts:
+            return True
+        proposal, updates = self._parse_pending_update(text, user_id)
+        if proposal and updates:
             return True
         action, _ = self._parse_server_content_request(text)
         return bool(action or self._parse_action_request(text))
@@ -823,6 +949,25 @@ class AIOperator(commands.Cog):
         else:
             await message.channel.send("I could not create that proposal. Check whether the action is enabled.")
 
+    async def _update_pending_proposal(self, message: discord.Message) -> bool:
+        proposal, updates = self._parse_pending_update(message.content, message.author.id)
+        if not proposal or not updates:
+            return False
+
+        proposal.params.update(sanitize_data(updates))
+        proposal.reason = (
+            f"Owner updated proposal from DM: {sanitize_text(message.content)[:220]}"
+        )
+        proposal.expires_at = time.time() + int(bot_config.AI_OPERATOR_APPROVAL_TTL_SECONDS or 900)
+
+        changed = ", ".join(f"`{key}`" for key in updates)
+        await message.channel.send(
+            f"Updated proposal `{proposal.proposal_id}` ({changed}). "
+            f"Reply `approve {proposal.proposal_id}` to execute it, or `reject {proposal.proposal_id}` to cancel."
+        )
+        await message.channel.send(embed=self._proposal_embed(proposal))
+        return True
+
     async def _continue_draft(self, message: discord.Message) -> bool:
         draft = self._drafts.get(message.author.id)
         if not draft:
@@ -834,18 +979,17 @@ class AIOperator(commands.Cog):
         action = draft["action"]
         params = dict(draft.get("params") or {})
         if text:
-            value = self._strip_outer_quotes(
-                re.sub(r"^(?:kirim|send|post|isi|content|topic|topik|name|nama)\s+", "", text, flags=re.I).strip()
-            )
-            value = re.sub(r"\s+(?:aja|saja|please|pls)$", "", value, flags=re.I).strip()
-            value = self._strip_outer_quotes(value)
             if action in {"send_announcement", "update_rules"}:
+                value = self._strip_value_prefix(text)
                 params["content"] = value
             elif action == "set_channel_topic":
+                value = self._strip_value_prefix(text, field="topic")
                 params["topic"] = value
             elif action == "create_channel":
+                value = self._strip_value_prefix(text, field="name")
                 params["name"] = value
             elif action == "pin_message":
+                value = self._strip_value_prefix(text)
                 params["message_id"] = value
         self._drafts.pop(message.author.id, None)
         await self._create_server_content_proposal(message, action, params)
@@ -878,6 +1022,9 @@ class AIOperator(commands.Cog):
             return
 
         if await self._continue_draft(message):
+            return
+
+        if await self._update_pending_proposal(message):
             return
 
         server_action, params = self._parse_server_content_request(message.content)

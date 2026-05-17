@@ -97,6 +97,14 @@ class ServerAdmin(commands.Cog):
         value = re.sub(r"-{2,}", "-", value).strip("-")
         return value[:90]
 
+    @staticmethod
+    def _clean_channel_name(value: str) -> str:
+        text = re.sub(r"<#(\d+)>", r"\1", str(value or "").strip())
+        text = text.strip("#").strip()
+        text = re.sub(r"[\r\n\t]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:100]
+
     def _resolve_text_channel(
         self,
         guild: discord.Guild,
@@ -304,10 +312,14 @@ class ServerAdmin(commands.Cog):
     async def create_channel(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)
         raw_name = self._require_text(params, "name", max_chars=100)
-        name = self._normalize_channel_name(raw_name)
+        name = self._clean_channel_name(raw_name)
         if not name:
-            raise ValueError("Channel name is invalid after normalization.")
-        if discord.utils.find(lambda item: item.name.lower() == name, guild.text_channels):
+            raise ValueError("Channel name is invalid.")
+        normalized_name = self._normalize_channel_name(name)
+        if discord.utils.find(
+            lambda item: self._normalize_channel_name(item.name) == normalized_name,
+            guild.text_channels,
+        ):
             raise ValueError(f"Text channel #{name} already exists.")
 
         category = None
