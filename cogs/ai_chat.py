@@ -12,7 +12,7 @@ from discord.ext import commands
 
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
-from utils.ai_chat import AIChatMemory, chat_with_triadbot
+from utils.ai_chat import AIChatMemory, build_local_fallback_reply, chat_with_triadbot
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class AIChat(commands.Cog):
     async def _reply_chunks(self, message: discord.Message, text: str) -> None:
         clean = sanitize_text(text).strip()
         if not clean:
-            clean = "Gw lagi blank sebentar. Coba kirim ulang ya."
+            clean = "Saya belum bisa menyusun respons yang valid. Silakan kirim ulang pesan tersebut."
         chunks = [clean[i : i + 1900] for i in range(0, len(clean), 1900)]
         for chunk in chunks[:3]:
             await message.channel.send(chunk)
@@ -63,7 +63,7 @@ class AIChat(commands.Cog):
 
         lock = self._locks.setdefault(message.author.id, asyncio.Lock())
         if lock.locked():
-            await message.channel.send("Satu-satu dulu ya, gw masih mikirin pesan sebelumnya.")
+            await message.channel.send("Saya masih memproses pesan sebelumnya. Mohon tunggu sebentar.")
             return
 
         async with lock:
@@ -86,12 +86,15 @@ class AIChat(commands.Cog):
                     )
             except AICaretakerUnavailable as exc:
                 log.warning("AI chat unavailable: %s", exc)
-                await message.channel.send(
-                    "Gemini lagi belum siap buat ngobrol. Cek `GEMINI_API_KEY` atau quota API-nya dulu."
+                fallback = await build_local_fallback_reply(
+                    self.bot,
+                    user_message=message.content,
+                    unavailable_reason=str(exc),
                 )
+                await self._reply_chunks(message, fallback)
             except Exception as exc:
                 log.exception("AI chat failed")
-                await message.channel.send("Gw kena error pas nyusun jawaban. Coba lagi sebentar.")
+                await message.channel.send("Saya mengalami error saat menyusun jawaban. Silakan coba lagi sebentar.")
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(
                         "error",
