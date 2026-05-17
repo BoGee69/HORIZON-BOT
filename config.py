@@ -154,6 +154,9 @@ AI_MAINTENANCE_PROVIDER = os.getenv("AI_MAINTENANCE_PROVIDER", AI_PROVIDER).stri
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com").strip().rstrip("/") or "https://ollama.com"
+OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
+OLLAMA_THINK = os.getenv("OLLAMA_THINK", "medium").strip().lower()
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m").strip()
 AI_MAINTENANCE_MODEL = os.getenv(
     "AI_MAINTENANCE_MODEL",
     "gpt-oss:120b" if AI_MAINTENANCE_PROVIDER == "ollama" else "gemini-2.5-flash-lite",

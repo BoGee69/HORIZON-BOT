@@ -227,7 +227,8 @@ class AdminCommands(commands.Cog):
                 f"Model: `{ai_caretaker['model']}`\n"
                 f"Interval: `{ai_caretaker['interval_minutes']}m`\n"
                 f"Owner DM IDs: `{yes_no(ai_caretaker['alert_ids_configured'])}`\n"
-                f"Provider API key: `{yes_no(ai_caretaker['provider_api_key_configured'])}`"
+                f"Provider API key: `{yes_no(ai_caretaker['provider_api_key_configured'])}`\n"
+                f"Ollama timeout: `{ai_caretaker['ollama_timeout_seconds']}s`"
             ),
             inline=False,
         )
@@ -241,6 +242,7 @@ class AdminCommands(commands.Cog):
                 f"Provider API key: `{yes_no(ai_chat['provider_api_key_configured'])}`\n"
                 f"History: `{ai_chat['max_history']}`\n"
                 f"Cooldown: `{ai_chat['cooldown_seconds']}s`\n"
+                f"Ollama timeout: `{ai_chat['ollama_timeout_seconds']}s`\n"
                 f"R2 file stats: `{ai_chat['r2_stats_enabled']}`\n"
                 f"R2 stats cache: `{ai_chat['r2_stats_cache_seconds']}s`"
             ),

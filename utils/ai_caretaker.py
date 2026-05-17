@@ -6,6 +6,7 @@ events. It must never receive raw secrets or perform actions on its own.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -75,6 +76,13 @@ class AICaretakerResult:
 
 class AICaretakerUnavailable(RuntimeError):
     """Raised when the AI provider cannot return an analysis."""
+
+
+def _ollama_chat_url() -> str:
+    host = bot_config.OLLAMA_HOST.strip().rstrip("/")
+    if host.endswith("/api"):
+        return f"{host}/chat"
+    return f"{host}{OLLAMA_CHAT_PATH}"
 
 
 class SafeEventRingBuffer:
@@ -299,8 +307,7 @@ async def call_ollama(
         raise AICaretakerUnavailable("HTTP session is not available")
 
     selected_model = model or bot_config.AI_MAINTENANCE_MODEL
-    host = bot_config.OLLAMA_HOST.rstrip("/")
-    url = f"{host}{OLLAMA_CHAT_PATH}"
+    url = _ollama_chat_url()
     payload = {
         "model": selected_model,
         "messages": [{"role": "user", "content": prompt}],
@@ -310,21 +317,33 @@ async def call_ollama(
             "num_predict": max_output_tokens,
         },
     }
-    timeout = aiohttp.ClientTimeout(total=60)
-    async with session.post(
-        url,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {bot_config.OLLAMA_API_KEY}",
-        },
-        json=payload,
-        timeout=timeout,
-    ) as response:
-        response_text = await response.text()
-        if response.status >= 400:
-            raise AICaretakerUnavailable(
-                f"Ollama API HTTP {response.status}: {sanitize_text(response_text[:600])}"
-            )
+    if bot_config.OLLAMA_THINK:
+        payload["think"] = bot_config.OLLAMA_THINK
+    if bot_config.OLLAMA_KEEP_ALIVE:
+        payload["keep_alive"] = bot_config.OLLAMA_KEEP_ALIVE
+
+    timeout = aiohttp.ClientTimeout(total=max(30.0, bot_config.OLLAMA_TIMEOUT_SECONDS))
+    try:
+        async with session.post(
+            url,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {bot_config.OLLAMA_API_KEY}",
+            },
+            json=payload,
+            timeout=timeout,
+        ) as response:
+            response_text = await response.text()
+            if response.status >= 400:
+                raise AICaretakerUnavailable(
+                    f"Ollama API HTTP {response.status}: {sanitize_text(response_text[:600])}"
+                )
+    except asyncio.TimeoutError as exc:
+        raise AICaretakerUnavailable(
+            f"Ollama API timed out after {int(max(30.0, bot_config.OLLAMA_TIMEOUT_SECONDS))} seconds"
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise AICaretakerUnavailable(f"Ollama API connection error: {sanitize_text(str(exc))[:300]}") from exc
 
     try:
         data = json.loads(response_text)
