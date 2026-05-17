@@ -163,6 +163,9 @@ class ServerAdmin(commands.Cog):
         title = str(params.get("title") or "Announcement").strip()[:256]
         content = self._require_text(params, "content", max_chars=3800)
         embed = self._server_embed(title=title, description=content, color=COLOR_INFO)
+        image_url = str(params.get("image_url") or "").strip()
+        if image_url.startswith(("http://", "https://")):
+            embed.set_image(url=image_url)
         message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
         return f"Announcement sent to #{channel.name} ({channel.id}). Message ID: {message.id}"
 

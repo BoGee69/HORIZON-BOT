@@ -83,7 +83,9 @@ class AIOperator(commands.Cog):
         self._pending: dict[str, OperatorProposal] = {}
         self._recent_signatures: dict[str, float] = {}
         self._drafts: dict[int, dict[str, Any]] = {}
-        self._execution_lock = asyncio.Lock()
+        self._maintenance_lock = asyncio.Lock()
+        self._server_lock = asyncio.Lock()
+        self._ai_lock = asyncio.Lock()
         bot.ai_operator = self
 
     async def cog_unload(self):
@@ -133,6 +135,13 @@ class AIOperator(commands.Cog):
         ]
         for signature in old_signatures:
             self._recent_signatures.pop(signature, None)
+
+    def _lock_for_action(self, action: str) -> tuple[asyncio.Lock, str]:
+        if action in {"run_r2_maintenance", "run_steam_db_sync"}:
+            return self._maintenance_lock, "maintenance"
+        if action in {"run_server_audit", "sync_booster_roles"} or action in SERVER_CONTENT_ACTIONS:
+            return self._server_lock, "server administration"
+        return self._ai_lock, "AI caretaker"
 
     def _parse_operator_command(self, text: str) -> tuple[str, Optional[str]]:
         clean = sanitize_text(text).strip()
@@ -422,15 +431,16 @@ class AIOperator(commands.Cog):
         if proposal.status != "pending":
             await channel.send(f"Proposal `{proposal_id}` is already `{proposal.status}`.")
             return
-        if self._execution_lock.locked():
-            await channel.send("Another owner-approved action is already running. Try again after it finishes.")
+        lock, lock_name = self._lock_for_action(proposal.action)
+        if lock.locked():
+            await channel.send(f"Another {lock_name} action is already running. Try again after it finishes.")
             return
 
         proposal.status = "running"
         proposal.approved_by = user_id
         await channel.send(f"Approved proposal `{proposal_id}`. I am running `{ACTION_LABELS[proposal.action]}` now.")
         try:
-            async with self._execution_lock:
+            async with lock:
                 result = await self._execute_action(proposal)
             proposal.status = "completed"
             proposal.result = result
@@ -641,6 +651,30 @@ class AIOperator(commands.Cog):
         action: str,
         params: dict[str, Any],
     ) -> None:
+        attachments = list(getattr(message, "attachments", []) or [])
+        if action == "send_announcement" and attachments:
+            first_url = str(getattr(attachments[0], "url", "") or "").strip()
+            if first_url.startswith(("http://", "https://")):
+                params["image_url"] = first_url
+        if action == "update_rules" and attachments:
+            content_hint = str(params.get("content") or "").strip().lower()
+            vague_screenshot_request = (
+                not content_hint
+                or len(content_hint) < 120
+                or any(marker in content_hint for marker in ("seperti ini", "kayak ini", "like this", "this image"))
+            )
+            if vague_screenshot_request:
+                self._drafts[message.author.id] = {
+                    "action": action,
+                    "params": {**params, "content": ""},
+                    "missing": ["content"],
+                }
+                await message.channel.send(
+                    "I can update the rules after approval, but I cannot safely turn screenshots into rules text. "
+                    "Please paste the full rules text as a message, then I will prepare the approval proposal."
+                )
+                return
+
         missing = []
         if action in {"send_announcement", "update_rules"} and not str(params.get("content") or "").strip():
             missing.append("content")
