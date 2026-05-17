@@ -39,6 +39,7 @@ ALLOWED_PROPOSED_ACTIONS = {
     "pin_message",
     "set_channel_topic",
     "create_channel",
+    "configure_channel_access",
 }
 
 _SENSITIVE_NAME_PARTS = (
@@ -254,7 +255,7 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         "dan tetap wajib disetujui owner sebelum dijalankan. Jangan pernah mengaku sudah menjalankan aksi.\n"
         "Aksi yang valid hanya: run_r2_maintenance, run_steam_db_sync, run_ai_check, "
         "run_server_audit, sync_booster_roles, send_announcement, update_rules, pin_message, "
-        "set_channel_topic, create_channel.\n"
+        "set_channel_topic, create_channel, configure_channel_access.\n"
         "Status harus salah satu: OK, WARNING, CRITICAL.\n"
         "Balas hanya JSON valid tanpa markdown dengan bentuk:\n"
         "{\n"
@@ -265,7 +266,7 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         '  "actions": ["langkah manual"],\n'
         '  "env_to_check": ["NAMA_ENV jika perlu"],\n'
         '  "proposed_actions": [\n'
-        '    {"action": "run_r2_maintenance|run_steam_db_sync|run_ai_check|run_server_audit|sync_booster_roles|send_announcement|update_rules|pin_message|set_channel_topic|create_channel", "reason": "alasan", "impact": "dampak aman", "params": {}}\n'
+        '    {"action": "run_r2_maintenance|run_steam_db_sync|run_ai_check|run_server_audit|sync_booster_roles|send_announcement|update_rules|pin_message|set_channel_topic|create_channel|configure_channel_access", "reason": "alasan", "impact": "dampak aman", "params": {}}\n'
         "  ]\n"
         "}\n\n"
         "Snapshot:\n"

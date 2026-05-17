@@ -136,6 +136,22 @@ class ServerAdmin(commands.Cog):
         return channel
 
     @staticmethod
+    def _find_roles(
+        guild: discord.Guild,
+        role_ids: set[int],
+        role_names: set[str],
+    ) -> list[discord.Role]:
+        found: list[discord.Role] = []
+        seen: set[int] = set()
+        lowered = {item.lower() for item in role_names}
+        for role in guild.roles:
+            if role.id in role_ids or role.name.lower() in lowered:
+                if role.id not in seen:
+                    found.append(role)
+                    seen.add(role.id)
+        return found
+
+    @staticmethod
     def _require_text(params: dict[str, Any], key: str, *, max_chars: int) -> str:
         value = str(params.get(key) or "").strip()
         if not value:
@@ -308,6 +324,73 @@ class ServerAdmin(commands.Cog):
         topic = self._require_text(params, "topic", max_chars=1024)
         await channel.edit(topic=topic, reason="Owner-approved channel topic update")
         return f"Topic updated for #{channel.name} ({channel.id}): {self._short_text(topic)}"
+
+    async def configure_channel_access(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        channel = self._resolve_text_channel(guild, params)
+        mode = str(params.get("mode") or "admin_mod_only_send").strip().lower()
+        if mode not in {"admin_mod_only_send", "staff_only_send"}:
+            raise ValueError(f"Unsupported channel access mode `{mode}`.")
+
+        admin_roles = self._find_roles(guild, bot_config.ADMIN_ROLE_IDS, bot_config.ADMIN_ROLE_NAMES)
+        moderator_roles = self._find_roles(guild, bot_config.MODERATOR_ROLE_IDS, bot_config.MODERATOR_ROLE_NAMES)
+        staff_roles: list[discord.Role] = []
+        seen: set[int] = set()
+        for role in [*admin_roles, *moderator_roles]:
+            if role.id not in seen:
+                staff_roles.append(role)
+                seen.add(role.id)
+
+        if not staff_roles:
+            raise ValueError(
+                "No Admin or Moderator role was found. Configure ADMIN_ROLE_IDS/MODERATOR_ROLE_IDS "
+                "or make sure the role names match ADMIN_ROLE_NAMES/MODERATOR_ROLE_NAMES."
+            )
+
+        everyone = guild.default_role
+        everyone_overwrite = channel.overwrites_for(everyone)
+        everyone_overwrite.view_channel = True
+        everyone_overwrite.read_message_history = True
+        everyone_overwrite.send_messages = False
+        everyone_overwrite.create_public_threads = False
+        everyone_overwrite.create_private_threads = False
+        everyone_overwrite.send_messages_in_threads = False
+        await channel.set_permissions(
+            everyone,
+            overwrite=everyone_overwrite,
+            reason="Owner-approved channel access configuration",
+        )
+
+        for role in staff_roles:
+            role_overwrite = channel.overwrites_for(role)
+            role_overwrite.view_channel = True
+            role_overwrite.read_message_history = True
+            role_overwrite.send_messages = True
+            role_overwrite.create_public_threads = True
+            role_overwrite.send_messages_in_threads = True
+            await channel.set_permissions(
+                role,
+                overwrite=role_overwrite,
+                reason="Owner-approved channel access configuration",
+            )
+
+        topic = str(params.get("topic") or "").strip()
+        if topic:
+            if len(topic) > 1024:
+                raise ValueError("`topic` is too long. Maximum is 1024 characters.")
+            await channel.edit(topic=topic, reason="Owner-approved channel access topic update")
+
+        missing_groups = []
+        if not admin_roles:
+            missing_groups.append("Admin")
+        if not moderator_roles:
+            missing_groups.append("Moderator")
+        role_names = ", ".join(role.name for role in staff_roles)
+        note = f" Missing configured role group(s): {', '.join(missing_groups)}." if missing_groups else ""
+        return (
+            f"Configured #{channel.name} ({channel.id}) so everyone can read but only staff roles can send. "
+            f"Allowed roles: {role_names}.{note}"
+        )
 
     async def create_channel(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)

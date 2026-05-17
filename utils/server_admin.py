@@ -158,6 +158,7 @@ async def audit_guild(guild: discord.Guild) -> GuildAudit:
 
     for role_name, role_ids, role_names in (
         ("Admin", bot_config.ADMIN_ROLE_IDS, bot_config.ADMIN_ROLE_NAMES),
+        ("Moderator", bot_config.MODERATOR_ROLE_IDS, bot_config.MODERATOR_ROLE_NAMES),
         ("Donor", bot_config.DONOR_ROLE_IDS, bot_config.DONOR_ROLE_NAMES),
         ("Booster", bot_config.BOOSTER_ROLE_IDS, bot_config.BOOSTER_ROLE_NAMES),
     ):

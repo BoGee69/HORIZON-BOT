@@ -46,7 +46,53 @@ class AIChat(commands.Cog):
             clean = "Saya belum bisa menyusun respons yang valid. Silakan kirim ulang pesan tersebut."
         chunks = [clean[i : i + 1900] for i in range(0, len(clean), 1900)]
         for chunk in chunks[:3]:
-            await message.channel.send(chunk)
+            await message.channel.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+
+    def _is_reply_to_bot(self, message: discord.Message) -> bool:
+        reference = getattr(message, "reference", None)
+        if not reference:
+            return False
+        resolved = getattr(reference, "resolved", None)
+        author = getattr(resolved, "author", None)
+        bot_user = getattr(self.bot, "user", None)
+        return bool(bot_user and author and author.id == bot_user.id)
+
+    def _server_reply_allowed(self, message: discord.Message) -> bool:
+        if not bot_config.AI_CHAT_SERVER_REPLIES_ENABLED:
+            return False
+        guild = getattr(message, "guild", None)
+        if not guild:
+            return False
+        configured = set(getattr(bot_config, "SERVER_ADMIN_GUILD_IDS", set()) or set())
+        if configured and guild.id not in configured:
+            return False
+        bot_user = getattr(self.bot, "user", None)
+        mentioned = bool(bot_user and bot_user in getattr(message, "mentions", []))
+        replied = self._is_reply_to_bot(message)
+        if bot_config.AI_CHAT_SERVER_REQUIRE_MENTION:
+            return mentioned or replied
+        lower = sanitize_text(message.content).lower()
+        passive_triggers = (
+            "triadbot",
+            "aturan",
+            "rules",
+            "peraturan",
+            "panduan",
+            "guide",
+            "resources",
+            "resource",
+            "r2",
+            "database",
+        )
+        return mentioned or replied or any(item in lower for item in passive_triggers)
+
+    def _strip_bot_mention(self, text: str) -> str:
+        bot_user = getattr(self.bot, "user", None)
+        clean = sanitize_text(text)
+        if bot_user:
+            clean = clean.replace(f"<@{bot_user.id}>", "")
+            clean = clean.replace(f"<@!{bot_user.id}>", "")
+        return clean.strip()
 
     def _wants_zip_name_stats(self, text: str, user_id: int) -> bool:
         lower = sanitize_text(text).lower()
@@ -133,13 +179,17 @@ class AIChat(commands.Cog):
             return
         if not bot_config.AI_CHAT_ENABLED:
             return
-        if not isinstance(message.channel, discord.DMChannel):
-            return
-        if not self._allowed(message.author.id):
-            return
-        operator = getattr(self.bot, "ai_operator", None)
-        if operator and operator.is_operator_command(message.content, message.author.id):
-            return
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        is_owner = self._allowed(message.author.id)
+        if is_dm:
+            if not is_owner:
+                return
+            operator = getattr(self.bot, "ai_operator", None)
+            if operator and operator.is_operator_command(message.content, message.author.id):
+                return
+        else:
+            if not self._server_reply_allowed(message):
+                return
         if not message.content.strip() and not getattr(message, "attachments", None):
             return
         if self._cooling_down(message.author.id):
@@ -147,17 +197,25 @@ class AIChat(commands.Cog):
 
         lock = self._locks.setdefault(message.author.id, asyncio.Lock())
         if lock.locked():
-            await message.channel.send("Saya masih memproses pesan sebelumnya. Mohon tunggu sebentar.")
+            await message.channel.send(
+                "Saya masih memproses pesan sebelumnya. Mohon tunggu sebentar.",
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
             return
 
         async with lock:
             try:
                 async with message.channel.typing():
                     user_message = await self._message_text_with_attachments(message)
+                    if not is_dm:
+                        user_message = self._strip_bot_mention(user_message)
                     if not user_message:
-                        await message.channel.send("Saya belum bisa membaca isi attachment itu.")
+                        await message.channel.send(
+                            "Saya belum bisa membaca isi attachment itu.",
+                            allowed_mentions=discord.AllowedMentions.none(),
+                        )
                         return
-                    if self._wants_zip_name_stats(user_message, message.author.id):
+                    if is_dm and self._wants_zip_name_stats(user_message, message.author.id):
                         reply = await self._zip_name_stats_reply()
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
@@ -168,25 +226,30 @@ class AIChat(commands.Cog):
                             user_name=str(message.author),
                             user_message=user_message,
                             memory=self.memory,
+                            is_owner=is_owner,
                         )
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(
                         "info",
                         "ai_chat",
-                        "AI chat replied to an allowed DM.",
-                        {"user_id": str(message.author.id)},
+                        "AI chat replied.",
+                        {"user_id": str(message.author.id), "dm": is_dm},
                     )
             except AICaretakerUnavailable as exc:
                 log.warning("AI chat unavailable: %s", exc)
                 await message.channel.send(
                     "AI provider utama belum siap. "
                     f"Provider: `{bot_config.AI_CHAT_PROVIDER}`, model: `{bot_config.AI_CHAT_MODEL}`. "
-                    "Cek API key, quota, dan nama model di Railway variables."
+                    "Cek API key, quota, dan nama model di Railway variables.",
+                    allowed_mentions=discord.AllowedMentions.none(),
                 )
             except Exception as exc:
                 log.exception("AI chat failed")
-                await message.channel.send("Saya mengalami error saat menyusun jawaban. Silakan coba lagi sebentar.")
+                await message.channel.send(
+                    "Saya mengalami error saat menyusun jawaban. Silakan coba lagi sebentar.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(
                         "error",

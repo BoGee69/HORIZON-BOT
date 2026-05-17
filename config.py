@@ -73,6 +73,12 @@ ADMIN_ROLE_NAMES = {
     for x in os.getenv("ADMIN_ROLE_NAMES", "admin,administrator,owner").split(",")
     if x.strip()
 }
+MODERATOR_ROLE_IDS = parse_id_set(os.getenv("MODERATOR_ROLE_IDS", ""))
+MODERATOR_ROLE_NAMES = {
+    x.strip().lower()
+    for x in os.getenv("MODERATOR_ROLE_NAMES", "moderator,mod").split(",")
+    if x.strip()
+}
 DONOR_ROLE_IDS = parse_id_set(os.getenv("DONOR_ROLE_IDS", ""))
 DONOR_ROLE_NAMES = {
     x.strip().lower()
@@ -187,6 +193,21 @@ AI_CHAT_MAX_MESSAGE_CHARS = int(os.getenv("AI_CHAT_MAX_MESSAGE_CHARS", "1800"))
 AI_CHAT_R2_STATS_ENABLED = parse_bool(os.getenv("AI_CHAT_R2_STATS_ENABLED", "true"), True)
 AI_CHAT_R2_STATS_CACHE_SECONDS = int(os.getenv("AI_CHAT_R2_STATS_CACHE_SECONDS", "900"))
 AI_CHAT_R2_STATS_MAX_PAGES = int(os.getenv("AI_CHAT_R2_STATS_MAX_PAGES", "2000"))
+AI_CHAT_SERVER_REPLIES_ENABLED = parse_bool(os.getenv("AI_CHAT_SERVER_REPLIES_ENABLED", "true"), True)
+AI_CHAT_SERVER_REQUIRE_MENTION = parse_bool(os.getenv("AI_CHAT_SERVER_REQUIRE_MENTION", "true"), True)
+AI_CHAT_SERVER_KNOWLEDGE_ENABLED = parse_bool(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_ENABLED", "true"), True)
+AI_CHAT_SERVER_KNOWLEDGE_CACHE_SECONDS = int(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_CACHE_SECONDS", "600"))
+AI_CHAT_SERVER_KNOWLEDGE_MAX_MESSAGES = int(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_MAX_MESSAGES", "12"))
+AI_CHAT_SERVER_KNOWLEDGE_MAX_CHARS = int(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_MAX_CHARS", "9000"))
+AI_CHAT_SERVER_KNOWLEDGE_CHANNEL_NAMES = {
+    item.lower()
+    for item in parse_str_list(
+        os.getenv(
+            "AI_CHAT_SERVER_KNOWLEDGE_CHANNEL_NAMES",
+            "rules,rule,server-rules,resources,resource,panduan,guide,guides,announcement,announcements,pengumuman,link-invite,welcome",
+        )
+    )
+}
 AI_ATTACHMENT_ENABLED = parse_bool(os.getenv("AI_ATTACHMENT_ENABLED", "true"), True)
 AI_ATTACHMENT_OCR_ENABLED = parse_bool(os.getenv("AI_ATTACHMENT_OCR_ENABLED", "true"), True)
 AI_ATTACHMENT_MAX_BYTES = int(os.getenv("AI_ATTACHMENT_MAX_BYTES", str(8 * 1024 * 1024)))
@@ -216,6 +237,10 @@ AI_OPERATOR_ALLOW_UPDATE_RULES = parse_bool(os.getenv("AI_OPERATOR_ALLOW_UPDATE_
 AI_OPERATOR_ALLOW_PIN_MESSAGE = parse_bool(os.getenv("AI_OPERATOR_ALLOW_PIN_MESSAGE", "true"), True)
 AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC = parse_bool(os.getenv("AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC", "true"), True)
 AI_OPERATOR_ALLOW_CREATE_CHANNEL = parse_bool(os.getenv("AI_OPERATOR_ALLOW_CREATE_CHANNEL", "true"), True)
+AI_OPERATOR_ALLOW_CONFIGURE_CHANNEL_ACCESS = parse_bool(
+    os.getenv("AI_OPERATOR_ALLOW_CONFIGURE_CHANNEL_ACCESS", "true"),
+    True,
+)
 
 SERVER_ADMIN_ENABLED = parse_bool(os.getenv("SERVER_ADMIN_ENABLED", "false"), False)
 SERVER_ADMIN_GUILD_IDS = parse_id_set(os.getenv("SERVER_ADMIN_GUILD_IDS", ""))

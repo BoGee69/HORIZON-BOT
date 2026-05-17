@@ -41,6 +41,7 @@ ACTION_LABELS = {
     "pin_message": "Pin message",
     "set_channel_topic": "Set channel topic",
     "create_channel": "Create text channel",
+    "configure_channel_access": "Configure channel access",
 }
 
 WRITE_ACTIONS = {
@@ -52,6 +53,7 @@ WRITE_ACTIONS = {
     "pin_message",
     "set_channel_topic",
     "create_channel",
+    "configure_channel_access",
 }
 
 SERVER_CONTENT_ACTIONS = {
@@ -60,6 +62,7 @@ SERVER_CONTENT_ACTIONS = {
     "pin_message",
     "set_channel_topic",
     "create_channel",
+    "configure_channel_access",
 }
 
 
@@ -122,6 +125,8 @@ class AIOperator(commands.Cog):
             return bool(bot_config.AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC)
         if action == "create_channel":
             return bool(bot_config.AI_OPERATOR_ALLOW_CREATE_CHANNEL)
+        if action == "configure_channel_access":
+            return bool(bot_config.AI_OPERATOR_ALLOW_CONFIGURE_CHANNEL_ACCESS)
         return False
 
     def _cleanup(self) -> None:
@@ -244,11 +249,113 @@ class AIOperator(commands.Cog):
                 content = clean[match.end() :].strip(" :-")
         return channel, self._strip_outer_quotes(content)
 
+    @staticmethod
+    def _extract_channel_reference(text: str) -> str:
+        clean = sanitize_text(text).strip()
+        match = re.search(r"(<#\d+>|#[\w-]+)", clean)
+        if match:
+            return match.group(1).strip()
+        match = re.search(
+            r"(?:channel|kanal|saluran)\s+([#]?[a-z0-9][a-z0-9_-]{1,90})",
+            clean,
+            re.I,
+        )
+        if match:
+            value = match.group(1).strip()
+            return value if value.startswith("#") else f"#{value}"
+        return ""
+
+    def _parse_channel_access_request(self, text: str) -> tuple[Optional[str], dict[str, Any]]:
+        clean = sanitize_text(text).strip()
+        lower = clean.lower()
+        if not clean:
+            return None, {}
+
+        access_intent = any(
+            phrase in lower
+            for phrase in (
+                "permission",
+                "permissions",
+                "akses",
+                "access",
+                "bisa chat",
+                "bisa kirim",
+                "kirim pesan",
+                "send message",
+                "send messages",
+                "chat only",
+                "only chat",
+                "read only",
+                "read-only",
+                "lock channel",
+                "kunci channel",
+                "hanya admin",
+                "cuma admin",
+                "admin dan moderator",
+                "admin/mod",
+                "moderator yang bisa",
+                "mod yang bisa",
+                "staff only",
+                "only staff",
+                "only admin",
+            )
+        )
+        if not access_intent:
+            return None, {}
+
+        channel = self._extract_channel_reference(clean)
+        channel_context = bool(channel) or bool(
+            re.search(r"\b(?:atur|set|ubah|configure|lock|kunci)\s+(?:channel|kanal|saluran)\b", lower)
+        )
+        if not channel_context:
+            return None, {}
+
+        staff_send_intent = any(
+            phrase in lower
+            for phrase in (
+                "hanya admin",
+                "cuma admin",
+                "only admin",
+                "admin dan moderator",
+                "admin/mod",
+                "moderator yang bisa",
+                "mod yang bisa",
+                "staff only",
+                "only staff",
+            )
+        ) and any(
+            phrase in lower
+            for phrase in (
+                "chat",
+                "send",
+                "kirim",
+                "pesan",
+                "bicara",
+                "ngobrol",
+                "write",
+            )
+        )
+        if not staff_send_intent:
+            return None, {}
+
+        return (
+            "configure_channel_access",
+            {
+                "channel": channel,
+                "mode": "admin_mod_only_send",
+                "reason": clean[:500],
+            },
+        )
+
     def _parse_server_content_request(self, text: str) -> tuple[Optional[str], dict[str, Any]]:
         clean = sanitize_text(text).strip()
         lower = clean.lower()
         if not clean:
             return None, {}
+
+        access_action, access_params = self._parse_channel_access_request(clean)
+        if access_action:
+            return access_action, access_params
 
         if re.search(r"(?:buat|create|bikin|add)\s+(?:text\s+)?channel", lower):
             name = ""
@@ -694,6 +801,8 @@ class AIOperator(commands.Cog):
                 return await cog.set_channel_topic(proposal.params)
             if proposal.action == "create_channel":
                 return await cog.create_channel(proposal.params)
+            if proposal.action == "configure_channel_access":
+                return await cog.configure_channel_access(proposal.params)
 
         if proposal.action == "run_r2_maintenance":
             cog = self.bot.get_cog("R2MaintenanceCommands")
@@ -770,6 +879,10 @@ class AIOperator(commands.Cog):
             "pin_message": "This pins the selected message, or the latest message in the selected channel if no message ID is provided.",
             "set_channel_topic": "This updates the selected text channel topic.",
             "create_channel": "This creates a new text channel in the server.",
+            "configure_channel_access": (
+                "This updates permission overwrites on an existing text channel so everyone can read "
+                "but only Admin/Moderator roles can send messages."
+            ),
         }
         proposal = await self.create_proposal(
             action=action,
@@ -899,6 +1012,8 @@ class AIOperator(commands.Cog):
             missing.append("topic")
         if action == "create_channel" and not str(params.get("name") or "").strip():
             missing.append("name")
+        if action == "configure_channel_access" and not str(params.get("channel") or "").strip():
+            missing.append("channel")
 
         if missing:
             self._drafts[message.author.id] = {"action": action, "params": params, "missing": missing}
@@ -908,6 +1023,7 @@ class AIOperator(commands.Cog):
                 "set_channel_topic": "Reply with the new topic text.",
                 "create_channel": "Reply with the channel name.",
                 "pin_message": "Reply with the message ID or include the target channel.",
+                "configure_channel_access": "Reply with the target channel, for example: `#welcome`.",
             }
             warning_text = ""
             if attachment_warnings:
@@ -925,6 +1041,10 @@ class AIOperator(commands.Cog):
             "pin_message": "This pins a message in the selected channel after approval.",
             "set_channel_topic": "This changes the selected channel topic after approval.",
             "create_channel": "This creates a text channel after approval.",
+            "configure_channel_access": (
+                "This changes channel permission overwrites after approval so everyone can read, "
+                "but only Admin/Moderator roles can send messages."
+            ),
         }.get(action, "This changes Discord server content after approval.")
         proposal = await self.create_proposal(
             action=action,
@@ -991,6 +1111,8 @@ class AIOperator(commands.Cog):
             elif action == "pin_message":
                 value = self._strip_value_prefix(text)
                 params["message_id"] = value
+            elif action == "configure_channel_access":
+                params["channel"] = self._extract_channel_reference(text) or self._strip_value_prefix(text)
         self._drafts.pop(message.author.id, None)
         await self._create_server_content_proposal(message, action, params)
         return True

@@ -90,9 +90,11 @@ async def collect_health(bot) -> dict[str, Any]:
         },
         "roles": {
             "admin_role_ids": len(bot_config.ADMIN_ROLE_IDS),
+            "moderator_role_ids": len(bot_config.MODERATOR_ROLE_IDS),
             "donor_role_ids": len(bot_config.DONOR_ROLE_IDS),
             "booster_role_ids": len(bot_config.BOOSTER_ROLE_IDS),
             "admin_role_names": sorted(bot_config.ADMIN_ROLE_NAMES),
+            "moderator_role_names": sorted(bot_config.MODERATOR_ROLE_NAMES),
             "donor_role_names": sorted(bot_config.DONOR_ROLE_NAMES),
             "booster_role_names": sorted(bot_config.BOOSTER_ROLE_NAMES),
         },
@@ -159,6 +161,10 @@ async def collect_health(bot) -> dict[str, Any]:
             "r2_stats_enabled": bool(bot_config.AI_CHAT_R2_STATS_ENABLED),
             "r2_stats_cache_seconds": bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
             "r2_stats_max_pages": bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
+            "server_replies_enabled": bool(bot_config.AI_CHAT_SERVER_REPLIES_ENABLED),
+            "server_require_mention": bool(bot_config.AI_CHAT_SERVER_REQUIRE_MENTION),
+            "server_knowledge_enabled": bool(bot_config.AI_CHAT_SERVER_KNOWLEDGE_ENABLED),
+            "server_knowledge_cache_seconds": bot_config.AI_CHAT_SERVER_KNOWLEDGE_CACHE_SECONDS,
         },
         "ai_operator": {
             "enabled": bool(bot_config.AI_OPERATOR_ENABLED),
@@ -177,6 +183,7 @@ async def collect_health(bot) -> dict[str, Any]:
             "allow_pin_message": bool(bot_config.AI_OPERATOR_ALLOW_PIN_MESSAGE),
             "allow_set_channel_topic": bool(bot_config.AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC),
             "allow_create_channel": bool(bot_config.AI_OPERATOR_ALLOW_CREATE_CHANNEL),
+            "allow_configure_channel_access": bool(bot_config.AI_OPERATOR_ALLOW_CONFIGURE_CHANNEL_ACCESS),
         },
     }
 
