@@ -141,7 +141,10 @@ class AICaretaker(commands.Cog):
                 force=result.status == "CRITICAL",
             )
         operator = getattr(self.bot, "ai_operator", None)
-        if operator and result.proposed_actions:
+        # Startup snapshots often arrive before delayed maintenance loops finish.
+        # Avoid noisy owner approval prompts unless a later trigger or explicit
+        # error asks for a concrete action.
+        if operator and result.proposed_actions and reason != "bot-startup":
             await operator.propose_from_ai_result(result, reason=reason)
         return result
 
