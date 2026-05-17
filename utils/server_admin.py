@@ -44,6 +44,10 @@ class GuildAudit:
     boosters: int = 0
     boosters_missing_role: int = 0
     non_boosters_with_role: int = 0
+    security_bot_found: bool = False
+    security_bot_name: str = ""
+    security_bot_role_found: bool = False
+    security_issues: list[str] = field(default_factory=list)
 
     @property
     def has_issues(self) -> bool:
@@ -53,6 +57,7 @@ class GuildAudit:
             or self.channel_issues
             or self.boosters_missing_role
             or self.non_boosters_with_role
+            or self.security_issues
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +75,10 @@ class GuildAudit:
                 "boosters": self.boosters,
                 "boosters_missing_role": self.boosters_missing_role,
                 "non_boosters_with_role": self.non_boosters_with_role,
+                "security_bot_found": self.security_bot_found,
+                "security_bot_name": self.security_bot_name,
+                "security_bot_role_found": self.security_bot_role_found,
+                "security_issues": self.security_issues[:12],
             }
         )
 
@@ -83,6 +92,7 @@ class ServerAdminSummary:
     channel_issues: int = 0
     boosters_missing_role: int = 0
     non_boosters_with_role: int = 0
+    security_issues: int = 0
     audits: list[GuildAudit] = field(default_factory=list)
 
     @property
@@ -98,6 +108,7 @@ class ServerAdminSummary:
             "Channel issues": str(self.channel_issues),
             "Boosters missing role": str(self.boosters_missing_role),
             "Non-boosters with role": str(self.non_boosters_with_role),
+            "Security bot issues": str(self.security_issues),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -122,15 +133,53 @@ def _find_role(guild: discord.Guild, role_ids: set[int], role_names: set[str]) -
     return discord.utils.find(lambda role: role.name.lower() in lowered, guild.roles)
 
 
-def _permission_missing(me: discord.Member) -> list[str]:
-    permissions = me.guild_permissions
+async def _find_member(
+    guild: discord.Guild,
+    member_ids: set[int],
+    member_names: set[str],
+) -> discord.Member | None:
+    for member_id in member_ids:
+        member = guild.get_member(member_id)
+        if member:
+            return member
+        try:
+            return await guild.fetch_member(member_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            continue
+
+    lowered = {item.lower() for item in member_names}
+    for member in guild.members:
+        names = {
+            str(getattr(member, "name", "") or "").lower(),
+            str(getattr(member, "display_name", "") or "").lower(),
+            str(getattr(member, "global_name", "") or "").lower(),
+        }
+        if names & lowered:
+            return member
+    return None
+
+
+def _permissions_missing(permissions: discord.Permissions, required: set[str]) -> list[str]:
     if permissions.administrator:
         return []
     missing = []
-    for name in sorted(bot_config.SERVER_ADMIN_REQUIRED_PERMISSIONS):
+    for name in sorted(required):
         if not getattr(permissions, name, False):
             missing.append(PERMISSION_LABELS.get(name, name))
     return missing
+
+
+def _permission_missing(me: discord.Member) -> list[str]:
+    return _permissions_missing(me.guild_permissions, bot_config.SERVER_ADMIN_REQUIRED_PERMISSIONS)
+
+
+def _role_in_member(member: discord.Member, role: discord.Role | None) -> bool:
+    return bool(role and role in getattr(member, "roles", []))
+
+
+def _channel_name_matches(channel: discord.TextChannel, names: set[str]) -> bool:
+    normalized = channel.name.lower().replace(" ", "-")
+    return normalized in {name.lower().replace(" ", "-") for name in names}
 
 
 async def audit_guild(guild: discord.Guild) -> GuildAudit:
@@ -196,6 +245,45 @@ async def audit_guild(guild: discord.Guild) -> GuildAudit:
             elif has_role:
                 audit.non_boosters_with_role += 1
 
+    if bot_config.SECURITY_BOT_AUDIT_ENABLED:
+        security_member = await _find_member(guild, bot_config.SECURITY_BOT_IDS, bot_config.SECURITY_BOT_NAMES)
+        security_role = _find_role(guild, bot_config.SECURITY_BOT_ROLE_IDS, bot_config.SECURITY_BOT_ROLE_NAMES)
+        audit.security_bot_role_found = bool(security_role)
+
+        if not security_member:
+            audit.security_issues.append("Security Bot was not found in this guild.")
+        else:
+            audit.security_bot_found = True
+            audit.security_bot_name = str(security_member)
+            if not getattr(security_member, "bot", False):
+                audit.security_issues.append("Configured Security Bot account is not marked as a bot account.")
+            if security_role and not _role_in_member(security_member, security_role):
+                audit.security_issues.append("Security Bot role exists, but it is not assigned to Security Bot.")
+            if not security_role and (bot_config.SECURITY_BOT_ROLE_IDS or bot_config.SECURITY_BOT_ROLE_NAMES):
+                audit.security_issues.append("Security Bot role was not found by configured IDs/names.")
+
+            missing = _permissions_missing(
+                security_member.guild_permissions,
+                bot_config.SECURITY_BOT_REQUIRED_PERMISSIONS,
+            )
+            if missing:
+                audit.security_issues.append(
+                    f"Security Bot is missing permissions: {', '.join(missing[:8])}."
+                )
+
+            if security_role and guild.me and security_role >= guild.me.top_role:
+                audit.security_issues.append(
+                    "Security Bot role is at or above TriadBot role, so TriadBot cannot adjust it automatically."
+                )
+
+        if bot_config.SECURITY_BOT_LOG_CHANNEL_REQUIRED:
+            channel = discord.utils.find(
+                lambda item: _channel_name_matches(item, bot_config.SECURITY_BOT_LOG_CHANNEL_NAMES),
+                guild.text_channels,
+            )
+            if not channel:
+                audit.security_issues.append("Security log channel was not found by configured names.")
+
     return audit
 
 
@@ -214,4 +302,5 @@ async def audit_servers(bot: Any) -> ServerAdminSummary:
         summary.channel_issues += len(audit.channel_issues)
         summary.boosters_missing_role += audit.boosters_missing_role
         summary.non_boosters_with_role += audit.non_boosters_with_role
+        summary.security_issues += len(audit.security_issues)
     return summary

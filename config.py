@@ -268,6 +268,28 @@ SERVER_ADMIN_REQUIRED_PERMISSIONS = {
         )
     )
 }
+SECURITY_BOT_AUDIT_ENABLED = parse_bool(os.getenv("SECURITY_BOT_AUDIT_ENABLED", "true"), True)
+SECURITY_BOT_IDS = parse_id_set(os.getenv("SECURITY_BOT_IDS", "651095740390834176"))
+SECURITY_BOT_NAMES = {
+    item.lower()
+    for item in parse_str_list(os.getenv("SECURITY_BOT_NAMES", "security,security bot"))
+}
+SECURITY_BOT_ROLE_IDS = parse_id_set(os.getenv("SECURITY_BOT_ROLE_IDS", ""))
+SECURITY_BOT_ROLE_NAMES = {
+    item.lower()
+    for item in parse_str_list(os.getenv("SECURITY_BOT_ROLE_NAMES", "security"))
+}
+SECURITY_BOT_REQUIRED_PERMISSIONS = {
+    item.strip().lower()
+    for item in parse_str_list(os.getenv("SECURITY_BOT_REQUIRED_PERMISSIONS", "administrator"))
+}
+SECURITY_BOT_LOG_CHANNEL_REQUIRED = parse_bool(os.getenv("SECURITY_BOT_LOG_CHANNEL_REQUIRED", "false"), False)
+SECURITY_BOT_LOG_CHANNEL_NAMES = {
+    item.lower()
+    for item in parse_str_list(
+        os.getenv("SECURITY_BOT_LOG_CHANNEL_NAMES", "security-logs,security-log,mod-logs,audit-log,logs")
+    )
+}
 
 STEAM_API_KEY    = os.getenv("STEAM_API_KEY", "")
 STEAM_STORE_API  = "https://store.steampowered.com/api/appdetails"
@@ -289,7 +311,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.0"
+BOT_VERSION     = "9.2.1"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))

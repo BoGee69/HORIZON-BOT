@@ -106,6 +106,16 @@ async def collect_health(bot) -> dict[str, Any]:
             "interval_hours": bot_config.SERVER_ADMIN_AUDIT_INTERVAL_HOURS,
             "alert_on_issues": bool(bot_config.SERVER_ADMIN_ALERT_ON_ISSUES),
             "required_permissions": sorted(bot_config.SERVER_ADMIN_REQUIRED_PERMISSIONS),
+            "security_bot": {
+                "audit_enabled": bool(bot_config.SECURITY_BOT_AUDIT_ENABLED),
+                "ids_configured": bool(bot_config.SECURITY_BOT_IDS),
+                "names": sorted(bot_config.SECURITY_BOT_NAMES),
+                "role_ids_configured": bool(bot_config.SECURITY_BOT_ROLE_IDS),
+                "role_names": sorted(bot_config.SECURITY_BOT_ROLE_NAMES),
+                "required_permissions": sorted(bot_config.SECURITY_BOT_REQUIRED_PERMISSIONS),
+                "log_channel_required": bool(bot_config.SECURITY_BOT_LOG_CHANNEL_REQUIRED),
+                "log_channel_names": sorted(bot_config.SECURITY_BOT_LOG_CHANNEL_NAMES),
+            },
             "last_summary": getattr(getattr(bot, "last_server_admin_summary", None), "to_dict", lambda: None)(),
         },
         "r2": {

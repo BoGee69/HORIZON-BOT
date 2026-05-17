@@ -453,7 +453,12 @@ class ServerAdmin(commands.Cog):
             if not audit.has_issues:
                 continue
             issue_lines.append(f"{audit.guild_name} ({audit.guild_id})")
-            for item in (audit.missing_permissions + audit.role_issues + audit.channel_issues)[:4]:
+            for item in (
+                audit.missing_permissions
+                + audit.role_issues
+                + audit.channel_issues
+                + audit.security_issues
+            )[:6]:
                 issue_lines.append(f"- {item}")
             if audit.boosters_missing_role:
                 issue_lines.append(f"- {audit.boosters_missing_role} booster(s) missing Booster role")
@@ -465,7 +470,7 @@ class ServerAdmin(commands.Cog):
             fields["Samples"] = "\n".join(issue_lines)[:1024]
         await notifier(
             "Discord server audit needs attention",
-            "Server caretaker found permission, role, channel, or Booster role issues.",
+            "Server caretaker found permission, role, channel, Booster role, or Security Bot issues.",
             level="warning",
             fields=fields,
             key="server-admin-audit-issues",
@@ -485,7 +490,10 @@ class ServerAdmin(commands.Cog):
             if not audit.has_issues:
                 continue
             samples.append(f"{audit.guild_name}: issues detected")
-            samples.extend(f"- {item}" for item in (audit.missing_permissions + audit.role_issues)[:3])
+            samples.extend(
+                f"- {item}"
+                for item in (audit.missing_permissions + audit.role_issues + audit.security_issues)[:5]
+            )
             if audit.boosters_missing_role:
                 samples.append(f"- {audit.boosters_missing_role} booster(s) missing Booster role")
             if audit.non_boosters_with_role:
