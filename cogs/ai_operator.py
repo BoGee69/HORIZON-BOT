@@ -270,6 +270,9 @@ class AIOperator(commands.Cog):
     @staticmethod
     def _extract_channel_reference(text: str) -> str:
         clean = sanitize_text(text).strip()
+        match = re.search(r"(?:channel\s*)?id\s*[:=\-]?\s*(\d{16,25})", clean, re.I)
+        if match:
+            return f"<#{match.group(1)}>"
         match = re.search(r"(<#\d+>|#[\w-]+)", clean)
         if match:
             return match.group(1).strip()
@@ -296,6 +299,15 @@ class AIOperator(commands.Cog):
                 "permissions",
                 "akses",
                 "access",
+                "has permission",
+                "permission to send",
+                "bot has permission",
+                "triadbot has permission",
+                "bot permission",
+                "bot permissions",
+                "izin bot",
+                "bot bisa",
+                "triadbot bisa",
                 "bisa chat",
                 "bisa kirim",
                 "kirim pesan",
@@ -328,6 +340,20 @@ class AIOperator(commands.Cog):
         if not channel_context:
             return None, {}
 
+        send_intent = any(
+            phrase in lower
+            for phrase in (
+                "chat",
+                "send",
+                "kirim",
+                "pesan",
+                "bicara",
+                "ngobrol",
+                "write",
+                "message",
+                "messages",
+            )
+        )
         staff_send_intent = any(
             phrase in lower
             for phrase in (
@@ -341,19 +367,30 @@ class AIOperator(commands.Cog):
                 "staff only",
                 "only staff",
             )
-        ) and any(
+        ) and send_intent
+        bot_send_intent = any(
             phrase in lower
             for phrase in (
-                "chat",
-                "send",
-                "kirim",
-                "pesan",
-                "bicara",
-                "ngobrol",
-                "write",
+                "bot",
+                "triadbot",
+                "bot role",
+                "role bot",
+                "peran bot",
+                "my role",
+            )
+        ) and send_intent and any(
+            phrase in lower
+            for phrase in (
+                "permission",
+                "permissions",
+                "izin",
+                "access",
+                "akses",
+                "can",
+                "bisa",
             )
         )
-        if not staff_send_intent:
+        if not (staff_send_intent or bot_send_intent):
             return None, {}
 
         return (
