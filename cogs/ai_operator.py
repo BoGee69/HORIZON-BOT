@@ -779,6 +779,218 @@ class AIOperator(commands.Cog):
             return pending[0]
         return None
 
+    def _recent_ai_chat_items(self, user_id: int, *, limit: int = 10) -> list[dict[str, str]]:
+        chat = self.bot.get_cog("AIChat")
+        memory = getattr(chat, "memory", None)
+        if not memory or not hasattr(memory, "snapshot"):
+            return []
+        try:
+            raw_items = list(memory.snapshot(user_id))[-limit:]
+        except Exception:
+            log.debug("Could not read AI chat memory for contextual approval", exc_info=True)
+            return []
+
+        items: list[dict[str, str]] = []
+        for item in raw_items:
+            role = sanitize_text(str(item.get("role") or "")).strip().lower()
+            text = sanitize_text(str(item.get("text") or "")).strip()
+            if role and text:
+                items.append({"role": role, "text": text[:2000]})
+        return items
+
+    def _recent_owner_user_context(self, user_id: int) -> str:
+        items = self._recent_ai_chat_items(user_id, limit=12)
+        user_lines: list[str] = []
+        for item in items:
+            if item.get("role") != "user":
+                continue
+            text = item.get("text") or ""
+            command, _ = self._parse_operator_command(text)
+            if command in {"approve", "reject", "pending"}:
+                continue
+            user_lines.append(text)
+        return "\n".join(user_lines[-5:]).strip()
+
+    def _extract_followup_channel(self, text: str) -> str:
+        channel = self._extract_channel_reference(text)
+        if channel:
+            return channel
+
+        clean = sanitize_text(text)
+        match = re.search(r"(?:channel\s*)?id\s*[:=\-]?\s*(\d{16,25})", clean, re.I)
+        if match:
+            return f"<#{match.group(1)}>"
+
+        lower = clean.lower()
+        if "welcome" in lower or "selamat datang" in lower or "menyambut" in lower:
+            return "#welcome"
+        if "announcement" in lower or "announce" in lower or "pengumuman" in lower:
+            return "#announcement"
+        if "rules" in lower or "peraturan" in lower:
+            return "#rules"
+        return ""
+
+    def _contextual_followup_actions(
+        self,
+        user_id: int,
+    ) -> tuple[list[tuple[str, dict[str, Any], str, str]], list[str]]:
+        context = self._recent_owner_user_context(user_id)
+        if not context:
+            return [], []
+
+        lower = context.lower()
+        actions: list[tuple[str, dict[str, Any], str, str]] = []
+        notes: list[str] = []
+
+        channel = self._extract_followup_channel(context)
+        staff_words = any(
+            phrase in lower
+            for phrase in (
+                "admin",
+                "moderator",
+                "mod",
+                "staff",
+                "bot role",
+                "role bot",
+                "my role",
+                "peran bot",
+                "triadbot",
+                "triadbot role",
+                "role triadbot",
+            )
+        )
+        send_words = any(
+            phrase in lower
+            for phrase in (
+                "chat",
+                "send",
+                "kirim",
+                "pesan",
+                "bicara",
+                "ngobrol",
+                "write",
+            )
+        )
+        access_words = any(
+            phrase in lower
+            for phrase in (
+                "permission",
+                "permissions",
+                "akses",
+                "access",
+                "only",
+                "hanya",
+                "cuma",
+                "lock",
+                "kunci",
+                "pastikan izin",
+                "ensure permission",
+            )
+        )
+        if (
+            channel
+            and staff_words
+            and send_words
+            and access_words
+            and self._action_enabled("configure_channel_access")
+        ):
+            actions.append(
+                (
+                    "configure_channel_access",
+                    {
+                        "channel": channel,
+                        "mode": "admin_mod_only_send",
+                        "reason": context[-500:],
+                    },
+                    "Follow-up from the previous owner chat: configure channel access.",
+                    "This changes channel overwrites so everyone can read, but only configured staff roles and the bot can send messages.",
+                )
+            )
+
+        if "r2" in lower and "maintenance" in lower and self._action_enabled("run_r2_maintenance"):
+            actions.append(
+                (
+                    "run_r2_maintenance",
+                    {},
+                    "Follow-up from the previous owner chat: run R2 maintenance.",
+                    "Safe maintenance run using current R2 rules. It can rename/clean objects only within the configured maintenance scope.",
+                )
+            )
+
+        if "steam" in lower and ("sync" in lower or "database" in lower or "db" in lower) and self._action_enabled(
+            "run_steam_db_sync"
+        ):
+            actions.append(
+                (
+                    "run_steam_db_sync",
+                    {},
+                    "Follow-up from the previous owner chat: run Steam DB sync.",
+                    "Reads Steam catalog data and updates the local games database according to the configured sync rules.",
+                )
+            )
+
+        if ("server" in lower or "discord" in lower) and ("audit" in lower or "cek" in lower or "check" in lower):
+            if self._action_enabled("run_server_audit"):
+                actions.append(
+                    (
+                        "run_server_audit",
+                        {},
+                        "Follow-up from the previous owner chat: run Discord server audit.",
+                        "Read-only server audit. It checks configured roles, permissions, channels, and Booster role state.",
+                    )
+                )
+
+        if "welcome-message" in lower or "welcome message" in lower or "pesan selamat datang" in lower:
+            notes.append(
+                "Welcome-message automation is not a whitelisted executable action yet, so I can only propose channel access changes for now."
+            )
+        if any(phrase in lower for phrase in ("hapus", "delete", "clear", "bersihkan")) and any(
+            phrase in lower for phrase in ("history", "message", "pesan", "gallery")
+        ):
+            notes.append("Bulk deleting old channel messages is not whitelisted, so I skipped that part.")
+
+        return actions[:3], notes[:3]
+
+    async def _create_contextual_followup_proposals(
+        self,
+        user_id: int,
+        channel: discord.abc.Messageable,
+    ) -> bool:
+        actions, notes = self._contextual_followup_actions(user_id)
+        if not actions:
+            return False
+
+        created: list[OperatorProposal] = []
+        for action, params, reason, impact in actions:
+            proposal = await self.create_proposal(
+                action=action,
+                reason=reason,
+                impact=impact,
+                params=params,
+                source="owner-followup",
+                requested_by=user_id,
+                dedupe=False,
+            )
+            if proposal:
+                created.append(proposal)
+
+        if not created:
+            return False
+
+        lines = [
+            "Saya ubah konteks chat terakhir menjadi proposal resmi:",
+            *[
+                f"`{proposal.proposal_id}` - {ACTION_LABELS[proposal.action]}"
+                for proposal in created
+            ],
+        ]
+        if notes:
+            lines.append("Catatan:")
+            lines.extend(f"- {note}" for note in notes)
+        lines.append("Balas `approve <id>` untuk menjalankan proposal yang dipilih.")
+        await channel.send("\n".join(lines))
+        return True
+
     async def _reject(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
         if not proposal_id:
@@ -795,6 +1007,8 @@ class AIOperator(commands.Cog):
     async def _approve(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
         if not proposal_id:
+            if await self._create_contextual_followup_proposals(user_id, channel):
+                return
             await self._send_missing_proposal_id(channel, verb="approve")
             return
         proposal = self._pending.get(proposal_id)

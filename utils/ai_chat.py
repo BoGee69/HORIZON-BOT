@@ -91,13 +91,17 @@ def _operator_boundary_reply(user_message: str) -> str:
             "I cannot create approvals from normal chat. A real owner approval must come from "
             "the operator and will show an `Owner approval required` card with a `Proposal ID`. "
             "Please send a specific supported action, such as `send announcement to #announcement: Test`, "
-            "`update rules in #rules: ...`, or `configure #welcome so only Admin can send messages`."
+            "`update rules in #rules: ...`, or `configure #welcome so only Admin can send messages`. "
+            "If this is a follow-up to my previous plan, reply `continue` so the operator can convert "
+            "supported parts into a real approval card."
         )
     return (
         "Saya tidak bisa membuat approval dari chat biasa. Proposal resmi harus dibuat oleh operator "
         "dan akan muncul sebagai card `Owner approval required` dengan `Proposal ID`. Kirim instruksi "
         "aksi yang spesifik, misalnya `kirim announcement di #announcement: Test`, "
-        "`buat rules di #rules: ...`, atau `atur #welcome hanya Admin yang bisa kirim pesan`."
+        "`buat rules di #rules: ...`, atau `atur #welcome hanya Admin yang bisa kirim pesan`. "
+        "Kalau ini lanjutan dari rencana saya sebelumnya, balas `lanjut` agar operator mengubah bagian "
+        "yang didukung menjadi card approval resmi."
     )
 
 
