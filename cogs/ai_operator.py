@@ -156,20 +156,35 @@ class AIOperator(commands.Cog):
 
     def _parse_operator_command(self, text: str) -> tuple[str, Optional[str]]:
         clean = sanitize_text(text).strip()
-        lower = clean.lower()
-        match = re.fullmatch(r"(approve|approved|acc|setuju|yes)\s+([a-f0-9]{6})", lower)
+        lower = re.sub(r"\s+", " ", clean.lower())
+        approve_words = r"approve|approved|accepted|acc|setuju|yes|ya|oke|ok"
+        reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
+
+        match = re.fullmatch(rf"(?:{approve_words})\s+([a-f0-9]{{6}})", lower)
         if match:
-            return ("approve", match.group(2))
-        if lower in {"approve", "approved", "acc", "setuju", "yes", "ya", "oke", "ok"}:
+            return ("approve", match.group(1))
+        if re.fullmatch(
+            rf"(?:(?:all(?:\s+of\s+them)?|semua|semuanya)\s+)?(?:{approve_words})(?:\s+(?:all|semua|semuanya))?",
+            lower,
+        ):
             return ("approve", None)
-        match = re.fullmatch(r"(reject|rejected|deny|cancel|tolak|batal|no)\s+([a-f0-9]{6})", lower)
+
+        match = re.fullmatch(rf"(?:{reject_words})\s+([a-f0-9]{{6}})", lower)
         if match:
-            return ("reject", match.group(2))
-        if lower in {"reject", "rejected", "deny", "cancel", "tolak", "batal", "no"}:
+            return ("reject", match.group(1))
+        if re.fullmatch(rf"(?:{reject_words})(?:\s+(?:all|semua|semuanya))?", lower):
             return ("reject", None)
-        if lower in {"pending approvals", "pending approval", "approval pending", "daftar approval", "approval"}:
+
+        if re.fullmatch(
+            r"(?:pending|list|show|daftar|lihat|cek)\s+(?:approval|approvals|proposal|proposals)|approval pending|pending approval|approval",
+            lower,
+        ):
             return ("pending", None)
         return ("", None)
+
+    def is_operator_control_text(self, text: str) -> bool:
+        command, _ = self._parse_operator_command(text)
+        return bool(command)
 
     @staticmethod
     def _strip_outer_quotes(value: str) -> str:
@@ -590,8 +605,7 @@ class AIOperator(commands.Cog):
     def is_operator_command(self, text: str, user_id: int) -> bool:
         if not bot_config.AI_OPERATOR_ENABLED or not self._is_owner(user_id):
             return False
-        command, _ = self._parse_operator_command(text)
-        if command:
+        if self.is_operator_control_text(text):
             return True
         if user_id in self._drafts:
             return True
@@ -606,6 +620,8 @@ class AIOperator(commands.Cog):
             return
         for item in result.proposed_actions:
             action = str(item.get("action", "")).strip().lower()
+            if action == "run_ai_check":
+                continue
             await self.create_proposal(
                 action=action,
                 reason=item.get("reason") or result.summary or f"AI caretaker triggered by {reason}",

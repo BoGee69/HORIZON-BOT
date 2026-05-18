@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 
 import discord
@@ -93,6 +94,33 @@ class AIChat(commands.Cog):
             clean = clean.replace(f"<@{bot_user.id}>", "")
             clean = clean.replace(f"<@!{bot_user.id}>", "")
         return clean.strip()
+
+    @staticmethod
+    def _looks_like_operator_control(text: str) -> bool:
+        clean = re.sub(r"\s+", " ", sanitize_text(text).strip().lower())
+        if not clean:
+            return False
+
+        strong_approve = r"approve|approved|accepted|acc|setuju"
+        weak_approve = r"yes|ya|oke|ok"
+        reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
+        all_words = r"all|semua|semuanya"
+
+        return bool(
+            re.fullmatch(
+                rf"(?:(?:all(?:\s+of\s+them)?|semua|semuanya)\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|[a-f0-9]{{6}}))?",
+                clean,
+            )
+            or re.fullmatch(rf"(?:{weak_approve})\s+[a-f0-9]{{6}}", clean)
+            or re.fullmatch(
+                rf"(?:{reject_words})(?:\s+(?:{all_words}|[a-f0-9]{{6}}))?",
+                clean,
+            )
+            or re.fullmatch(
+                r"(?:pending|list|show|daftar|lihat|cek)\s+(?:approval|approvals|proposal|proposals)|approval pending|pending approval|approval",
+                clean,
+            )
+        )
 
     def _wants_zip_name_stats(self, text: str, user_id: int) -> bool:
         lower = sanitize_text(text).lower()
@@ -186,6 +214,8 @@ class AIChat(commands.Cog):
                 return
             operator = getattr(self.bot, "ai_operator", None)
             if operator and operator.is_operator_command(message.content, message.author.id):
+                return
+            if self._looks_like_operator_control(message.content):
                 return
         else:
             if not self._server_reply_allowed(message):
