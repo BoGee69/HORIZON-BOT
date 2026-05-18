@@ -164,7 +164,6 @@ class AIChat(commands.Cog):
         remaining = appid_only + unknown
         last_summary = getattr(self.bot, "last_r2_maintenance_summary", None)
         last_renamed = getattr(last_summary, "rename_applied", None)
-        total_renamed_by_bot = getattr(last_summary, "total_rename_applied", None)
 
         lines = [
             "Saya hitung langsung dari R2, bukan dari total katalog games.json:",
@@ -174,13 +173,10 @@ class AIChat(commands.Cog):
             f"- ZIP yang masih AppID-only: `{appid_only:,}`",
             f"- ZIP dengan format belum dikenali: `{unknown:,}`",
             f"- Estimasi ZIP yang masih perlu dirapikan: `{remaining:,}`",
+            f"- Total rename efektif di R2 sekarang: `{named_zip:,}`",
         ]
         if last_renamed is not None:
             lines.append(f"- Rename applied pada run maintenance terakhir: `{int(last_renamed):,}`")
-        if total_renamed_by_bot:
-            lines.append(
-                f"- Total rename yang dicatat bot sejak counter aktif: `{int(total_renamed_by_bot):,}`"
-            )
         if inventory.get("truncated"):
             lines.append("")
             lines.append("Catatan: scan R2 terpotong karena batas halaman, jadi angka ini belum full bucket.")

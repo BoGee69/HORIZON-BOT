@@ -71,6 +71,10 @@ class R2MaintenanceSummary:
     skipped: int = 0
     total_rename_applied: int = 0
     total_comment_files_cleaned: int = 0
+    r2_zip_objects_counted: int = 0
+    r2_named_zip_objects_counted: int = 0
+    r2_appid_only_zip_objects_counted: int = 0
+    r2_unknown_zip_objects_counted: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
     applied_samples: list[str] = field(default_factory=list)
@@ -124,6 +128,10 @@ class R2MaintenanceSummary:
             "Skipped": str(self.skipped),
             "Total rename applied": str(self.total_rename_applied),
             "Total comment files cleaned": str(self.total_comment_files_cleaned),
+            "R2 ZIP objects counted": str(self.r2_zip_objects_counted),
+            "R2 ZIP already formatted": str(self.r2_named_zip_objects_counted),
+            "R2 ZIP AppID-only": str(self.r2_appid_only_zip_objects_counted),
+            "R2 ZIP unknown format": str(self.r2_unknown_zip_objects_counted),
             "Errors": str(len(self.errors)),
         }
 
@@ -289,6 +297,50 @@ def _load_state(path: Path = bot_config.R2_MAINTENANCE_STATE_PATH) -> dict[str, 
 
 def _save_state(state: dict[str, Any], path: Path = bot_config.R2_MAINTENANCE_STATE_PATH) -> None:
     save_json(path, state)
+
+
+def _reconcile_rename_totals_from_r2(
+    state: dict[str, Any],
+    summary: R2MaintenanceSummary,
+    prefix: str,
+) -> bool:
+    if summary.dry_run:
+        return False
+    try:
+        from utils.r2_inventory import get_r2_inventory_snapshot, invalidate_r2_inventory_cache
+
+        invalidate_r2_inventory_cache()
+        inventory = get_r2_inventory_snapshot(
+            prefix=prefix,
+            cache_seconds=0,
+            max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
+        )
+    except Exception:
+        log.debug("Could not reconcile R2 rename totals from live inventory", exc_info=True)
+        return False
+
+    if inventory.get("error"):
+        log.debug("Could not reconcile R2 rename totals: %s", inventory.get("error"))
+        return False
+
+    total_zip = int(inventory.get("zip_objects_counted") or 0)
+    named_zip = int(inventory.get("named_zip_objects_counted") or 0)
+    appid_only = int(inventory.get("appid_only_zip_objects_counted") or 0)
+    unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
+
+    summary.r2_zip_objects_counted = total_zip
+    summary.r2_named_zip_objects_counted = named_zip
+    summary.r2_appid_only_zip_objects_counted = appid_only
+    summary.r2_unknown_zip_objects_counted = unknown
+
+    totals = state.setdefault("totals", {})
+    current = int(totals.get("rename_applied", 0) or 0)
+    reconciled = max(current, named_zip) if inventory.get("truncated") else named_zip
+    summary.total_rename_applied = reconciled
+    if current == reconciled:
+        return False
+    totals["rename_applied"] = reconciled
+    return True
 
 
 def _failure_record(state: dict[str, Any], appid: str) -> dict[str, Any]:
@@ -638,6 +690,7 @@ def run_r2_maintenance(
             )
             summary.total_comment_files_cleaned = int(totals["comment_files_cleaned"])
             state_changed = True
+        state_changed = _reconcile_rename_totals_from_r2(state, summary, prefix) or state_changed
 
     if use_queue and apply and not summary.errors:
         last_key_by_prefix = state.setdefault("last_key_by_prefix", {})

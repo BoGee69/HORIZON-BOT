@@ -169,9 +169,17 @@ class AIOperator(commands.Cog):
         if match:
             return ("approve", match.group(1))
         if re.fullmatch(rf"(?:{all_words})", lower):
-            return ("approve", None)
+            return ("approve_all", None)
         if re.fullmatch(
-            rf"(?:(?:{all_words})\s+)?(?:{approve_words})(?:\s+(?:{all_words}))?",
+            rf"(?:(?:{all_words})\s+)?(?:{approve_words})\s+(?:{all_words})",
+            lower,
+        ) or re.fullmatch(
+            rf"(?:{all_words})\s+(?:{approve_words})",
+            lower,
+        ):
+            return ("approve_all", None)
+        if re.fullmatch(
+            rf"(?:{approve_words})",
             lower,
         ):
             return ("approve", None)
@@ -182,7 +190,12 @@ class AIOperator(commands.Cog):
         match = re.fullmatch(rf"([a-f0-9]{{6}})\s+(?:{reject_words})", lower)
         if match:
             return ("reject", match.group(1))
-        if re.fullmatch(rf"(?:{reject_words})(?:\s+(?:all|semua|semuanya))?", lower):
+        if re.fullmatch(
+            rf"(?:{reject_words})\s+(?:{all_words})|(?:{all_words})\s+(?:{reject_words})",
+            lower,
+        ):
+            return ("reject_all", None)
+        if re.fullmatch(rf"(?:{reject_words})", lower):
             return ("reject", None)
 
         if re.fullmatch(
@@ -777,9 +790,13 @@ class AIOperator(commands.Cog):
 
     def _pending_lines(self, proposals: list[OperatorProposal]) -> list[str]:
         lines: list[str] = []
-        for proposal in proposals[:10]:
+        visible = proposals[:15]
+        for proposal in visible:
             ttl = int(max(0, proposal.expires_at - time.time()))
             lines.append(f"`{proposal.proposal_id}` - {ACTION_LABELS[proposal.action]} - expires in {ttl}s")
+        remaining = len(proposals) - len(visible)
+        if remaining > 0:
+            lines.append(f"... and {remaining} more pending proposal(s).")
         return lines
 
     async def _send_missing_proposal_id(
@@ -804,7 +821,8 @@ class AIOperator(commands.Cog):
             )
             return
         await channel.send(
-            f"Multiple proposals are pending. Reply `{verb} <id>` for one of these:\n"
+            f"Multiple proposals are pending. Reply `{verb} <id>` for one of these, "
+            f"or reply `{verb} all` to apply every pending proposal:\n"
             + "\n".join(self._pending_lines(pending))
         )
 
@@ -850,7 +868,7 @@ class AIOperator(commands.Cog):
                 continue
             text = item.get("text") or ""
             command, _ = self._parse_operator_command(text)
-            if command in {"approve", "reject", "pending"}:
+            if command in {"approve", "approve_all", "reject", "reject_all", "pending"}:
                 continue
             user_lines.append(text)
         return "\n".join(user_lines[-5:]).strip()
@@ -1047,6 +1065,39 @@ class AIOperator(commands.Cog):
         proposal.status = "rejected"
         proposal.approved_by = user_id
         await channel.send(f"Rejected proposal `{proposal_id}`. No changes were made.")
+
+    async def _reject_all(self, user_id: int, channel: discord.abc.Messageable) -> None:
+        pending = self._pending_proposals()
+        if not pending:
+            await self._send_missing_proposal_id(channel, verb="reject")
+            return
+        ids = [proposal.proposal_id for proposal in pending]
+        for proposal_id in ids:
+            proposal = self._pending.pop(proposal_id, None)
+            if proposal and not proposal.expired:
+                proposal.status = "rejected"
+                proposal.approved_by = user_id
+        await channel.send(
+            "Rejected all pending proposals. No changes were made: "
+            + ", ".join(f"`{proposal_id}`" for proposal_id in ids)
+        )
+
+    async def _approve_all(self, user_id: int, channel: discord.abc.Messageable) -> None:
+        pending = self._pending_proposals()
+        if not pending:
+            if await self._create_contextual_followup_proposals(user_id, channel):
+                return
+            await self._send_missing_proposal_id(channel, verb="approve")
+            return
+        ids = [proposal.proposal_id for proposal in pending]
+        await channel.send(
+            "Approving all pending proposals in order: "
+            + ", ".join(f"`{proposal_id}`" for proposal_id in ids)
+        )
+        for proposal_id in ids:
+            if proposal_id in self._pending:
+                await self._approve(proposal_id, user_id, channel)
+                await asyncio.sleep(0.2)
 
     async def _approve(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
@@ -1516,6 +1567,12 @@ class AIOperator(commands.Cog):
         command, proposal_id = self._parse_operator_command(message.content)
         if command == "pending":
             await self._send_pending(message.channel)
+            return
+        if command == "reject_all":
+            await self._reject_all(message.author.id, message.channel)
+            return
+        if command == "approve_all":
+            await self._approve_all(message.author.id, message.channel)
             return
         if command == "reject" and proposal_id:
             await self._reject(proposal_id, message.author.id, message.channel)

@@ -76,7 +76,7 @@ ADMIN_ROLE_NAMES = {
 MODERATOR_ROLE_IDS = parse_id_set(os.getenv("MODERATOR_ROLE_IDS", ""))
 MODERATOR_ROLE_NAMES = {
     x.strip().lower()
-    for x in os.getenv("MODERATOR_ROLE_NAMES", "moderator,mod").split(",")
+    for x in os.getenv("MODERATOR_ROLE_NAMES", "triadbot,admin,moderator,mod").split(",")
     if x.strip()
 }
 MODERATOR_ROLE_REQUIRED = parse_bool(os.getenv("MODERATOR_ROLE_REQUIRED", "false"), False)
@@ -311,7 +311,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.6"
+BOT_VERSION     = "9.2.7"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))
