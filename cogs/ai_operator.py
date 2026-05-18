@@ -156,12 +156,16 @@ class AIOperator(commands.Cog):
 
     def _parse_operator_command(self, text: str) -> tuple[str, Optional[str]]:
         clean = sanitize_text(text).strip()
-        lower = re.sub(r"\s+", " ", clean.lower())
-        approve_words = r"approve|approved|accepted|acc|setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
+        lower = re.sub(r"\s+", " ", clean.lower()).strip(" `.,!;:")
+        approve_words = r"approve|approved|accept|accepted|acc|prove|aprove|aproove|approv|approvee|setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
         all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
+        id_prefix = r"(?:(?:proposal|proposal id|id)\s+)?"
 
-        match = re.fullmatch(rf"(?:{approve_words})\s+([a-f0-9]{{6}})", lower)
+        match = re.fullmatch(rf"(?:{approve_words})\s+{id_prefix}([a-f0-9]{{6}})", lower)
+        if match:
+            return ("approve", match.group(1))
+        match = re.fullmatch(rf"([a-f0-9]{{6}})\s+(?:{approve_words})", lower)
         if match:
             return ("approve", match.group(1))
         if re.fullmatch(rf"(?:{all_words})", lower):
@@ -172,7 +176,10 @@ class AIOperator(commands.Cog):
         ):
             return ("approve", None)
 
-        match = re.fullmatch(rf"(?:{reject_words})\s+([a-f0-9]{{6}})", lower)
+        match = re.fullmatch(rf"(?:{reject_words})\s+{id_prefix}([a-f0-9]{{6}})", lower)
+        if match:
+            return ("reject", match.group(1))
+        match = re.fullmatch(rf"([a-f0-9]{{6}})\s+(?:{reject_words})", lower)
         if match:
             return ("reject", match.group(1))
         if re.fullmatch(rf"(?:{reject_words})(?:\s+(?:all|semua|semuanya))?", lower):

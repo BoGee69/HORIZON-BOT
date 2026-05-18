@@ -97,27 +97,30 @@ class AIChat(commands.Cog):
 
     @staticmethod
     def _looks_like_operator_control(text: str) -> bool:
-        clean = re.sub(r"\s+", " ", sanitize_text(text).strip().lower())
+        clean = re.sub(r"\s+", " ", sanitize_text(text).strip().lower()).strip(" `.,!;:")
         if not clean:
             return False
 
-        strong_approve = r"approve|approved|accepted|acc|setuju|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
+        strong_approve = r"approve|approved|accept|accepted|acc|prove|aprove|aproove|approv|approvee|setuju|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
         weak_approve = r"yes|ya|oke|ok"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
         all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
+        id_prefix = r"(?:(?:proposal|proposal id|id)\s+)?"
 
         return bool(
             re.fullmatch(rf"(?:{all_words})", clean)
             or
             re.fullmatch(
-                rf"(?:(?:{all_words})\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|[a-f0-9]{{6}}))?",
+                rf"(?:(?:{all_words})\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|{id_prefix}[a-f0-9]{{6}}))?",
                 clean,
             )
-            or re.fullmatch(rf"(?:{weak_approve})\s+[a-f0-9]{{6}}", clean)
+            or re.fullmatch(rf"(?:{weak_approve})\s+{id_prefix}[a-f0-9]{{6}}", clean)
+            or re.fullmatch(rf"[a-f0-9]{{6}}\s+(?:{strong_approve}|{weak_approve})", clean)
             or re.fullmatch(
-                rf"(?:{reject_words})(?:\s+(?:{all_words}|[a-f0-9]{{6}}))?",
+                rf"(?:{reject_words})(?:\s+(?:{all_words}|{id_prefix}[a-f0-9]{{6}}))?",
                 clean,
             )
+            or re.fullmatch(rf"[a-f0-9]{{6}}\s+(?:{reject_words})", clean)
             or re.fullmatch(
                 r"(?:pending|list|show|daftar|lihat|cek)\s+(?:approval|approvals|proposal|proposals)|approval pending|pending approval|approval",
                 clean,
