@@ -52,6 +52,55 @@ def _detect_reply_language(message: str) -> str:
     return "Indonesian"
 
 
+def _looks_like_unbacked_approval_reply(text: str) -> bool:
+    clean = sanitize_text(text).strip().lower()
+    if not clean or re.search(r"\b[a-f0-9]{6}\b", clean):
+        return False
+    approval_terms = (
+        "proposal",
+        "approval",
+        "approve",
+        "reject",
+        "persetujuan",
+        "setuju",
+        "konfirmasi",
+    )
+    fake_claim_terms = (
+        "prepared",
+        "ready",
+        "submitted",
+        "registered",
+        "created the proposal",
+        "proposal is ready",
+        "proposal perubahan",
+        "menyiapkan proposal",
+        "membuat proposal",
+        "saya telah menyiapkan",
+        "siap untuk",
+        "siap dieksekusi",
+        "silakan approve",
+        "reply approve",
+        "balas approve",
+    )
+    return any(term in clean for term in approval_terms) and any(term in clean for term in fake_claim_terms)
+
+
+def _operator_boundary_reply(user_message: str) -> str:
+    if _detect_reply_language(user_message) == "English":
+        return (
+            "I cannot create approvals from normal chat. A real owner approval must come from "
+            "the operator and will show an `Owner approval required` card with a `Proposal ID`. "
+            "Please send a specific supported action, such as `send announcement to #announcement: Test`, "
+            "`update rules in #rules: ...`, or `configure #welcome so only Admin can send messages`."
+        )
+    return (
+        "Saya tidak bisa membuat approval dari chat biasa. Proposal resmi harus dibuat oleh operator "
+        "dan akan muncul sebagai card `Owner approval required` dengan `Proposal ID`. Kirim instruksi "
+        "aksi yang spesifik, misalnya `kirim announcement di #announcement: Test`, "
+        "`buat rules di #rules: ...`, atau `atur #welcome hanya Admin yang bisa kirim pesan`."
+    )
+
+
 def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
     return sanitize_data(
         {
@@ -309,14 +358,19 @@ async def build_chat_prompt(
         "what the Owner should configure in Security Bot, monitor the result from Discord state, and prepare "
         "owner-approved server-side fixes when possible.\n"
         "Safety boundaries: you cannot execute actions directly, cannot see raw secrets, must not ask for tokens, "
-        "passwords, or API keys, and must not reveal sensitive data. If the Owner asks for a bot-changing action, "
-        "explain that I can prepare an owner-approval proposal. Never claim that I posted, edited, pinned, created, "
-        "deleted, synced, or changed anything unless the operator result is present in recent context. Whitelisted "
-        "proposal requests include R2 maintenance, Steam DB sync, AI caretaker checks, server audits, Booster role "
-        "sync, announcements, rules updates, message pinning, channel topic updates, text channel creation, "
-        "and channel access configuration. "
-        "The Owner must approve the proposal before anything changes. If a non-owner asks for changes, explain "
-        "that the Owner must approve it.\n"
+        "passwords, or API keys, and must not reveal sensitive data. Critical operator boundary: normal AI chat "
+        "cannot create, submit, or approve proposals. Only the AI operator creates a real approval card with a "
+        "6-character Proposal ID. Never say a proposal is ready/prepared/submitted, never ask the user to "
+        "approve/reject, never invent proposal IDs, and never summarize an approval proposal unless that exact "
+        "real Proposal ID is present in recent context. If action requires changes, ask the Owner to send a "
+        "specific supported action request; the operator will create the approval card. Whitelisted proposal "
+        "requests include R2 maintenance, Steam DB sync, AI caretaker checks, server audits, Booster role sync, "
+        "announcements, rules updates, message pinning, channel topic updates, text channel creation, and "
+        "channel access configuration. Unsupported actions include deleting channel history, operating another "
+        "bot website/private dashboard, and welcome-message automation unless a real operator action exists. "
+        "Never claim that I posted, edited, pinned, created, deleted, synced, or changed anything unless the "
+        "operator result is present in recent context. If a non-owner asks for changes, explain that the Owner "
+        "must approve it.\n"
         "Intent rule: make reasonable assumptions from the latest instruction. If the user says to adjust, lock, "
         "or set an existing #channel so only admin/moderator can chat, treat that as a channel access "
         "configuration request, not a new channel request. If the instruction is unsafe or ambiguous, ask one "
@@ -375,6 +429,8 @@ async def chat_with_triadbot(
             reply = "Saya tidak menerima respons yang valid. Silakan kirim ulang pesan tersebut."
     max_chars = max(500, int(bot_config.AI_CHAT_MAX_REPLY_CHARS or 1800))
     reply = reply[:max_chars]
+    if _looks_like_unbacked_approval_reply(reply):
+        reply = _operator_boundary_reply(user_message)
     memory.append(user_id, "user", user_message)
     memory.append(user_id, "assistant", reply)
     return reply

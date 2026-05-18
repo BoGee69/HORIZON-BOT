@@ -101,14 +101,16 @@ class AIChat(commands.Cog):
         if not clean:
             return False
 
-        strong_approve = r"approve|approved|accepted|acc|setuju"
+        strong_approve = r"approve|approved|accepted|acc|setuju|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
         weak_approve = r"yes|ya|oke|ok"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
-        all_words = r"all|semua|semuanya"
+        all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
 
         return bool(
+            re.fullmatch(rf"(?:{all_words})", clean)
+            or
             re.fullmatch(
-                rf"(?:(?:all(?:\s+of\s+them)?|semua|semuanya)\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|[a-f0-9]{{6}}))?",
+                rf"(?:(?:{all_words})\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|[a-f0-9]{{6}}))?",
                 clean,
             )
             or re.fullmatch(rf"(?:{weak_approve})\s+[a-f0-9]{{6}}", clean)

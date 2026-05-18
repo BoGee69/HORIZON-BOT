@@ -157,14 +157,17 @@ class AIOperator(commands.Cog):
     def _parse_operator_command(self, text: str) -> tuple[str, Optional[str]]:
         clean = sanitize_text(text).strip()
         lower = re.sub(r"\s+", " ", clean.lower())
-        approve_words = r"approve|approved|accepted|acc|setuju|yes|ya|oke|ok"
+        approve_words = r"approve|approved|accepted|acc|setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
+        all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
 
         match = re.fullmatch(rf"(?:{approve_words})\s+([a-f0-9]{{6}})", lower)
         if match:
             return ("approve", match.group(1))
+        if re.fullmatch(rf"(?:{all_words})", lower):
+            return ("approve", None)
         if re.fullmatch(
-            rf"(?:(?:all(?:\s+of\s+them)?|semua|semuanya)\s+)?(?:{approve_words})(?:\s+(?:all|semua|semuanya))?",
+            rf"(?:(?:{all_words})\s+)?(?:{approve_words})(?:\s+(?:{all_words}))?",
             lower,
         ):
             return ("approve", None)
@@ -717,22 +720,61 @@ class AIOperator(commands.Cog):
             except Exception:
                 log.warning("Could not send AI operator proposal to owner %s", user_id, exc_info=True)
 
-    async def _send_pending(self, channel: discord.abc.Messageable) -> None:
+    def _pending_proposals(self) -> list[OperatorProposal]:
         self._cleanup()
-        if not self._pending:
-            await channel.send("No pending owner approvals right now.")
-            return
-        lines = []
-        for proposal in sorted(self._pending.values(), key=lambda item: item.created_at):
+        return sorted(
+            (
+                proposal
+                for proposal in self._pending.values()
+                if proposal.status == "pending" and not proposal.expired
+            ),
+            key=lambda item: item.created_at,
+        )
+
+    def _pending_lines(self, proposals: list[OperatorProposal]) -> list[str]:
+        lines: list[str] = []
+        for proposal in proposals[:10]:
             ttl = int(max(0, proposal.expires_at - time.time()))
             lines.append(f"`{proposal.proposal_id}` - {ACTION_LABELS[proposal.action]} - expires in {ttl}s")
-        await channel.send("Pending approvals:\n" + "\n".join(lines[:10]))
+        return lines
+
+    async def _send_missing_proposal_id(
+        self,
+        channel: discord.abc.Messageable,
+        *,
+        verb: str,
+    ) -> None:
+        pending = self._pending_proposals()
+        if not pending:
+            await channel.send(
+                "No pending owner approvals right now. A real proposal always appears as an "
+                "`Owner approval required` card with a `Proposal ID`. Ask me for a supported "
+                f"action first, then reply `{verb} <id>` using the ID shown on that card."
+            )
+            return
+        if len(pending) == 1:
+            proposal = pending[0]
+            await channel.send(
+                f"One proposal is pending: `{proposal.proposal_id}` - {ACTION_LABELS[proposal.action]}. "
+                f"Reply `{verb} {proposal.proposal_id}` to continue."
+            )
+            return
+        await channel.send(
+            f"Multiple proposals are pending. Reply `{verb} <id>` for one of these:\n"
+            + "\n".join(self._pending_lines(pending))
+        )
+
+    async def _send_pending(self, channel: discord.abc.Messageable) -> None:
+        pending = self._pending_proposals()
+        if not pending:
+            await channel.send("No pending owner approvals right now.")
+            return
+        await channel.send("Pending approvals:\n" + "\n".join(self._pending_lines(pending)))
 
     def _resolve_single_pending_id(self, proposal_id: Optional[str]) -> Optional[str]:
-        self._cleanup()
         if proposal_id:
             return proposal_id
-        pending = [item.proposal_id for item in self._pending.values() if item.status == "pending"]
+        pending = [item.proposal_id for item in self._pending_proposals()]
         if len(pending) == 1:
             return pending[0]
         return None
@@ -740,7 +782,7 @@ class AIOperator(commands.Cog):
     async def _reject(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
         if not proposal_id:
-            await channel.send("Tell me which proposal to reject, for example `reject abc123`.")
+            await self._send_missing_proposal_id(channel, verb="reject")
             return
         proposal = self._pending.pop(proposal_id, None)
         if not proposal or proposal.expired:
@@ -753,7 +795,7 @@ class AIOperator(commands.Cog):
     async def _approve(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
         if not proposal_id:
-            await channel.send("Tell me which proposal to approve, for example `approve abc123`.")
+            await self._send_missing_proposal_id(channel, verb="approve")
             return
         proposal = self._pending.get(proposal_id)
         if not proposal or proposal.expired:
