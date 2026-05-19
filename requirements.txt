@@ -27,9 +27,10 @@ boto3>=1.34.0
 # JWT
 PyJWT>=2.8.0
 
-# Open Directory scraping (cogs/opendir_sync.py)
-beautifulsoup4>=4.12.0
-lxml>=5.0.0
-
 # Attachment text extraction for owner DM workflows
 pypdf>=4.0.0
+
+# HTML parser for authorized Open Directory sync
+beautifulsoup4>=4.12.0
+aiohttp>=3.9.0
+boto3>=1.34.0

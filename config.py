@@ -119,6 +119,33 @@ R2_ACCOUNT_ID        = os.getenv("R2_ACCOUNT_ID", "")
 R2_BUCKET_NAME       = os.getenv("R2_BUCKET_NAME", "")
 LINK_EXPIRE_SECONDS  = int(os.getenv("LINK_EXPIRE_SECONDS", "3600"))
 
+# Open Directory -> R2 sync (disabled by default). Use only for sources you own or have permission to mirror.
+OPENDIR_SYNC_ENABLED = parse_bool(os.getenv("OPENDIR_SYNC_ENABLED", "false"), False)
+OPENDIR_BASE_URL = os.getenv("OPENDIR_BASE_URL", os.getenv("OPEN_DIRECTORY_URL", "")).strip()
+OPENDIR_R2_PREFIX = os.getenv("OPENDIR_R2_PREFIX", "Database/").strip()
+OPENDIR_INTERVAL_HOURS = float(os.getenv("OPENDIR_INTERVAL_HOURS", os.getenv("SYNC_INTERVAL_HOURS", "6")))
+OPENDIR_RUN_ON_START = parse_bool(os.getenv("OPENDIR_RUN_ON_START", "true"), True)
+OPENDIR_START_DELAY_SECONDS = float(os.getenv("OPENDIR_START_DELAY_SECONDS", "20"))
+OPENDIR_MAX_DEPTH = int(os.getenv("OPENDIR_MAX_DEPTH", "3"))
+OPENDIR_MAX_FILES_PER_RUN = int(os.getenv("OPENDIR_MAX_FILES_PER_RUN", "0"))  # 0 = no explicit per-run cap
+OPENDIR_MAX_FILE_MB = int(os.getenv("OPENDIR_MAX_FILE_MB", "1024"))
+OPENDIR_CONCURRENCY = int(os.getenv("OPENDIR_CONCURRENCY", "2"))
+OPENDIR_QUEUE_CHUNKS = int(os.getenv("OPENDIR_QUEUE_CHUNKS", "8"))
+OPENDIR_CHUNK_SIZE_BYTES = int(os.getenv("OPENDIR_CHUNK_SIZE_BYTES", str(1024 * 1024)))
+OPENDIR_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_REQUEST_TIMEOUT_SECONDS", "900"))
+OPENDIR_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_CONNECT_TIMEOUT_SECONDS", "30"))
+OPENDIR_READ_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_READ_TIMEOUT_SECONDS", "120"))
+OPENDIR_USE_HEAD = parse_bool(os.getenv("OPENDIR_USE_HEAD", "true"), True)
+OPENDIR_NOTIFY_ON_SUCCESS = parse_bool(os.getenv("OPENDIR_NOTIFY_ON_SUCCESS", "false"), False)
+OPENDIR_FLATTEN_R2_KEYS = parse_bool(os.getenv("OPENDIR_FLATTEN_R2_KEYS", "false"), False)
+OPENDIR_ALLOWED_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_ALLOWED_EXTENSIONS", "zip,manifest,lua,acf,vdf"))
+OPENDIR_ALLOWED_HOSTS = {x.strip().lower() for x in os.getenv("OPENDIR_ALLOWED_HOSTS", "").split(",") if x.strip()}
+OPENDIR_USER_AGENT = os.getenv("OPENDIR_USER_AGENT", "TriadBot OpenDirSync").strip()
+
+# Backwards compatibility for the earlier cogs/opendir_sync.py variable names.
+OPEN_DIRECTORY_URL = OPENDIR_BASE_URL
+SYNC_INTERVAL_HOURS = OPENDIR_INTERVAL_HOURS
+
 R2_MAINTENANCE_ENABLED = parse_bool(os.getenv("R2_MAINTENANCE_ENABLED", "false"), False)
 R2_MAINTENANCE_APPLY = parse_bool(os.getenv("R2_MAINTENANCE_APPLY", "false"), False)
 R2_MAINTENANCE_RUN_ON_START = parse_bool(os.getenv("R2_MAINTENANCE_RUN_ON_START", "true"), True)
@@ -144,23 +171,6 @@ R2_MAINTENANCE_QUEUE_ENABLED = parse_bool(os.getenv("R2_MAINTENANCE_QUEUE_ENABLE
 R2_MAINTENANCE_FALLBACK_TO_APPID = parse_bool(os.getenv("R2_MAINTENANCE_FALLBACK_TO_APPID", "true"), True)
 R2_MAINTENANCE_BLACKLIST_THRESHOLD = int(os.getenv("R2_MAINTENANCE_BLACKLIST_THRESHOLD", "3"))
 R2_MAINTENANCE_STATE_PATH = env_path("R2_MAINTENANCE_STATE_PATH", DATA_DIR / "r2_maintenance_state.json")
-
-# ── Open Directory → R2 Sync ──────────────────────────────────────────────────
-# Modul cogs/opendir_sync.py menggunakan variabel ini.
-# Set OPENDIR_SYNC_URL ke URL Open Directory (misal: http://172.67.202.94/)
-OPENDIR_SYNC_ENABLED                = parse_bool(os.getenv("OPENDIR_SYNC_ENABLED", "false"), False)
-OPENDIR_SYNC_URL                    = os.getenv("OPENDIR_SYNC_URL", "").strip()
-OPENDIR_SYNC_R2_PREFIX              = os.getenv("OPENDIR_SYNC_R2_PREFIX", "Database/").strip()
-OPENDIR_SYNC_INTERVAL_HOURS         = float(os.getenv("OPENDIR_SYNC_INTERVAL_HOURS", "6"))
-OPENDIR_SYNC_START_DELAY_SECONDS    = float(os.getenv("OPENDIR_SYNC_START_DELAY_SECONDS", "15"))
-OPENDIR_SYNC_MAX_CONCURRENT         = int(os.getenv("OPENDIR_SYNC_MAX_CONCURRENT", "3"))
-OPENDIR_SYNC_CHUNK_SIZE_MB          = int(os.getenv("OPENDIR_SYNC_CHUNK_SIZE_MB", "8"))
-OPENDIR_SYNC_MULTIPART_THRESHOLD_MB = int(os.getenv("OPENDIR_SYNC_MULTIPART_THRESHOLD_MB", "50"))
-OPENDIR_SYNC_TIMEOUT_SECONDS        = int(os.getenv("OPENDIR_SYNC_TIMEOUT_SECONDS", "120"))
-OPENDIR_SYNC_EXTENSIONS             = parse_csv_set(
-    os.getenv("OPENDIR_SYNC_EXTENSIONS", "zip,manifest,lua"),
-    "zip,manifest,lua",
-)
 
 STEAM_DB_SYNC_ENABLED = parse_bool(os.getenv("STEAM_DB_SYNC_ENABLED", "false"), False)
 STEAM_DB_SYNC_APPLY = parse_bool(os.getenv("STEAM_DB_SYNC_APPLY", "false"), False)
