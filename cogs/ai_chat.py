@@ -14,6 +14,7 @@ from discord.ext import commands
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
+from utils.ai_access import resolve_ai_chat_access
 from utils.attachments import read_message_attachments, store_attachment_text
 from utils.r2_inventory import get_r2_inventory_snapshot_async
 
@@ -27,8 +28,8 @@ class AIChat(commands.Cog):
         self._locks: dict[int, asyncio.Lock] = {}
         self._last_reply_at: dict[int, float] = {}
 
-    def _allowed(self, user_id: int) -> bool:
-        return bool(bot_config.AI_CHAT_ALLOWED_IDS and user_id in bot_config.AI_CHAT_ALLOWED_IDS)
+    async def _access_for(self, user_id: int) -> tuple[bool, str, str]:
+        return await resolve_ai_chat_access(self.bot, user_id)
 
     def _cooling_down(self, user_id: int) -> bool:
         cooldown = max(0.0, float(bot_config.AI_CHAT_COOLDOWN_SECONDS or 0))
@@ -105,7 +106,7 @@ class AIChat(commands.Cog):
         weak_approve = r"yes|ya|oke|ok"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
         all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
-        latest_words = r"latest|last|recent|newest|terbaru|terakhir|barusan|yang\s+tadi|yg\s+tadi|itu"
+        latest_words = r"latest|last|terbaru|terakhir"
         id_prefix = r"(?:(?:proposal|proposal id|id)\s+)?"
 
         return bool(
@@ -198,9 +199,9 @@ class AIChat(commands.Cog):
             store_attachment_text(self.bot, message.author.id, result, source="ai-chat-dm")
         parts = [text] if text else []
         if result.text:
-            parts.append("[Attachment content]\n" + result.text)
+            parts.append("Attachment text:\n" + result.text)
         if result.warnings:
-            parts.append("[Attachment notes]\n" + "; ".join(result.warnings[:4]))
+            parts.append("Attachment notes:\n" + "; ".join(result.warnings[:4]))
         return "\n\n".join(parts).strip()
 
     @commands.Cog.listener()
@@ -210,15 +211,24 @@ class AIChat(commands.Cog):
         if not bot_config.AI_CHAT_ENABLED:
             return
         is_dm = isinstance(message.channel, discord.DMChannel)
-        is_owner = self._allowed(message.author.id)
+        access_allowed, access_level, access_reason = await self._access_for(message.author.id)
+        is_owner = access_level == "owner"
         if is_dm:
-            if not is_owner:
+            if not access_allowed:
                 return
             operator = getattr(self.bot, "ai_operator", None)
-            if operator and operator.is_operator_command(message.content, message.author.id):
-                return
-            if self._looks_like_operator_control(message.content):
-                return
+            if operator:
+                role_aware = getattr(operator, "is_operator_command_for_user", None)
+                if callable(role_aware):
+                    if await role_aware(message.content, message.author.id):
+                        return
+                elif operator.is_operator_command(message.content, message.author.id):
+                    return
+                # Keep approval/control phrases out of normal owner chat when
+                # the operator is loaded, but do not silently block trusted
+                # admins who only have chat access.
+                if is_owner and self._looks_like_operator_control(message.content):
+                    return
         else:
             if not self._server_reply_allowed(message):
                 return
@@ -247,7 +257,7 @@ class AIChat(commands.Cog):
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                         return
-                    if is_dm and self._wants_zip_name_stats(user_message, message.author.id):
+                    if is_dm and access_allowed and self._wants_zip_name_stats(user_message, message.author.id):
                         reply = await self._zip_name_stats_reply()
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
@@ -259,6 +269,7 @@ class AIChat(commands.Cog):
                             user_message=user_message,
                             memory=self.memory,
                             is_owner=is_owner,
+                            user_access_level=access_level,
                         )
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):
@@ -266,7 +277,7 @@ class AIChat(commands.Cog):
                         "info",
                         "ai_chat",
                         "AI chat replied.",
-                        {"user_id": str(message.author.id), "dm": is_dm},
+                        {"user_id": str(message.author.id), "dm": is_dm, "access_level": access_level, "access_reason": access_reason},
                     )
             except AICaretakerUnavailable as exc:
                 log.warning("AI chat unavailable: %s", exc)

@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import re
 import time
 import zipfile
 import xml.etree.ElementTree as ET
@@ -63,7 +62,7 @@ def store_attachment_text(
     *,
     source: str = "owner-dm",
 ) -> None:
-    text = clean_attachment_text_for_posting(result.text)
+    text = sanitize_text(result.text).strip()
     if not text:
         return
     cache = _get_attachment_cache(bot)
@@ -142,32 +141,6 @@ def _decode_text(data: bytes) -> str:
         except UnicodeDecodeError:
             continue
     return data.decode("utf-8", errors="replace")
-
-
-def clean_attachment_text_for_posting(value: Any) -> str:
-    """Return attachment text safe to post as Discord content.
-
-    Some upstream tools wrap extracted text in markers such as
-    `[Attachment: file.txt]` or `[Attachment content]`. Those markers are useful
-    in prompts, but should never be copied into public rules/announcement posts.
-    """
-    text = sanitize_text(value).replace("\r\n", "\n").replace("\r", "\n")
-    cleaned_lines: list[str] = []
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line.startswith("[") and line.endswith("]"):
-            lowered = line.lower()
-            if (
-                lowered.startswith("[attachment")
-                or lowered.startswith("[file:")
-                or lowered.startswith("[filename:")
-                or lowered in {"[attachment content]", "[attachment notes]"}
-            ):
-                continue
-        cleaned_lines.append(raw_line.rstrip())
-    clean = "\n".join(cleaned_lines).strip()
-    clean = re.sub(r"\n{4,}", "\n\n\n", clean)
-    return clean
 
 
 def _extract_docx(data: bytes) -> str:
@@ -304,7 +277,7 @@ async def read_message_attachments(
                 result.warnings.append(f"{filename} has unsupported file type `{extension or content_type}`.")
                 continue
 
-            text = clean_attachment_text_for_posting(text)
+            text = sanitize_text(text).strip()
             if not text:
                 result.warnings.append(f"{filename} did not contain readable text.")
                 continue
@@ -318,7 +291,7 @@ async def read_message_attachments(
             log.warning("Could not read attachment %s", filename, exc_info=True)
             result.warnings.append(f"{filename} could not be read: {sanitize_text(str(exc))[:240]}")
 
-    combined = clean_attachment_text_for_posting("\n\n".join(chunks))
+    combined = "\n\n".join(chunks).strip()
     result.text, truncated = _truncate(combined, max_chars)
     if truncated:
         result.warnings.append(f"Attachment text was truncated to {max_chars} characters.")

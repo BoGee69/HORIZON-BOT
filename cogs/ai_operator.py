@@ -1,5 +1,5 @@
 """
-Owner-approved AI operator actions.
+Approval-gated AI operator actions.
 
 The AI may propose maintenance actions, but this cog only executes a small
 whitelist after an allowed owner approves the proposal in DM.
@@ -20,9 +20,9 @@ from discord.ext import commands
 
 import config as bot_config
 from config import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING
+from utils.ai_access import resolve_ai_operator_access
 from utils.ai_caretaker import AICaretakerResult, sanitize_data, sanitize_text
 from utils.attachments import (
-    clean_attachment_text_for_posting,
     clear_recent_attachment_text,
     get_recent_attachment_text,
     read_message_attachments,
@@ -103,7 +103,15 @@ class AIOperator(commands.Cog):
             self.bot.ai_operator = None
 
     def _is_owner(self, user_id: int) -> bool:
+        """Backward-compatible explicit operator ID check."""
         return bool(bot_config.AI_OPERATOR_ALLOWED_IDS and user_id in bot_config.AI_OPERATOR_ALLOWED_IDS)
+
+    async def _operator_access_for(self, user_id: int) -> tuple[bool, str, str]:
+        return await resolve_ai_operator_access(self.bot, user_id)
+
+    async def _is_operator_user(self, user_id: int) -> bool:
+        allowed, _, _ = await self._operator_access_for(user_id)
+        return allowed
 
     def _action_enabled(self, action: str) -> bool:
         if action == "run_r2_maintenance":
@@ -158,22 +166,17 @@ class AIOperator(commands.Cog):
     def _parse_operator_command(self, text: str) -> tuple[str, Optional[str]]:
         clean = sanitize_text(text).strip()
         lower = re.sub(r"\s+", " ", clean.lower()).strip(" `.,!;:")
-        approve_words = (
-            r"approve|approved|accept|accepted|acc|prove|aprove|aproove|approv|approvee|"
-            r"setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|"
-            r"konfirmasi|jalankan|jalanin|gas"
-        )
+        approve_words = r"approve|approved|accept|accepted|acc|prove|aprove|aproove|approv|approvee|setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
         all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
-        latest_words = r"latest|last|recent|newest|terbaru|terakhir|barusan|yang\s+tadi|yg\s+tadi|itu"
+        latest_words = r"latest|last|terbaru|terakhir"
         id_prefix = r"(?:(?:proposal|proposal id|id)\s+)?"
-
-        if not lower:
-            return ("", None)
 
         match = re.fullmatch(rf"(?:{approve_words})\s+{id_prefix}([a-f0-9]{{6}})", lower)
         if match:
             return ("approve", match.group(1))
+        if re.fullmatch(rf"(?:{approve_words})\s+(?:{latest_words})|(?:{latest_words})\s+(?:{approve_words})", lower):
+            return ("approve", "latest")
         match = re.fullmatch(rf"([a-f0-9]{{6}})\s+(?:{approve_words})", lower)
         if match:
             return ("approve", match.group(1))
@@ -188,16 +191,16 @@ class AIOperator(commands.Cog):
         ):
             return ("approve_all", None)
         if re.fullmatch(
-            rf"(?:{approve_words})\s+(?:{latest_words})|(?:{latest_words})\s+(?:{approve_words})",
+            rf"(?:{approve_words})",
             lower,
         ):
-            return ("approve_latest", None)
-        if re.fullmatch(rf"(?:{approve_words})", lower):
-            return ("approve_latest", None)
+            return ("approve", None)
 
         match = re.fullmatch(rf"(?:{reject_words})\s+{id_prefix}([a-f0-9]{{6}})", lower)
         if match:
             return ("reject", match.group(1))
+        if re.fullmatch(rf"(?:{reject_words})\s+(?:{latest_words})|(?:{latest_words})\s+(?:{reject_words})", lower):
+            return ("reject", "latest")
         match = re.fullmatch(rf"([a-f0-9]{{6}})\s+(?:{reject_words})", lower)
         if match:
             return ("reject", match.group(1))
@@ -206,13 +209,8 @@ class AIOperator(commands.Cog):
             lower,
         ):
             return ("reject_all", None)
-        if re.fullmatch(
-            rf"(?:{reject_words})\s+(?:{latest_words})|(?:{latest_words})\s+(?:{reject_words})",
-            lower,
-        ):
-            return ("reject_latest", None)
         if re.fullmatch(rf"(?:{reject_words})", lower):
-            return ("reject_latest", None)
+            return ("reject", None)
 
         if re.fullmatch(
             r"(?:pending|list|show|daftar|lihat|cek)\s+(?:approval|approvals|proposal|proposals)|approval pending|pending approval|approval",
@@ -679,7 +677,22 @@ class AIOperator(commands.Cog):
         return None, {}
 
     def is_operator_command(self, text: str, user_id: int) -> bool:
+        # Synchronous fast path used by AIChat. It can only verify explicit IDs.
+        # Role-based operator access is handled by is_operator_command_for_user().
         if not bot_config.AI_OPERATOR_ENABLED or not self._is_owner(user_id):
+            return False
+        if self.is_operator_control_text(text):
+            return True
+        if user_id in self._drafts:
+            return True
+        proposal, updates = self._parse_pending_update(text, user_id)
+        if proposal and updates:
+            return True
+        action, _ = self._parse_server_content_request(text)
+        return bool(action or self._parse_action_request(text))
+
+    async def is_operator_command_for_user(self, text: str, user_id: int) -> bool:
+        if not bot_config.AI_OPERATOR_ENABLED or not await self._is_operator_user(user_id):
             return False
         if self.is_operator_control_text(text):
             return True
@@ -753,9 +766,9 @@ class AIOperator(commands.Cog):
 
     def _proposal_embed(self, proposal: OperatorProposal) -> discord.Embed:
         embed = discord.Embed(
-            title="Owner approval required",
+            title="Approval required",
             description=(
-                "I prepared a whitelisted action. I will not change anything until you approve it."
+                "I prepared a whitelisted action. I will not change anything until it is approved."
             ),
             color=COLOR_WARNING,
             timestamp=discord.utils.utcnow(),
@@ -824,8 +837,8 @@ class AIOperator(commands.Cog):
         pending = self._pending_proposals()
         if not pending:
             await channel.send(
-                "No pending owner approvals right now. A real proposal always appears as an "
-                "`Owner approval required` card with a `Proposal ID`. Ask me for a supported "
+                "No pending approvals right now. A real proposal always appears as an "
+                "`Approval required` card with a `Proposal ID`. Ask me for a supported "
                 f"action first, then reply `{verb} <id>` using the ID shown on that card."
             )
             return
@@ -845,23 +858,19 @@ class AIOperator(commands.Cog):
     async def _send_pending(self, channel: discord.abc.Messageable) -> None:
         pending = self._pending_proposals()
         if not pending:
-            await channel.send("No pending owner approvals right now.")
+            await channel.send("No pending approvals right now.")
             return
         await channel.send("Pending approvals:\n" + "\n".join(self._pending_lines(pending)))
 
     def _resolve_single_pending_id(self, proposal_id: Optional[str]) -> Optional[str]:
-        if proposal_id:
+        if proposal_id and proposal_id != "latest":
             return proposal_id
         pending = [item.proposal_id for item in self._pending_proposals()]
+        if proposal_id == "latest" and pending:
+            return pending[-1]
         if len(pending) == 1:
             return pending[0]
         return None
-
-    def _resolve_latest_pending_id(self) -> Optional[str]:
-        pending = self._pending_proposals()
-        if not pending:
-            return None
-        return pending[-1].proposal_id
 
     def _recent_ai_chat_items(self, user_id: int, *, limit: int = 10) -> list[dict[str, str]]:
         chat = self.bot.get_cog("AIChat")
@@ -1121,23 +1130,6 @@ class AIOperator(commands.Cog):
                 await self._approve(proposal_id, user_id, channel)
                 await asyncio.sleep(0.2)
 
-    async def _approve_latest(self, user_id: int, channel: discord.abc.Messageable) -> None:
-        proposal_id = self._resolve_latest_pending_id()
-        if not proposal_id:
-            if await self._create_contextual_followup_proposals(user_id, channel):
-                return
-            await self._send_missing_proposal_id(channel, verb="approve")
-            return
-        await channel.send(f"Approving latest pending proposal: `{proposal_id}`.")
-        await self._approve(proposal_id, user_id, channel)
-
-    async def _reject_latest(self, user_id: int, channel: discord.abc.Messageable) -> None:
-        proposal_id = self._resolve_latest_pending_id()
-        if not proposal_id:
-            await self._send_missing_proposal_id(channel, verb="reject")
-            return
-        await self._reject(proposal_id, user_id, channel)
-
     async def _approve(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
         if not proposal_id:
@@ -1172,11 +1164,11 @@ class AIOperator(commands.Cog):
                 self.bot.record_ai_event(
                     "info",
                     "ai_operator",
-                    "Owner-approved action completed.",
+                    "Approved action completed.",
                     {"proposal_id": proposal_id, "action": proposal.action},
                 )
         except Exception as exc:
-            log.exception("Owner-approved AI operator action failed")
+            log.exception("Approved AI operator action failed")
             proposal.status = "failed"
             result = sanitize_text(repr(exc))[:1500]
             await channel.send(embed=self._result_embed(proposal, result, success=False))
@@ -1184,7 +1176,7 @@ class AIOperator(commands.Cog):
                 self.bot.record_ai_event(
                     "error",
                     "ai_operator",
-                    "Owner-approved action failed.",
+                    "Approved action failed.",
                     {"proposal_id": proposal_id, "action": proposal.action, "error": result},
                 )
 
@@ -1246,7 +1238,7 @@ class AIOperator(commands.Cog):
                 self.bot.record_ai_event(
                     "warning" if total_errors else "info",
                     "server_admin",
-                    "Owner-approved Booster role sync finished.",
+                    "Approved Booster role sync finished.",
                     {
                         "checked": total_checked,
                         "added": total_added,
@@ -1351,7 +1343,7 @@ class AIOperator(commands.Cog):
                 "This can add the Booster role to current boosters and remove it from members who no longer boost. "
                 "It uses Discord premium_since status and current role hierarchy."
             ),
-            "send_announcement": "This sends a plain-text announcement to the selected announcement channel.",
+            "send_announcement": "This sends a plain announcement message to the selected announcement channel.",
             "update_rules": "This posts or updates the rules message in the configured rules channel.",
             "pin_message": "This pins the selected message, or the latest message in the selected channel if no message ID is provided.",
             "set_channel_topic": "This updates the selected text channel topic.",
@@ -1363,10 +1355,10 @@ class AIOperator(commands.Cog):
         }
         proposal = await self.create_proposal(
             action=action,
-            reason=f"Owner requested this action from DM: {sanitize_text(message.content)[:220]}",
+            reason=f"Authorized user requested this action from DM: {sanitize_text(message.content)[:220]}",
             impact=default_impacts.get(action, "This action uses the current Railway variables."),
             params={},
-            source="owner-dm",
+            source="authorized-dm",
             requested_by=message.author.id,
             dedupe=False,
         )
@@ -1421,7 +1413,7 @@ class AIOperator(commands.Cog):
             if action in {"send_announcement", "update_rules"} and cached:
                 existing = str(params.get("content") or "").strip()
                 if self._is_vague_attachment_request(action, existing):
-                    params["content"] = clean_attachment_text_for_posting(cached.get("text") or "")
+                    params["content"] = sanitize_text(str(cached.get("text") or "")).strip()
                     params["_attachment_cache_used"] = True
                     warnings.append("Using text from the most recent readable attachment.")
             return warnings
@@ -1461,7 +1453,7 @@ class AIOperator(commands.Cog):
         warnings.extend(result.warnings)
         if result.text:
             store_attachment_text(self.bot, message.author.id, result, source="ai-operator-dm")
-        extracted = clean_attachment_text_for_posting(result.text)
+        extracted = sanitize_text(result.text).strip()
         if not extracted:
             return warnings
 
@@ -1513,7 +1505,7 @@ class AIOperator(commands.Cog):
             return
 
         impact = {
-            "send_announcement": "This sends a public announcement as plain message(s) to the selected channel after approval.",
+            "send_announcement": "This sends a public announcement message to the selected channel after approval.",
             "update_rules": "This posts or edits the server rules as plain messages after approval.",
             "pin_message": "This pins a message in the selected channel after approval.",
             "set_channel_topic": "This changes the selected channel topic after approval.",
@@ -1525,10 +1517,10 @@ class AIOperator(commands.Cog):
         }.get(action, "This changes Discord server content after approval.")
         proposal = await self.create_proposal(
             action=action,
-            reason=f"Owner requested Discord server content action from DM: {sanitize_text(message.content)[:220]}",
+            reason=f"Authorized user requested Discord server content action from DM: {sanitize_text(message.content)[:220]}",
             impact=impact,
             params=params,
-            source="owner-dm",
+            source="authorized-dm",
             requested_by=message.author.id,
             dedupe=False,
         )
@@ -1553,7 +1545,7 @@ class AIOperator(commands.Cog):
 
         proposal.params.update(sanitize_data(updates))
         proposal.reason = (
-            f"Owner updated proposal from DM: {sanitize_text(message.content)[:220]}"
+            f"Authorized user updated proposal from DM: {sanitize_text(message.content)[:220]}"
         )
         proposal.expires_at = time.time() + int(bot_config.AI_OPERATOR_APPROVAL_TTL_SECONDS or 900)
 
@@ -1600,7 +1592,8 @@ class AIOperator(commands.Cog):
             return
         if not isinstance(message.channel, discord.DMChannel):
             return
-        if not self._is_owner(message.author.id):
+        access_allowed, access_level, access_reason = await self._operator_access_for(message.author.id)
+        if not access_allowed:
             return
 
         command, proposal_id = self._parse_operator_command(message.content)
@@ -1612,12 +1605,6 @@ class AIOperator(commands.Cog):
             return
         if command == "approve_all":
             await self._approve_all(message.author.id, message.channel)
-            return
-        if command == "reject_latest":
-            await self._reject_latest(message.author.id, message.channel)
-            return
-        if command == "approve_latest":
-            await self._approve_latest(message.author.id, message.channel)
             return
         if command == "reject" and proposal_id:
             await self._reject(proposal_id, message.author.id, message.channel)

@@ -249,30 +249,14 @@ class ServerAdmin(commands.Cog):
             params,
             fallback_names=bot_config.SERVER_ADMIN_ANNOUNCEMENT_CHANNEL_NAMES,
         )
-        content = self._require_text(params, "content", max_chars=30000)
+        title = str(params.get("title") or "Announcement").strip()[:256]
+        content = self._require_text(params, "content", max_chars=3800)
+        embed = self._server_embed(title=title, description=content, color=COLOR_INFO)
         image_url = str(params.get("image_url") or "").strip()
         if image_url.startswith(("http://", "https://")):
-            content = f"{content}\n\n{image_url}".strip()
-        chunks = self._split_text(content, limit=1900)
-        if not chunks:
-            raise ValueError("Announcement content is empty after parsing.")
-        if len(chunks) > 16:
-            raise ValueError("Announcement content is too long. Maximum is 16 Discord messages.")
-
-        sent_messages: list[discord.Message] = []
-        for chunk in chunks:
-            sent_messages.append(
-                await channel.send(
-                    content=chunk,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                    suppress_embeds=True,
-                )
-            )
-        first = sent_messages[0]
-        return (
-            f"Announcement sent to #{channel.name} ({channel.id}) as plain message(s). "
-            f"Messages: {len(sent_messages)}. First message ID: {first.id}"
-        )
+            embed.set_image(url=image_url)
+        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+        return f"Announcement sent to #{channel.name} ({channel.id}). Message ID: {message.id}"
 
     async def update_rules(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)
@@ -433,22 +417,11 @@ class ServerAdmin(commands.Cog):
         if not name:
             raise ValueError("Channel name is invalid.")
         normalized_name = self._normalize_channel_name(name)
-        topic = str(params.get("topic") or "").strip()[:1024] or None
-        existing_channel = discord.utils.find(
+        if discord.utils.find(
             lambda item: self._normalize_channel_name(item.name) == normalized_name,
             guild.text_channels,
-        )
-        if existing_channel:
-            if topic and topic != (existing_channel.topic or ""):
-                await existing_channel.edit(topic=topic, reason="Owner-approved existing channel topic update")
-                return (
-                    f"Text channel #{existing_channel.name} ({existing_channel.id}) already exists; "
-                    "no duplicate was created. Topic was updated instead."
-                )
-            return (
-                f"Text channel #{existing_channel.name} ({existing_channel.id}) already exists; "
-                "no duplicate was created."
-            )
+        ):
+            raise ValueError(f"Text channel #{name} already exists.")
 
         category = None
         category_name = str(params.get("category") or "").strip().lower()
@@ -461,6 +434,7 @@ class ServerAdmin(commands.Cog):
             if not category:
                 raise ValueError(f"Category `{category_name}` was not found.")
 
+        topic = str(params.get("topic") or "").strip()[:1024] or None
         channel = await guild.create_text_channel(
             name=name,
             topic=topic,

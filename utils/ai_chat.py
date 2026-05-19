@@ -76,7 +76,7 @@ def _operator_boundary_reply(user_message: str) -> str:
     if _detect_reply_language(user_message) == "English":
         return (
             "I cannot create approvals from normal chat. A real owner approval must come from "
-            "the operator and will show an `Owner approval required` card with a `Proposal ID`. "
+            "the operator and will show an `Approval required` card with a `Proposal ID`. "
             "Please send a specific supported action, such as `send announcement to #announcement: Test`, "
             "`update rules in #rules: ...`, or `configure #welcome so only Admin can send messages`. "
             "If this is a follow-up to my previous plan, reply `continue` so the operator can convert "
@@ -84,7 +84,7 @@ def _operator_boundary_reply(user_message: str) -> str:
         )
     return (
         "Saya tidak bisa membuat approval dari chat biasa. Proposal resmi harus dibuat oleh operator "
-        "dan akan muncul sebagai card `Owner approval required` dengan `Proposal ID`. Kirim instruksi "
+        "dan akan muncul sebagai card `Approval required` dengan `Proposal ID`. Kirim instruksi "
         "aksi yang spesifik, misalnya `kirim announcement di #announcement: Test`, "
         "`buat rules di #rules: ...`, atau `atur #welcome hanya Admin yang bisa kirim pesan`. "
         "Kalau ini lanjutan dari rencana saya sebelumnya, balas `lanjut` agar operator mengubah bagian "
@@ -505,6 +505,7 @@ async def build_chat_prompt(
     user_message: str,
     history: list[dict[str, str]],
     is_owner: bool = False,
+    user_access_level: str = "member",
 ) -> str:
     health = await collect_health(bot)
     recent_events = getattr(bot, "ai_events", None)
@@ -558,14 +559,15 @@ async def build_chat_prompt(
     history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
 
     message_limit = max(500, int(bot_config.AI_CHAT_MAX_MESSAGE_CHARS or 1800))
-    if "[Attachment content]" in user_message:
+    if "[Attachment content]" in user_message or "Attachment text:" in user_message:
         message_limit = max(message_limit, int(bot_config.AI_ATTACHMENT_MAX_TEXT_CHARS or 12000))
     message = sanitize_text(user_message)[:message_limit]
 
     reply_language = _detect_reply_language(message)
 
     # Addressing mode
-    if is_owner:
+    access_level = "owner" if is_owner else sanitize_text(user_access_level or "member").strip().lower()
+    if access_level == "owner":
         addressing_rule = (
             "The person talking to you is your Owner — the one who built and runs you. "
             "Be direct, frank, and operationally precise. Share observations proactively. "
@@ -573,6 +575,14 @@ async def build_chat_prompt(
             "Do not add 'Owner' as a prefix on routine replies — use it only for alerts or "
             "to get attention. When the Owner asks about the server or storage, answer as "
             "someone who lives there and has been watching continuously."
+        )
+    elif access_level == "admin":
+        addressing_rule = (
+            "The person talking to you is a trusted TriadGames admin/staff member, not necessarily the Owner. "
+            "Be operationally useful and direct. Do not call them Owner. "
+            "They may ask about bot status, R2, rules, channels, resources, and moderation context. "
+            "For real changes, keep using the proposal/approval boundary and never claim an action was executed "
+            "unless the operator result confirms it."
         )
     else:
         addressing_rule = (
@@ -585,7 +595,7 @@ async def build_chat_prompt(
     # Live alert header (owner only)
     alerts = pulse.get("active_alerts") or []
     alert_block = ""
-    if alerts and is_owner:
+    if alerts and access_level in {"owner", "admin"}:
         alert_block = (
             "LIVE SYSTEM ALERTS:\n"
             + "\n".join(f"  • {a}" for a in alerts)
@@ -673,6 +683,7 @@ async def chat_with_triadbot(
     user_message: str,
     memory: AIChatMemory,
     is_owner: bool = False,
+    user_access_level: str = "member",
 ) -> str:
     history = memory.snapshot(user_id)
     prompt = await build_chat_prompt(
@@ -681,13 +692,13 @@ async def chat_with_triadbot(
         user_message=user_message,
         history=history,
         is_owner=is_owner,
+        user_access_level=user_access_level,
     )
     reply = await call_ai_provider(
         bot.session,
         prompt,
         provider=bot_config.AI_CHAT_PROVIDER,
         model=bot_config.AI_CHAT_MODEL,
-        fallback_model=bot_config.AI_MODEL_FALLBACK,
         temperature=0.75,
         max_output_tokens=900,
     )

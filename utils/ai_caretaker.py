@@ -409,57 +409,30 @@ async def call_ai_provider(
     *,
     provider: str,
     model: Optional[str] = None,
-    fallback_model: Optional[str] = None,
     temperature: float = 0.2,
     max_output_tokens: int = 900,
     images: Optional[list[dict[str, str]]] = None,
 ) -> str:
     selected_provider = (provider or "").strip().lower()
-
-    async def call_selected(selected_model: Optional[str]) -> str:
-        if selected_provider == "gemini":
-            return await call_gemini(
-                session,
-                prompt,
-                model=selected_model,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                images=images,
-            )
-        if selected_provider == "ollama":
-            return await call_ollama(
-                session,
-                prompt,
-                model=selected_model,
-                temperature=temperature,
-                max_output_tokens=max_output_tokens,
-                images=images,
-            )
-        raise AICaretakerUnavailable(f"Unsupported AI provider: {provider}")
-
-    try:
-        return await call_selected(model)
-    except AICaretakerUnavailable as primary_error:
-        fallback = sanitize_text(fallback_model).strip()
-        primary = sanitize_text(model).strip()
-        if not fallback or fallback == primary:
-            raise
-        log.warning(
-            "AI provider primary model failed; retrying fallback model. provider=%s model=%s fallback=%s error=%s",
-            selected_provider,
-            primary or "<default>",
-            fallback,
-            sanitize_text(str(primary_error))[:240],
+    if selected_provider == "gemini":
+        return await call_gemini(
+            session,
+            prompt,
+            model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            images=images,
         )
-        try:
-            return await call_selected(fallback)
-        except AICaretakerUnavailable as fallback_error:
-            raise AICaretakerUnavailable(
-                "Primary AI model failed and fallback also failed. "
-                f"primary={primary or '<default>'}; fallback={fallback}; "
-                f"primary_error={sanitize_text(str(primary_error))[:240]}; "
-                f"fallback_error={sanitize_text(str(fallback_error))[:240]}"
-            ) from fallback_error
+    if selected_provider == "ollama":
+        return await call_ollama(
+            session,
+            prompt,
+            model=model,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            images=images,
+        )
+    raise AICaretakerUnavailable(f"Unsupported AI provider: {provider}")
 
 
 def _strip_json_fence(text: str) -> str:
@@ -535,6 +508,5 @@ async def analyze_bot(bot: Any, *, reason: str, context: Optional[dict[str, Any]
         prompt,
         provider=bot_config.AI_MAINTENANCE_PROVIDER,
         model=bot_config.AI_MAINTENANCE_MODEL,
-        fallback_model=bot_config.AI_MODEL_FALLBACK,
     )
     return parse_ai_result(raw_text)
