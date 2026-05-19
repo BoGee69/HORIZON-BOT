@@ -687,6 +687,7 @@ async def chat_with_triadbot(
         prompt,
         provider=bot_config.AI_CHAT_PROVIDER,
         model=bot_config.AI_CHAT_MODEL,
+        fallback_model=bot_config.AI_MODEL_FALLBACK,
         temperature=0.75,
         max_output_tokens=900,
     )

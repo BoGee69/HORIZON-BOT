@@ -105,19 +105,20 @@ class AIChat(commands.Cog):
         weak_approve = r"yes|ya|oke|ok"
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
         all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
+        latest_words = r"latest|last|recent|newest|terbaru|terakhir|barusan|yang\s+tadi|yg\s+tadi|itu"
         id_prefix = r"(?:(?:proposal|proposal id|id)\s+)?"
 
         return bool(
             re.fullmatch(rf"(?:{all_words})", clean)
             or
             re.fullmatch(
-                rf"(?:(?:{all_words})\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|{id_prefix}[a-f0-9]{{6}}))?",
+                rf"(?:(?:{all_words})\s+)?(?:{strong_approve})(?:\s+(?:{all_words}|{latest_words}|{id_prefix}[a-f0-9]{{6}}))?",
                 clean,
             )
             or re.fullmatch(rf"(?:{weak_approve})\s+{id_prefix}[a-f0-9]{{6}}", clean)
             or re.fullmatch(rf"[a-f0-9]{{6}}\s+(?:{strong_approve}|{weak_approve})", clean)
             or re.fullmatch(
-                rf"(?:{reject_words})(?:\s+(?:{all_words}|{id_prefix}[a-f0-9]{{6}}))?",
+                rf"(?:{reject_words})(?:\s+(?:{all_words}|{latest_words}|{id_prefix}[a-f0-9]{{6}}))?",
                 clean,
             )
             or re.fullmatch(rf"[a-f0-9]{{6}}\s+(?:{reject_words})", clean)

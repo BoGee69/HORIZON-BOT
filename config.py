@@ -168,10 +168,40 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com").strip().rstrip("/")
 OLLAMA_TIMEOUT_SECONDS = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "180"))
 OLLAMA_THINK = os.getenv("OLLAMA_THINK", "medium").strip().lower()
 OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "5m").strip()
-AI_MAINTENANCE_MODEL = os.getenv(
-    "AI_MAINTENANCE_MODEL",
-    "gpt-oss:120b" if AI_MAINTENANCE_PROVIDER == "ollama" else "gemini-2.5-flash-lite",
-).strip() or ("gpt-oss:120b" if AI_MAINTENANCE_PROVIDER == "ollama" else "gemini-2.5-flash-lite")
+
+
+def _default_ai_model(provider: str, *, ollama: str, gemini: str = "gemini-2.5-flash-lite") -> str:
+    return ollama if (provider or "").strip().lower() == "ollama" else gemini
+
+
+# Role-based AI model router.
+# GPT stays as the default brain. Specialist models are only helpers for narrow workloads.
+AI_MODEL_DEFAULT = os.getenv(
+    "AI_MODEL_DEFAULT",
+    _default_ai_model(AI_PROVIDER, ollama="gpt-oss:120b-cloud"),
+).strip() or _default_ai_model(AI_PROVIDER, ollama="gpt-oss:120b-cloud")
+AI_MODEL_FALLBACK = os.getenv(
+    "AI_MODEL_FALLBACK",
+    _default_ai_model(AI_PROVIDER, ollama="glm-5.1:cloud"),
+).strip() or AI_MODEL_DEFAULT
+AI_MODEL_CHAT = os.getenv("AI_MODEL_CHAT", AI_MODEL_DEFAULT).strip() or AI_MODEL_DEFAULT
+AI_MODEL_BACKGROUND_MONITOR = os.getenv(
+    "AI_MODEL_BACKGROUND_MONITOR",
+    _default_ai_model(AI_PROVIDER, ollama="qwen3.5:cloud"),
+).strip() or AI_MODEL_DEFAULT
+AI_MODEL_MONITOR = os.getenv("AI_MODEL_MONITOR", AI_MODEL_BACKGROUND_MONITOR).strip() or AI_MODEL_BACKGROUND_MONITOR
+AI_MODEL_OPERATOR = os.getenv("AI_MODEL_OPERATOR", AI_MODEL_DEFAULT).strip() or AI_MODEL_DEFAULT
+AI_MODEL_R2_MAINTENANCE = os.getenv("AI_MODEL_R2_MAINTENANCE", AI_MODEL_DEFAULT).strip() or AI_MODEL_DEFAULT
+AI_MODEL_INTENT_ROUTER = os.getenv("AI_MODEL_INTENT_ROUTER", AI_MODEL_DEFAULT).strip() or AI_MODEL_DEFAULT
+AI_MODEL_PROPOSAL_MANAGER = os.getenv("AI_MODEL_PROPOSAL_MANAGER", AI_MODEL_DEFAULT).strip() or AI_MODEL_DEFAULT
+AI_MODEL_CODE_DEBUGGER = os.getenv(
+    "AI_MODEL_CODE_DEBUGGER",
+    _default_ai_model(AI_PROVIDER, ollama="kimi-k2.6:cloud"),
+).strip() or AI_MODEL_DEFAULT
+AI_MODEL_GITHUB = os.getenv("AI_MODEL_GITHUB", AI_MODEL_CODE_DEBUGGER).strip() or AI_MODEL_CODE_DEBUGGER
+AI_MODEL_SECURITY = os.getenv("AI_MODEL_SECURITY", AI_MODEL_DEFAULT).strip() or AI_MODEL_DEFAULT
+
+AI_MAINTENANCE_MODEL = os.getenv("AI_MAINTENANCE_MODEL", AI_MODEL_MONITOR).strip() or AI_MODEL_MONITOR
 AI_MAINTENANCE_INTERVAL_MINUTES = float(os.getenv("AI_MAINTENANCE_INTERVAL_MINUTES", "360"))
 AI_MAINTENANCE_ALERT_IDS = parse_id_list(os.getenv("AI_MAINTENANCE_ALERT_IDS", "")) or ADMIN_IDS[:1]
 AI_MAINTENANCE_MAX_PROMPT_CHARS = int(os.getenv("AI_MAINTENANCE_MAX_PROMPT_CHARS", "12000"))
@@ -183,10 +213,7 @@ AI_MAINTENANCE_START_DELAY_SECONDS = float(os.getenv("AI_MAINTENANCE_START_DELAY
 AI_CHAT_ENABLED = parse_bool(os.getenv("AI_CHAT_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "false")), False)
 AI_CHAT_ALLOWED_IDS = parse_id_list(os.getenv("AI_CHAT_ALLOWED_IDS", "")) or AI_MAINTENANCE_ALERT_IDS
 AI_CHAT_PROVIDER = os.getenv("AI_CHAT_PROVIDER", AI_PROVIDER).strip().lower() or AI_PROVIDER
-AI_CHAT_MODEL = os.getenv(
-    "AI_CHAT_MODEL",
-    "gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL,
-).strip() or ("gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL)
+AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", AI_MODEL_CHAT).strip() or AI_MODEL_CHAT
 AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "12"))
 AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
 AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))

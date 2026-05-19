@@ -22,6 +22,7 @@ import config as bot_config
 from config import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING
 from utils.ai_caretaker import AICaretakerResult, sanitize_data, sanitize_text
 from utils.attachments import (
+    clean_attachment_text_for_posting,
     clear_recent_attachment_text,
     get_recent_attachment_text,
     read_message_attachments,
@@ -157,10 +158,18 @@ class AIOperator(commands.Cog):
     def _parse_operator_command(self, text: str) -> tuple[str, Optional[str]]:
         clean = sanitize_text(text).strip()
         lower = re.sub(r"\s+", " ", clean.lower()).strip(" `.,!;:")
-        approve_words = r"approve|approved|accept|accepted|acc|prove|aprove|aproove|approv|approvee|setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|konfirmasi|jalankan|jalanin|gas"
+        approve_words = (
+            r"approve|approved|accept|accepted|acc|prove|aprove|aproove|approv|approvee|"
+            r"setuju|yes|ya|oke|ok|lanjut|lanjutkan|continue|proceed|confirm|"
+            r"konfirmasi|jalankan|jalanin|gas"
+        )
         reject_words = r"reject|rejected|deny|cancel|tolak|batal|no"
         all_words = r"all(?:\s+of\s+them)?|semua|semuanya|all\s+proposals?|all\s+approval(?:s)?"
+        latest_words = r"latest|last|recent|newest|terbaru|terakhir|barusan|yang\s+tadi|yg\s+tadi|itu"
         id_prefix = r"(?:(?:proposal|proposal id|id)\s+)?"
+
+        if not lower:
+            return ("", None)
 
         match = re.fullmatch(rf"(?:{approve_words})\s+{id_prefix}([a-f0-9]{{6}})", lower)
         if match:
@@ -179,10 +188,12 @@ class AIOperator(commands.Cog):
         ):
             return ("approve_all", None)
         if re.fullmatch(
-            rf"(?:{approve_words})",
+            rf"(?:{approve_words})\s+(?:{latest_words})|(?:{latest_words})\s+(?:{approve_words})",
             lower,
         ):
-            return ("approve", None)
+            return ("approve_latest", None)
+        if re.fullmatch(rf"(?:{approve_words})", lower):
+            return ("approve_latest", None)
 
         match = re.fullmatch(rf"(?:{reject_words})\s+{id_prefix}([a-f0-9]{{6}})", lower)
         if match:
@@ -195,8 +206,13 @@ class AIOperator(commands.Cog):
             lower,
         ):
             return ("reject_all", None)
+        if re.fullmatch(
+            rf"(?:{reject_words})\s+(?:{latest_words})|(?:{latest_words})\s+(?:{reject_words})",
+            lower,
+        ):
+            return ("reject_latest", None)
         if re.fullmatch(rf"(?:{reject_words})", lower):
-            return ("reject", None)
+            return ("reject_latest", None)
 
         if re.fullmatch(
             r"(?:pending|list|show|daftar|lihat|cek)\s+(?:approval|approvals|proposal|proposals)|approval pending|pending approval|approval",
@@ -841,6 +857,12 @@ class AIOperator(commands.Cog):
             return pending[0]
         return None
 
+    def _resolve_latest_pending_id(self) -> Optional[str]:
+        pending = self._pending_proposals()
+        if not pending:
+            return None
+        return pending[-1].proposal_id
+
     def _recent_ai_chat_items(self, user_id: int, *, limit: int = 10) -> list[dict[str, str]]:
         chat = self.bot.get_cog("AIChat")
         memory = getattr(chat, "memory", None)
@@ -1099,6 +1121,23 @@ class AIOperator(commands.Cog):
                 await self._approve(proposal_id, user_id, channel)
                 await asyncio.sleep(0.2)
 
+    async def _approve_latest(self, user_id: int, channel: discord.abc.Messageable) -> None:
+        proposal_id = self._resolve_latest_pending_id()
+        if not proposal_id:
+            if await self._create_contextual_followup_proposals(user_id, channel):
+                return
+            await self._send_missing_proposal_id(channel, verb="approve")
+            return
+        await channel.send(f"Approving latest pending proposal: `{proposal_id}`.")
+        await self._approve(proposal_id, user_id, channel)
+
+    async def _reject_latest(self, user_id: int, channel: discord.abc.Messageable) -> None:
+        proposal_id = self._resolve_latest_pending_id()
+        if not proposal_id:
+            await self._send_missing_proposal_id(channel, verb="reject")
+            return
+        await self._reject(proposal_id, user_id, channel)
+
     async def _approve(self, proposal_id: Optional[str], user_id: int, channel: discord.abc.Messageable) -> None:
         proposal_id = self._resolve_single_pending_id(proposal_id)
         if not proposal_id:
@@ -1312,7 +1351,7 @@ class AIOperator(commands.Cog):
                 "This can add the Booster role to current boosters and remove it from members who no longer boost. "
                 "It uses Discord premium_since status and current role hierarchy."
             ),
-            "send_announcement": "This sends an embed announcement to the selected announcement channel.",
+            "send_announcement": "This sends a plain-text announcement to the selected announcement channel.",
             "update_rules": "This posts or updates the rules message in the configured rules channel.",
             "pin_message": "This pins the selected message, or the latest message in the selected channel if no message ID is provided.",
             "set_channel_topic": "This updates the selected text channel topic.",
@@ -1382,7 +1421,7 @@ class AIOperator(commands.Cog):
             if action in {"send_announcement", "update_rules"} and cached:
                 existing = str(params.get("content") or "").strip()
                 if self._is_vague_attachment_request(action, existing):
-                    params["content"] = sanitize_text(str(cached.get("text") or "")).strip()
+                    params["content"] = clean_attachment_text_for_posting(cached.get("text") or "")
                     params["_attachment_cache_used"] = True
                     warnings.append("Using text from the most recent readable attachment.")
             return warnings
@@ -1422,7 +1461,7 @@ class AIOperator(commands.Cog):
         warnings.extend(result.warnings)
         if result.text:
             store_attachment_text(self.bot, message.author.id, result, source="ai-operator-dm")
-        extracted = sanitize_text(result.text).strip()
+        extracted = clean_attachment_text_for_posting(result.text)
         if not extracted:
             return warnings
 
@@ -1474,7 +1513,7 @@ class AIOperator(commands.Cog):
             return
 
         impact = {
-            "send_announcement": "This sends a public announcement embed to the selected channel after approval.",
+            "send_announcement": "This sends a public announcement as plain message(s) to the selected channel after approval.",
             "update_rules": "This posts or edits the server rules as plain messages after approval.",
             "pin_message": "This pins a message in the selected channel after approval.",
             "set_channel_topic": "This changes the selected channel topic after approval.",
@@ -1573,6 +1612,12 @@ class AIOperator(commands.Cog):
             return
         if command == "approve_all":
             await self._approve_all(message.author.id, message.channel)
+            return
+        if command == "reject_latest":
+            await self._reject_latest(message.author.id, message.channel)
+            return
+        if command == "approve_latest":
+            await self._approve_latest(message.author.id, message.channel)
             return
         if command == "reject" and proposal_id:
             await self._reject(proposal_id, message.author.id, message.channel)
