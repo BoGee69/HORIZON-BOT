@@ -16,7 +16,7 @@ This module adds `cogs/opendir_sync.py`, a background-only Discord cog that sync
 
 ```env
 OPENDIR_SYNC_ENABLED=true
-OPENDIR_BASE_URL=http://172.67.202.94/
+OPENDIR_BASE_URL=https://www.depotgame.my.id/
 OPENDIR_R2_PREFIX=Database/
 OPENDIR_INTERVAL_HOURS=6
 OPENDIR_RUN_ON_START=true
@@ -29,6 +29,16 @@ OPENDIR_ALLOWED_EXTENSIONS=zip,manifest,lua,acf,vdf
 ```
 
 For the first production test, keep `OPENDIR_MAX_FILES_PER_RUN=20`. After logs look clean, increase it or set `0` for no explicit cap.
+
+## URL configuration note
+
+Use the real domain URL:
+
+```env
+OPENDIR_BASE_URL=https://www.depotgame.my.id/
+```
+
+Do not use the Cloudflare edge IP directly, for example `http://172.67.202.94/`. Accessing a Cloudflare-backed site by IP often returns HTTP 403 because the Host/SNI does not match the configured domain.
 
 ## Existing R2 variables still required
 
