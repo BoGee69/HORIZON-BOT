@@ -145,6 +145,23 @@ R2_MAINTENANCE_FALLBACK_TO_APPID = parse_bool(os.getenv("R2_MAINTENANCE_FALLBACK
 R2_MAINTENANCE_BLACKLIST_THRESHOLD = int(os.getenv("R2_MAINTENANCE_BLACKLIST_THRESHOLD", "3"))
 R2_MAINTENANCE_STATE_PATH = env_path("R2_MAINTENANCE_STATE_PATH", DATA_DIR / "r2_maintenance_state.json")
 
+# ── Open Directory → R2 Sync ──────────────────────────────────────────────────
+# Modul cogs/opendir_sync.py menggunakan variabel ini.
+# Set OPENDIR_SYNC_URL ke URL Open Directory (misal: http://172.67.202.94/)
+OPENDIR_SYNC_ENABLED                = parse_bool(os.getenv("OPENDIR_SYNC_ENABLED", "false"), False)
+OPENDIR_SYNC_URL                    = os.getenv("OPENDIR_SYNC_URL", "").strip()
+OPENDIR_SYNC_R2_PREFIX              = os.getenv("OPENDIR_SYNC_R2_PREFIX", "Database/").strip()
+OPENDIR_SYNC_INTERVAL_HOURS         = float(os.getenv("OPENDIR_SYNC_INTERVAL_HOURS", "6"))
+OPENDIR_SYNC_START_DELAY_SECONDS    = float(os.getenv("OPENDIR_SYNC_START_DELAY_SECONDS", "15"))
+OPENDIR_SYNC_MAX_CONCURRENT         = int(os.getenv("OPENDIR_SYNC_MAX_CONCURRENT", "3"))
+OPENDIR_SYNC_CHUNK_SIZE_MB          = int(os.getenv("OPENDIR_SYNC_CHUNK_SIZE_MB", "8"))
+OPENDIR_SYNC_MULTIPART_THRESHOLD_MB = int(os.getenv("OPENDIR_SYNC_MULTIPART_THRESHOLD_MB", "50"))
+OPENDIR_SYNC_TIMEOUT_SECONDS        = int(os.getenv("OPENDIR_SYNC_TIMEOUT_SECONDS", "120"))
+OPENDIR_SYNC_EXTENSIONS             = parse_csv_set(
+    os.getenv("OPENDIR_SYNC_EXTENSIONS", "zip,manifest,lua"),
+    "zip,manifest,lua",
+)
+
 STEAM_DB_SYNC_ENABLED = parse_bool(os.getenv("STEAM_DB_SYNC_ENABLED", "false"), False)
 STEAM_DB_SYNC_APPLY = parse_bool(os.getenv("STEAM_DB_SYNC_APPLY", "false"), False)
 STEAM_DB_SYNC_RUN_ON_START = parse_bool(os.getenv("STEAM_DB_SYNC_RUN_ON_START", "true"), True)
