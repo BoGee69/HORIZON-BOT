@@ -120,56 +120,43 @@ R2_BUCKET_NAME       = os.getenv("R2_BUCKET_NAME", "")
 LINK_EXPIRE_SECONDS  = int(os.getenv("LINK_EXPIRE_SECONDS", "3600"))
 
 # Open Directory -> R2 sync (disabled by default). Use only for sources you own or have permission to mirror.
-def env_first(*names: str, default: str = "") -> str:
-    for name in names:
-        value = os.getenv(name)
-        if value is not None and str(value).strip() != "":
-            return str(value).strip()
-    return default
-
-
-def env_int_compat(name: str, legacy_name: str, default: int) -> int:
-    raw = env_first(name, legacy_name, default=str(default))
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return default
-
-
-def env_float_compat(name: str, legacy_name: str, default: float) -> float:
-    raw = env_first(name, legacy_name, default=str(default))
-    try:
-        return float(raw)
-    except (TypeError, ValueError):
-        return default
-
-
 OPENDIR_SYNC_ENABLED = parse_bool(os.getenv("OPENDIR_SYNC_ENABLED", "false"), False)
-# Use the real domain URL. Cloudflare edge IPs such as 172.67.x.x commonly return HTTP 403 because the Host/SNI does not match.
-OPENDIR_BASE_URL = env_first("OPENDIR_BASE_URL", "OPEN_DIRECTORY_URL", "OPENDIR_SYNC_URL", default="https://www.depotgame.my.id/")
-OPENDIR_R2_PREFIX = env_first("OPENDIR_R2_PREFIX", "OPENDIR_SYNC_R2_PREFIX", default="Database/")
-OPENDIR_INTERVAL_HOURS = env_float_compat("OPENDIR_INTERVAL_HOURS", "OPENDIR_SYNC_INTERVAL_HOURS", 6.0)
-SYNC_INTERVAL_HOURS = float(os.getenv("SYNC_INTERVAL_HOURS", str(OPENDIR_INTERVAL_HOURS)))
+OPENDIR_BASE_URL = os.getenv("OPENDIR_BASE_URL", os.getenv("OPEN_DIRECTORY_URL", "")).strip()
+OPENDIR_R2_PREFIX = os.getenv("OPENDIR_R2_PREFIX", "Database/").strip()
+OPENDIR_INTERVAL_HOURS = float(os.getenv("OPENDIR_INTERVAL_HOURS", os.getenv("SYNC_INTERVAL_HOURS", "6")))
 OPENDIR_RUN_ON_START = parse_bool(os.getenv("OPENDIR_RUN_ON_START", "true"), True)
-OPENDIR_START_DELAY_SECONDS = env_float_compat("OPENDIR_START_DELAY_SECONDS", "OPENDIR_SYNC_START_DELAY_SECONDS", 20.0)
-OPENDIR_MAX_DEPTH = env_int_compat("OPENDIR_MAX_DEPTH", "OPENDIR_SYNC_MAX_DEPTH", 3)
-OPENDIR_MAX_FILES_PER_RUN = env_int_compat("OPENDIR_MAX_FILES_PER_RUN", "OPENDIR_SYNC_MAX_FILES_PER_RUN", 20)  # 0 = no explicit per-run cap
-OPENDIR_MAX_FILE_MB = env_int_compat("OPENDIR_MAX_FILE_MB", "OPENDIR_SYNC_MAX_FILE_MB", 1024)
-OPENDIR_CONCURRENCY = env_int_compat("OPENDIR_CONCURRENCY", "OPENDIR_SYNC_MAX_CONCURRENT", 2)
-OPENDIR_QUEUE_CHUNKS = env_int_compat("OPENDIR_QUEUE_CHUNKS", "OPENDIR_SYNC_QUEUE_CHUNKS", 8)
-_chunk_mb = env_int_compat("OPENDIR_SYNC_CHUNK_SIZE_MB", "OPENDIR_SYNC_CHUNK_SIZE_MB", 0)
-OPENDIR_CHUNK_SIZE_BYTES = env_int_compat("OPENDIR_CHUNK_SIZE_BYTES", "OPENDIR_SYNC_CHUNK_SIZE_BYTES", _chunk_mb * 1024 * 1024 if _chunk_mb else 1024 * 1024)
-OPENDIR_REQUEST_TIMEOUT_SECONDS = env_float_compat("OPENDIR_REQUEST_TIMEOUT_SECONDS", "OPENDIR_SYNC_TIMEOUT_SECONDS", 900.0)
-OPENDIR_CONNECT_TIMEOUT_SECONDS = env_float_compat("OPENDIR_CONNECT_TIMEOUT_SECONDS", "OPENDIR_SYNC_CONNECT_TIMEOUT_SECONDS", 30.0)
-OPENDIR_READ_TIMEOUT_SECONDS = env_float_compat("OPENDIR_READ_TIMEOUT_SECONDS", "OPENDIR_SYNC_READ_TIMEOUT_SECONDS", 120.0)
+OPENDIR_START_DELAY_SECONDS = float(os.getenv("OPENDIR_START_DELAY_SECONDS", "20"))
+OPENDIR_MAX_DEPTH = int(os.getenv("OPENDIR_MAX_DEPTH", "3"))
+OPENDIR_MAX_FILES_PER_RUN = int(os.getenv("OPENDIR_MAX_FILES_PER_RUN", "0"))  # 0 = no explicit per-run cap
+OPENDIR_MAX_FILE_MB = int(os.getenv("OPENDIR_MAX_FILE_MB", "1024"))
+OPENDIR_CONCURRENCY = int(os.getenv("OPENDIR_CONCURRENCY", "2"))
+OPENDIR_QUEUE_CHUNKS = int(os.getenv("OPENDIR_QUEUE_CHUNKS", "8"))
+OPENDIR_CHUNK_SIZE_BYTES = int(os.getenv("OPENDIR_CHUNK_SIZE_BYTES", str(1024 * 1024)))
+OPENDIR_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_REQUEST_TIMEOUT_SECONDS", "900"))
+OPENDIR_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_CONNECT_TIMEOUT_SECONDS", "30"))
+OPENDIR_READ_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_READ_TIMEOUT_SECONDS", "120"))
 OPENDIR_USE_HEAD = parse_bool(os.getenv("OPENDIR_USE_HEAD", "true"), True)
 OPENDIR_NOTIFY_ON_SUCCESS = parse_bool(os.getenv("OPENDIR_NOTIFY_ON_SUCCESS", "false"), False)
 OPENDIR_FLATTEN_R2_KEYS = parse_bool(os.getenv("OPENDIR_FLATTEN_R2_KEYS", "false"), False)
-OPENDIR_ALLOWED_EXTENSIONS = parse_csv_set(env_first("OPENDIR_ALLOWED_EXTENSIONS", "OPENDIR_SYNC_EXTENSIONS", default="zip,manifest,lua,acf,vdf"))
+OPENDIR_ALLOWED_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_ALLOWED_EXTENSIONS", "zip,manifest,lua,acf,vdf"))
 OPENDIR_ALLOWED_HOSTS = {x.strip().lower() for x in os.getenv("OPENDIR_ALLOWED_HOSTS", "").split(",") if x.strip()}
-OPENDIR_USER_AGENT = os.getenv("OPENDIR_USER_AGENT", "TriadBot OpenDirSync/1.0").strip()
+OPENDIR_USER_AGENT = os.getenv("OPENDIR_USER_AGENT", "TriadBot OpenDirSync").strip()
 
-# Backwards compatibility for earlier cogs/opendir_sync.py variable names.
+# Games.json-driven OpenDir sync. The cog uses games.json as the list of appids/names,
+# probes the OpenDir for matching files, then uploads them to R2 as "Game Name (AppID).zip".
+OPENDIR_GAMES_JSON_PATH = env_path("OPENDIR_GAMES_JSON_PATH", DATA_DIR / "games.json")
+OPENDIR_STATE_PATH = env_path("OPENDIR_STATE_PATH", DATA_DIR / "opendir_sync_state.json")
+OPENDIR_INDEX_SCAN_ENABLED = parse_bool(os.getenv("OPENDIR_INDEX_SCAN_ENABLED", "true"), True)
+OPENDIR_DIRECT_PROBE_ENABLED = parse_bool(os.getenv("OPENDIR_DIRECT_PROBE_ENABLED", "true"), True)
+OPENDIR_FALLBACK_GET_PROBE = parse_bool(os.getenv("OPENDIR_FALLBACK_GET_PROBE", "true"), True)
+OPENDIR_GAMES_PER_RUN = int(os.getenv("OPENDIR_GAMES_PER_RUN", "500"))
+OPENDIR_TARGET_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_TARGET_EXTENSIONS", "zip"), "zip")
+OPENDIR_SOURCE_PATTERNS = parse_str_list(os.getenv(
+    "OPENDIR_SOURCE_PATTERNS",
+    "{appid}.{ext},{appid}/{appid}.{ext},{target_filename},{safe_name}.{ext},{safe_name} ({appid}).{ext}",
+))
+
+# Backwards compatibility for the earlier cogs/opendir_sync.py variable names.
 OPEN_DIRECTORY_URL = OPENDIR_BASE_URL
 SYNC_INTERVAL_HOURS = OPENDIR_INTERVAL_HOURS
 

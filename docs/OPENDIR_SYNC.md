@@ -1,65 +1,101 @@
-# Open Directory Sync to Cloudflare R2
+# OpenDir Games.json Sync
 
-This module adds `cogs/opendir_sync.py`, a background-only Discord cog that syncs files from an authorized Open Directory into Cloudflare R2 without saving downloaded files to local disk.
+`cogs/opendir_sync.py` sekarang memakai `games.json` sebagai daftar AppID/nama game.
 
-## Safety model
+Alur kerja:
 
-- Disabled by default: `OPENDIR_SYNC_ENABLED=false`.
-- Use only on a directory you own or have explicit permission to mirror.
-- Files are streamed from `aiohttp` into `boto3.upload_fileobj()` through an in-memory queue.
-- No slash commands are added.
-- Existing R2 objects are skipped.
-- The sync is scoped to the configured base URL host/path and will not follow external links.
-- Allowed extensions, depth, file size, concurrency, and interval are configurable.
+1. Bot membaca `data/games.json`.
+2. Untuk setiap game, bot membangun nama target R2:
+   - `Database/Nama Game (AppID).zip`
+3. Bot mengecek Open Directory untuk kandidat file seperti:
+   - `{appid}.zip`
+   - `{appid}/{appid}.zip`
+   - `Nama Game (AppID).zip`
+   - `Nama Game.zip`
+4. Jika file ditemukan dan belum ada di R2, bot stream file langsung:
+   - `aiohttp` download HTTP
+   - queue RAM
+   - `boto3.upload_fileobj()` upload ke R2
+5. Bot mengirim summary/notifikasi ke admin lewat notifier yang sudah ada.
 
-## Required Railway variables
+Tidak ada file yang disimpan ke local disk.
+
+## Railway env penting
 
 ```env
 OPENDIR_SYNC_ENABLED=true
 OPENDIR_BASE_URL=https://www.depotgame.my.id/
 OPENDIR_R2_PREFIX=Database/
+OPENDIR_GAMES_JSON_PATH=data/games.json
+OPENDIR_STATE_PATH=data/opendir_sync_state.json
 OPENDIR_INTERVAL_HOURS=6
 OPENDIR_RUN_ON_START=true
 OPENDIR_START_DELAY_SECONDS=20
-OPENDIR_MAX_DEPTH=3
+
+# Untuk test awal, jangan langsung semua.
+OPENDIR_GAMES_PER_RUN=500
 OPENDIR_MAX_FILES_PER_RUN=20
-OPENDIR_MAX_FILE_MB=1024
-OPENDIR_CONCURRENCY=2
+OPENDIR_CONCURRENCY=1
+OPENDIR_NOTIFY_ON_SUCCESS=true
+
+# Biasanya tetap zip karena /gen memakai file ZIP di R2.
+OPENDIR_TARGET_EXTENSIONS=zip
 OPENDIR_ALLOWED_EXTENSIONS=zip,manifest,lua,acf,vdf
+OPENDIR_SOURCE_PATTERNS={appid}.{ext},{appid}/{appid}.{ext},{target_filename},{safe_name}.{ext},{safe_name} ({appid}).{ext}
+
+OPENDIR_INDEX_SCAN_ENABLED=true
+OPENDIR_DIRECT_PROBE_ENABLED=true
+OPENDIR_USE_HEAD=true
+OPENDIR_FALLBACK_GET_PROBE=true
+OPENDIR_MAX_FILE_MB=1024
+OPENDIR_REQUEST_TIMEOUT_SECONDS=300
+OPENDIR_CONNECT_TIMEOUT_SECONDS=30
+OPENDIR_READ_TIMEOUT_SECONDS=120
 ```
 
-For the first production test, keep `OPENDIR_MAX_FILES_PER_RUN=20`. After logs look clean, increase it or set `0` for no explicit cap.
+## Perbedaan dengan Open Directory scanner lama
 
-## URL configuration note
+Versi lama hanya membuka halaman root lalu mencari tag `<a href="...zip">`.
+Kalau URL root bukan directory listing, hasilnya bisa `Files seen: 0`.
 
-Use the real domain URL:
+Versi baru tetap bisa scan `<a href>`, tetapi juga bisa probe file berdasarkan daftar `games.json`, misalnya `400.zip`, `620.zip`, atau `Portal (400).zip`.
+
+## State cursor
+
+Bot menyimpan posisi terakhir di:
+
+```txt
+data/opendir_sync_state.json
+```
+
+Tujuannya supaya bot tidak harus mengecek puluhan ribu entry `games.json` dalam satu run. Kalau ingin mulai ulang dari awal, hapus file state ini atau set `cursor` ke `0`.
+
+## Catatan performa
+
+`games.json` bisa berisi puluhan ribu game. Untuk test awal gunakan:
 
 ```env
-OPENDIR_BASE_URL=https://www.depotgame.my.id/
+OPENDIR_GAMES_PER_RUN=100
+OPENDIR_MAX_FILES_PER_RUN=10
+OPENDIR_CONCURRENCY=1
 ```
 
-Do not use the Cloudflare edge IP directly, for example `http://172.67.202.94/`. Accessing a Cloudflare-backed site by IP often returns HTTP 403 because the Host/SNI does not match the configured domain.
+Kalau sudah stabil, naikkan pelan-pelan.
 
-## Existing R2 variables still required
+## Output notifikasi
 
-```env
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_ACCOUNT_ID=...
-R2_BUCKET_NAME=...
-```
+Notifikasi akan menampilkan:
 
-## Runtime behavior
+- total game di `games.json`
+- jumlah game yang dicek pada run itu
+- cursor awal dan cursor berikutnya
+- jumlah kandidat URL yang dicek
+- jumlah file yang cocok
+- jumlah file yang sudah ada di R2
+- jumlah file yang berhasil diupload
+- sample upload
+- error jika ada
 
-1. When the bot starts, the cog waits until Discord is ready.
-2. If `OPENDIR_RUN_ON_START=true`, it performs an initial full scan.
-3. It lists existing R2 keys under `OPENDIR_R2_PREFIX`.
-4. It scans the open directory recursively up to `OPENDIR_MAX_DEPTH`.
-5. It streams only missing files to R2.
-6. It sleeps for `OPENDIR_INTERVAL_HOURS`, then checks again for new files.
+## Keamanan
 
-## Notes
-
-- The module writes summary events into `bot.record_ai_event()` when available.
-- Admin notifications are sent only on errors by default. Set `OPENDIR_NOTIFY_ON_SUCCESS=true` if you want success notifications too.
-- `OPENDIR_FLATTEN_R2_KEYS=false` preserves source subfolder paths under the R2 prefix. Set it to `true` only if every filename is globally unique.
+Aktifkan modul ini hanya untuk sumber yang kamu miliki atau memang punya izin untuk dimirror. Jangan gunakan untuk bypass login, limit, proteksi, atau aturan situs.
