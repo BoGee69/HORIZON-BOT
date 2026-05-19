@@ -197,6 +197,18 @@ async def collect_health(bot) -> dict[str, Any]:
             "allow_set_channel_topic": bool(bot_config.AI_OPERATOR_ALLOW_SET_CHANNEL_TOPIC),
             "allow_create_channel": bool(bot_config.AI_OPERATOR_ALLOW_CREATE_CHANNEL),
             "allow_configure_channel_access": bool(bot_config.AI_OPERATOR_ALLOW_CONFIGURE_CHANNEL_ACCESS),
+            "allow_setup_channel_template": bool(bot_config.AI_OPERATOR_ALLOW_SETUP_CHANNEL_TEMPLATE),
+            "allow_create_role": bool(bot_config.AI_OPERATOR_ALLOW_CREATE_ROLE),
+            "allow_update_role": bool(bot_config.AI_OPERATOR_ALLOW_UPDATE_ROLE),
+            "allow_delete_role": bool(bot_config.AI_OPERATOR_ALLOW_DELETE_ROLE),
+            "allow_member_timeout": bool(bot_config.AI_OPERATOR_ALLOW_MEMBER_TIMEOUT),
+            "allow_member_kick": bool(bot_config.AI_OPERATOR_ALLOW_MEMBER_KICK),
+            "allow_member_ban": bool(bot_config.AI_OPERATOR_ALLOW_MEMBER_BAN),
+            "allow_webhook_create": bool(bot_config.AI_OPERATOR_ALLOW_WEBHOOK_CREATE),
+            "allow_webhook_delete": bool(bot_config.AI_OPERATOR_ALLOW_WEBHOOK_DELETE),
+            "allow_server_setting": bool(bot_config.AI_OPERATOR_ALLOW_SERVER_SETTING),
+            "allow_schedule_action": bool(bot_config.AI_OPERATOR_ALLOW_SCHEDULE_ACTION),
+            "scheduler_enabled": bool(bot_config.AI_OPERATOR_SCHEDULER_ENABLED),
         },
     }
 

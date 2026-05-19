@@ -232,6 +232,10 @@ class AIChat(commands.Cog):
         else:
             if not self._server_reply_allowed(message):
                 return
+            # Public server channels are info-only. Do not hand public messages
+            # to the operator, even when an admin mentions TriadBot with an
+            # operator-like request. The chat prompt will explain that real
+            # server/database actions must be sent through DM.
         if not message.content.strip() and not getattr(message, "attachments", None):
             return
         if self._cooling_down(message.author.id):
@@ -270,6 +274,7 @@ class AIChat(commands.Cog):
                             memory=self.memory,
                             is_owner=is_owner,
                             user_access_level=access_level,
+                            is_dm=is_dm,
                         )
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):

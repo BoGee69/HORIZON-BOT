@@ -12,6 +12,7 @@ import logging
 import re
 import secrets
 import time
+from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -43,6 +44,17 @@ ACTION_LABELS = {
     "set_channel_topic": "Set channel topic",
     "create_channel": "Create text channel",
     "configure_channel_access": "Configure channel access",
+    "setup_channel_template": "Setup channel template",
+    "create_role": "Create role",
+    "update_role": "Update role",
+    "delete_role": "Delete role",
+    "timeout_member": "Timeout member",
+    "kick_member": "Kick member",
+    "ban_member": "Ban member",
+    "create_webhook": "Create webhook",
+    "delete_webhook": "Delete webhook",
+    "update_server_settings": "Update server settings",
+    "schedule_action": "Schedule operator action",
 }
 
 WRITE_ACTIONS = {
@@ -55,6 +67,17 @@ WRITE_ACTIONS = {
     "set_channel_topic",
     "create_channel",
     "configure_channel_access",
+    "setup_channel_template",
+    "create_role",
+    "update_role",
+    "delete_role",
+    "timeout_member",
+    "kick_member",
+    "ban_member",
+    "create_webhook",
+    "delete_webhook",
+    "update_server_settings",
+    "schedule_action",
 }
 
 SERVER_CONTENT_ACTIONS = {
@@ -64,6 +87,16 @@ SERVER_CONTENT_ACTIONS = {
     "set_channel_topic",
     "create_channel",
     "configure_channel_access",
+    "setup_channel_template",
+    "create_role",
+    "update_role",
+    "delete_role",
+    "timeout_member",
+    "kick_member",
+    "ban_member",
+    "create_webhook",
+    "delete_webhook",
+    "update_server_settings",
 }
 
 
@@ -96,9 +129,16 @@ class AIOperator(commands.Cog):
         self._maintenance_lock = asyncio.Lock()
         self._server_lock = asyncio.Lock()
         self._ai_lock = asyncio.Lock()
+        self._schedule_task: asyncio.Task | None = None
         bot.ai_operator = self
 
+    async def cog_load(self):
+        if bot_config.AI_OPERATOR_SCHEDULER_ENABLED:
+            self._schedule_task = asyncio.create_task(self._schedule_loop())
+
     async def cog_unload(self):
+        if self._schedule_task:
+            self._schedule_task.cancel()
         if getattr(self.bot, "ai_operator", None) is self:
             self.bot.ai_operator = None
 
@@ -136,6 +176,28 @@ class AIOperator(commands.Cog):
             return bool(bot_config.AI_OPERATOR_ALLOW_CREATE_CHANNEL)
         if action == "configure_channel_access":
             return bool(bot_config.AI_OPERATOR_ALLOW_CONFIGURE_CHANNEL_ACCESS)
+        if action == "setup_channel_template":
+            return bool(bot_config.AI_OPERATOR_ALLOW_SETUP_CHANNEL_TEMPLATE)
+        if action == "create_role":
+            return bool(bot_config.AI_OPERATOR_ALLOW_CREATE_ROLE)
+        if action == "update_role":
+            return bool(bot_config.AI_OPERATOR_ALLOW_UPDATE_ROLE)
+        if action == "delete_role":
+            return bool(bot_config.AI_OPERATOR_ALLOW_DELETE_ROLE)
+        if action == "timeout_member":
+            return bool(bot_config.AI_OPERATOR_ALLOW_MEMBER_TIMEOUT)
+        if action == "kick_member":
+            return bool(bot_config.AI_OPERATOR_ALLOW_MEMBER_KICK)
+        if action == "ban_member":
+            return bool(bot_config.AI_OPERATOR_ALLOW_MEMBER_BAN)
+        if action == "create_webhook":
+            return bool(bot_config.AI_OPERATOR_ALLOW_WEBHOOK_CREATE)
+        if action == "delete_webhook":
+            return bool(bot_config.AI_OPERATOR_ALLOW_WEBHOOK_DELETE)
+        if action == "update_server_settings":
+            return bool(bot_config.AI_OPERATOR_ALLOW_SERVER_SETTING)
+        if action == "schedule_action":
+            return bool(bot_config.AI_OPERATOR_ALLOW_SCHEDULE_ACTION)
         return False
 
     def _cleanup(self) -> None:
@@ -574,6 +636,83 @@ class AIOperator(commands.Cog):
                 match = re.search(r"(?:rules?|peraturan)(?:\s+server)?\s*[:\-]\s*(.+)\Z", clean, re.I | re.S)
                 content = self._strip_outer_quotes(match.group(1)) if match else ""
             return "update_rules", {"channel": channel, "content": content, "title": "Server Rules", "pin": True}
+
+        if any(phrase in lower for phrase in ("template", "setup category", "setup kategori", "kategori game", "game category", "game channels")):
+            if any(word in lower for word in ("buat", "bikin", "create", "setup", "siapkan", "atur")):
+                category = ""
+                template = "game"
+                if "support" in lower:
+                    template = "support"
+                elif "community" in lower or "server" in lower:
+                    template = "community"
+                match = re.search(r"(?:category|kategori)\s+[#`'\"]?(.{2,100}?)(?:\s+(?:template|dengan|with|$)|$)", clean, re.I)
+                if match:
+                    category = match.group(1).strip(" `\"'")
+                if not category:
+                    match = re.search(r"(?:template|setup)\s+[#`'\"]?(.{2,100})", clean, re.I)
+                    if match:
+                        category = match.group(1).strip(" `\"'")
+                return "setup_channel_template", {"template": template, "category": category or "Games"}
+
+        role_match = re.search(r"(?:buat|bikin|create|add)\s+role\s+@?([\w\- ]{2,80})", clean, re.I)
+        if role_match:
+            color_match = re.search(r"(?:color|warna)\s*[:=]?\s*(#[0-9a-fA-F]{6}|[a-zA-Z]+)", clean)
+            return "create_role", {"name": role_match.group(1).strip(), "color": color_match.group(1) if color_match else ""}
+
+        role_update_match = re.search(r"(?:ubah|update|edit)\s+role\s+@?([\w\- ]{2,80})", clean, re.I)
+        if role_update_match:
+            new_name_match = re.search(r"(?:jadi|to|new name|nama baru)\s+@?([\w\- ]{2,80})", clean, re.I)
+            color_match = re.search(r"(?:color|warna)\s*[:=]?\s*(#[0-9a-fA-F]{6}|[a-zA-Z]+)", clean)
+            return "update_role", {
+                "role": role_update_match.group(1).strip(),
+                "new_name": new_name_match.group(1).strip() if new_name_match else "",
+                "color": color_match.group(1) if color_match else "",
+            }
+
+        role_delete_match = re.search(r"(?:hapus|delete|remove)\s+role\s+@?([\w\- ]{2,80})", clean, re.I)
+        if role_delete_match:
+            return "delete_role", {"role": role_delete_match.group(1).strip()}
+
+        if re.search(r"\btimeout\b|\bmute\b", lower):
+            member_match = re.search(r"(<@!?\d+>|\b\d{16,25}\b|@[^\s]+)", clean)
+            duration_match = re.search(r"\b(\d+\s*(?:s|sec|secs|second|seconds|m|min|minute|minutes|h|hour|hours|d|day|days))\b", clean, re.I)
+            return "timeout_member", {
+                "member": member_match.group(1) if member_match else "",
+                "duration": duration_match.group(1) if duration_match else "10m",
+                "reason": clean[:500],
+            }
+
+        if re.search(r"\bkick\b", lower):
+            member_match = re.search(r"(<@!?\d+>|\b\d{16,25}\b|@[^\s]+)", clean)
+            return "kick_member", {"member": member_match.group(1) if member_match else "", "reason": clean[:500]}
+
+        if re.search(r"\bban\b", lower):
+            member_match = re.search(r"(<@!?\d+>|\b\d{16,25}\b|@[^\s]+)", clean)
+            return "ban_member", {"member": member_match.group(1) if member_match else "", "reason": clean[:500]}
+
+        webhook_create = re.search(r"(?:buat|create|bikin)\s+webhook", clean, re.I)
+        if webhook_create:
+            channel = self._extract_channel_reference(clean)
+            name_match = re.search(r"(?:nama|name)\s*[:=]?\s*([\w\- ]{2,80})", clean, re.I)
+            return "create_webhook", {"channel": channel, "name": name_match.group(1).strip() if name_match else "TriadBot Webhook"}
+
+        webhook_delete = re.search(r"(?:hapus|delete|remove)\s+webhook\s+(\d{16,25})", clean, re.I)
+        if webhook_delete:
+            return "delete_webhook", {"webhook_id": webhook_delete.group(1)}
+
+        if any(phrase in lower for phrase in ("nama server", "server name", "description server", "deskripsi server")):
+            if any(word in lower for word in ("ubah", "update", "set", "ganti")):
+                name_match = re.search(r"(?:nama server|server name)\s*(?:jadi|to|[:=])\s*(.{2,100})", clean, re.I)
+                desc_match = re.search(r"(?:description server|deskripsi server|server description)\s*(?:jadi|to|[:=])\s*(.{2,120})", clean, re.I)
+                return "update_server_settings", {
+                    "name": name_match.group(1).strip() if name_match else "",
+                    "description": desc_match.group(1).strip() if desc_match else "",
+                }
+
+        if any(word in lower for word in ("jadwal", "schedule", "scheduled", "otomatis", "setiap", "tiap")) and any(
+            word in lower for word in ("maintenance", "sync", "audit", "booster", "caretaker")
+        ):
+            return "schedule_action", {"schedule_text": clean}
 
         return None, {}
 
@@ -1180,6 +1319,204 @@ class AIOperator(commands.Cog):
                     {"proposal_id": proposal_id, "action": proposal.action, "error": result},
                 )
 
+    def _schedule_path(self) -> Path:
+        return Path(bot_config.AI_OPERATOR_SCHEDULES_PATH)
+
+    def _load_schedules(self) -> list[dict[str, Any]]:
+        path = self._schedule_path()
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+        except Exception:
+            log.warning("Could not read AI operator schedules", exc_info=True)
+        return []
+
+    def _save_schedules(self, items: list[dict[str, Any]]) -> None:
+        path = self._schedule_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(items, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+    @staticmethod
+    def _parse_clock(text: str) -> tuple[int, int]:
+        clean = sanitize_text(text).lower()
+        match = re.search(r"(?:jam|at|pukul)\s*(\d{1,2})(?:[:.](\d{2}))?", clean)
+        if not match:
+            match = re.search(r"\b(\d{1,2})(?:[:.](\d{2}))\b", clean)
+        if not match:
+            return 2, 0
+        hour = max(0, min(int(match.group(1)), 23))
+        minute = max(0, min(int(match.group(2) or "0"), 59))
+        return hour, minute
+
+    @staticmethod
+    def _weekday_from_text(text: str) -> int | None:
+        lower = sanitize_text(text).lower()
+        days = {
+            "senin": 0,
+            "monday": 0,
+            "mon": 0,
+            "selasa": 1,
+            "tuesday": 1,
+            "tue": 1,
+            "rabu": 2,
+            "wednesday": 2,
+            "wed": 2,
+            "kamis": 3,
+            "thursday": 3,
+            "thu": 3,
+            "jumat": 4,
+            "jum'at": 4,
+            "friday": 4,
+            "fri": 4,
+            "sabtu": 5,
+            "saturday": 5,
+            "sat": 5,
+            "minggu": 6,
+            "ahad": 6,
+            "sunday": 6,
+            "sun": 6,
+        }
+        for word, value in days.items():
+            if re.search(rf"\b{re.escape(word)}\b", lower):
+                return value
+        return None
+
+    def _parse_schedule_params(self, text: str, action: str = "run_r2_maintenance") -> dict[str, Any]:
+        clean = sanitize_text(text).strip()
+        lower = clean.lower()
+        action = action or "run_r2_maintenance"
+        if "steam" in lower and ("sync" in lower or "db" in lower or "database" in lower):
+            action = "run_steam_db_sync"
+        elif "audit" in lower and ("server" in lower or "discord" in lower):
+            action = "run_server_audit"
+        elif "booster" in lower and ("sync" in lower or "sinkron" in lower):
+            action = "sync_booster_roles"
+        elif "ai" in lower and ("check" in lower or "cek" in lower):
+            action = "run_ai_check"
+
+        match = re.search(r"(?:every|tiap|setiap)\s+(\d+)\s*(minute|minutes|menit|hour|hours|jam)", lower)
+        if match:
+            amount = int(match.group(1))
+            unit = match.group(2)
+            interval = amount * (60 if unit in {"minute", "minutes", "menit"} else 3600)
+            return {"action": action, "kind": "interval", "interval_seconds": max(60, interval), "schedule_text": clean}
+
+        hour, minute = self._parse_clock(clean)
+        weekday = self._weekday_from_text(clean)
+        if weekday is not None or any(word in lower for word in ("weekly", "mingguan", "setiap minggu", "tiap minggu")):
+            return {"action": action, "kind": "weekly", "weekday": weekday if weekday is not None else 6, "hour": hour, "minute": minute, "schedule_text": clean}
+        return {"action": action, "kind": "daily", "hour": hour, "minute": minute, "schedule_text": clean}
+
+    @staticmethod
+    def _next_daily(hour: int, minute: int, *, from_ts: float | None = None) -> float:
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.fromtimestamp(from_ts or time.time(), tz=timezone.utc)
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate.timestamp() <= now.timestamp():
+            candidate += timedelta(days=1)
+        return candidate.timestamp()
+
+    @staticmethod
+    def _next_weekly(weekday: int, hour: int, minute: int, *, from_ts: float | None = None) -> float:
+        from datetime import datetime, timezone, timedelta
+
+        now = datetime.fromtimestamp(from_ts or time.time(), tz=timezone.utc)
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        days_ahead = (weekday - candidate.weekday()) % 7
+        if days_ahead:
+            candidate += timedelta(days=days_ahead)
+        if candidate.timestamp() <= now.timestamp():
+            candidate += timedelta(days=7)
+        return candidate.timestamp()
+
+    def _next_run_at(self, item: dict[str, Any], *, from_ts: float | None = None) -> float:
+        kind = str(item.get("kind") or "daily")
+        if kind == "interval":
+            return (from_ts or time.time()) + max(60, int(item.get("interval_seconds") or 3600))
+        if kind == "weekly":
+            return self._next_weekly(int(item.get("weekday", 6)), int(item.get("hour", 2)), int(item.get("minute", 0)), from_ts=from_ts)
+        return self._next_daily(int(item.get("hour", 2)), int(item.get("minute", 0)), from_ts=from_ts)
+
+    async def _install_schedule(self, params: dict[str, Any], *, requested_by: int | None = None) -> str:
+        schedule_text = sanitize_text(str(params.get("schedule_text") or params.get("schedule") or "")).strip()
+        action = sanitize_text(str(params.get("scheduled_action") or params.get("action") or "run_r2_maintenance")).strip().lower()
+        parsed = self._parse_schedule_params(schedule_text or f"daily 02:00 {action}", action=action)
+        scheduled_action = str(parsed.get("action") or "").strip().lower()
+        allowed_scheduled = {"run_r2_maintenance", "run_steam_db_sync", "run_server_audit", "sync_booster_roles", "run_ai_check"}
+        if scheduled_action not in allowed_scheduled:
+            raise ValueError("This action cannot be scheduled automatically.")
+        if not self._action_enabled(scheduled_action):
+            raise ValueError(f"Scheduled action `{scheduled_action}` is disabled by config.")
+
+        items = self._load_schedules()
+        schedule_id = secrets.token_hex(3)
+        item = {
+            "id": schedule_id,
+            "action": scheduled_action,
+            "kind": parsed.get("kind"),
+            "hour": parsed.get("hour"),
+            "minute": parsed.get("minute"),
+            "weekday": parsed.get("weekday"),
+            "interval_seconds": parsed.get("interval_seconds"),
+            "schedule_text": parsed.get("schedule_text") or schedule_text,
+            "params": sanitize_data(params.get("params") if isinstance(params.get("params"), dict) else {}),
+            "created_by": requested_by,
+            "created_at": time.time(),
+            "next_run_at": self._next_run_at(parsed),
+            "enabled": True,
+        }
+        items.append(item)
+        self._save_schedules(items)
+        return (
+            f"Schedule `{schedule_id}` installed for `{scheduled_action}`. "
+            f"Next run creates an approval proposal at UTC timestamp {int(item['next_run_at'])}."
+        )
+
+    async def _schedule_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            await asyncio.sleep(max(30, int(bot_config.AI_OPERATOR_SCHEDULE_CHECK_SECONDS or 60)))
+            if not bot_config.AI_OPERATOR_ENABLED or not bot_config.AI_OPERATOR_SCHEDULER_ENABLED:
+                continue
+            try:
+                items = self._load_schedules()
+                now = time.time()
+                changed = False
+                for item in items:
+                    if not item.get("enabled", True):
+                        continue
+                    next_run = float(item.get("next_run_at") or 0)
+                    if next_run > now:
+                        continue
+                    action = str(item.get("action") or "").strip().lower()
+                    if action not in ACTION_LABELS or not self._action_enabled(action):
+                        item["enabled"] = False
+                        changed = True
+                        continue
+                    proposal = await self.create_proposal(
+                        action=action,
+                        reason=f"Scheduled operator task `{item.get('id')}` is due: {item.get('schedule_text')}",
+                        impact="This scheduled task creates a normal approval proposal. It does not bypass approval.",
+                        params=item.get("params") if isinstance(item.get("params"), dict) else {},
+                        source=f"schedule:{item.get('id')}",
+                        requested_by=int(item.get("created_by") or 0) or None,
+                        dedupe=False,
+                    )
+                    item["last_run_at"] = now
+                    item["last_proposal_id"] = proposal.proposal_id if proposal else ""
+                    item["next_run_at"] = self._next_run_at(item, from_ts=now + 1)
+                    changed = True
+                if changed:
+                    self._save_schedules(items)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.warning("AI operator schedule loop failed", exc_info=True)
+
     def _result_embed(self, proposal: OperatorProposal, result: str, *, success: bool) -> discord.Embed:
         embed = discord.Embed(
             title="Approved action completed" if success else "Approved action failed",
@@ -1256,22 +1593,35 @@ class AIOperator(commands.Cog):
                 ]
             )
 
+        if proposal.action == "schedule_action":
+            return await self._install_schedule(proposal.params, requested_by=proposal.requested_by or proposal.approved_by)
+
         if proposal.action in SERVER_CONTENT_ACTIONS:
             cog = self.bot.get_cog("ServerAdmin")
             if not cog:
                 raise RuntimeError("Server admin cog is not loaded")
-            if proposal.action == "send_announcement":
-                return await cog.send_announcement(proposal.params)
-            if proposal.action == "update_rules":
-                return await cog.update_rules(proposal.params)
-            if proposal.action == "pin_message":
-                return await cog.pin_message(proposal.params)
-            if proposal.action == "set_channel_topic":
-                return await cog.set_channel_topic(proposal.params)
-            if proposal.action == "create_channel":
-                return await cog.create_channel(proposal.params)
-            if proposal.action == "configure_channel_access":
-                return await cog.configure_channel_access(proposal.params)
+            handlers = {
+                "send_announcement": cog.send_announcement,
+                "update_rules": cog.update_rules,
+                "pin_message": cog.pin_message,
+                "set_channel_topic": cog.set_channel_topic,
+                "create_channel": cog.create_channel,
+                "configure_channel_access": cog.configure_channel_access,
+                "setup_channel_template": cog.setup_channel_template,
+                "create_role": cog.create_role,
+                "update_role": cog.update_role,
+                "delete_role": cog.delete_role,
+                "timeout_member": cog.timeout_member,
+                "kick_member": cog.kick_member,
+                "ban_member": cog.ban_member,
+                "create_webhook": cog.create_webhook,
+                "delete_webhook": cog.delete_webhook,
+                "update_server_settings": cog.update_server_settings,
+            }
+            handler = handlers.get(proposal.action)
+            if not handler:
+                raise RuntimeError(f"Unsupported server action: {proposal.action}")
+            return await handler(proposal.params)
 
         if proposal.action == "run_r2_maintenance":
             cog = self.bot.get_cog("R2MaintenanceCommands")
@@ -1481,8 +1831,22 @@ class AIOperator(commands.Cog):
             missing.append("topic")
         if action == "create_channel" and not str(params.get("name") or "").strip():
             missing.append("name")
-        if action == "configure_channel_access" and not str(params.get("channel") or "").strip():
+        if action == "configure_channel_access" and not str(params.get("channel") or params.get("channel_id") or "").strip():
             missing.append("channel")
+        if action == "setup_channel_template" and not str(params.get("category") or params.get("name") or "").strip():
+            missing.append("category")
+        if action == "create_role" and not str(params.get("name") or "").strip():
+            missing.append("name")
+        if action in {"update_role", "delete_role"} and not str(params.get("role") or params.get("role_id") or params.get("role_name") or "").strip():
+            missing.append("role")
+        if action in {"timeout_member", "kick_member", "ban_member"} and not str(params.get("member") or params.get("member_id") or params.get("user_id") or "").strip():
+            missing.append("member")
+        if action == "create_webhook" and not str(params.get("channel") or params.get("channel_id") or "").strip():
+            missing.append("channel")
+        if action == "delete_webhook" and not str(params.get("webhook_id") or params.get("id") or "").strip():
+            missing.append("webhook_id")
+        if action == "schedule_action" and not str(params.get("schedule_text") or params.get("schedule") or "").strip():
+            missing.append("schedule_text")
 
         if missing:
             self._drafts[message.author.id] = {"action": action, "params": params, "missing": missing}
@@ -1493,6 +1857,16 @@ class AIOperator(commands.Cog):
                 "create_channel": "Reply with the channel name.",
                 "pin_message": "Reply with the message ID or include the target channel.",
                 "configure_channel_access": "Reply with the target channel, for example: `#welcome`.",
+                "setup_channel_template": "Reply with category/template, for example: `Games` or `template game category Games`.",
+                "create_role": "Reply with the role name, for example: `Donor`.",
+                "update_role": "Reply with the target role name or ID.",
+                "delete_role": "Reply with the target role name or ID.",
+                "timeout_member": "Reply with a user mention/ID and duration, for example: `123456789012345678 10m`.",
+                "kick_member": "Reply with a user mention or ID.",
+                "ban_member": "Reply with a user mention or ID.",
+                "create_webhook": "Reply with the target channel, for example: `#logs`.",
+                "delete_webhook": "Reply with the webhook ID.",
+                "schedule_action": "Reply with a schedule, for example: `setiap Minggu jam 2 pagi jalankan R2 maintenance`.",
             }
             warning_text = ""
             if attachment_warnings:
@@ -1514,6 +1888,17 @@ class AIOperator(commands.Cog):
                 "This changes channel permission overwrites after approval so everyone can read, "
                 "but only Admin/Moderator roles can send messages."
             ),
+            "setup_channel_template": "This creates or configures a category with standard text/voice channels after approval.",
+            "create_role": "This creates or configures a Discord role after approval.",
+            "update_role": "This edits an existing Discord role after approval.",
+            "delete_role": "This deletes an existing Discord role after approval.",
+            "timeout_member": "This applies a Discord timeout to a member after approval.",
+            "kick_member": "This kicks a member after approval.",
+            "ban_member": "This bans a member after approval.",
+            "create_webhook": "This creates a webhook after approval. The webhook token is never shown.",
+            "delete_webhook": "This deletes a webhook after approval.",
+            "update_server_settings": "This edits supported server settings after approval.",
+            "schedule_action": "This stores a scheduled task that creates future approval proposals. It does not bypass approval.",
         }.get(action, "This changes Discord server content after approval.")
         proposal = await self.create_proposal(
             action=action,
@@ -1582,21 +1967,91 @@ class AIOperator(commands.Cog):
                 params["message_id"] = value
             elif action == "configure_channel_access":
                 params["channel"] = self._extract_channel_reference(text) or self._strip_value_prefix(text)
+            elif action == "setup_channel_template":
+                params["category"] = self._strip_value_prefix(text)
+            elif action == "create_role":
+                params["name"] = self._strip_value_prefix(text)
+            elif action in {"update_role", "delete_role"}:
+                params["role"] = self._strip_value_prefix(text)
+            elif action in {"timeout_member", "kick_member", "ban_member"}:
+                member_match = re.search(r"(<@!?\d+>|\b\d{16,25}\b|@[^\s]+)", text)
+                params["member"] = member_match.group(1) if member_match else self._strip_value_prefix(text)
+            elif action == "create_webhook":
+                params["channel"] = self._extract_channel_reference(text) or self._strip_value_prefix(text)
+            elif action == "delete_webhook":
+                params["webhook_id"] = self._strip_value_prefix(text)
+            elif action == "schedule_action":
+                params["schedule_text"] = self._strip_value_prefix(text)
         self._drafts.pop(message.author.id, None)
         await self._create_server_content_proposal(message, action, params)
         return True
+
+    def _bot_was_addressed(self, message: discord.Message) -> bool:
+        bot_user = getattr(self.bot, "user", None)
+        if not bot_user:
+            return False
+        if bot_user in getattr(message, "mentions", []) or message.mention_everyone:
+            return True
+        reference = getattr(message, "reference", None)
+        resolved = getattr(reference, "resolved", None) if reference else None
+        author = getattr(resolved, "author", None)
+        if author and getattr(author, "id", None) == bot_user.id:
+            return True
+        content = sanitize_text(getattr(message, "content", "") or "").strip().lower()
+        return content.startswith(("triadbot ", "triadbot,", "triadbot:"))
+
+    def _strip_bot_addressing(self, text: str) -> str:
+        clean = sanitize_text(text).strip()
+        bot_user = getattr(self.bot, "user", None)
+        if bot_user:
+            clean = clean.replace(f"<@{bot_user.id}>", "")
+            clean = clean.replace(f"<@!{bot_user.id}>", "")
+        clean = re.sub(r"^triadbot\s*[:,]?\s*", "", clean, flags=re.I).strip()
+        return clean
+
+    def _with_prompt_text(self, message: discord.Message, text: str):
+        class _PromptMessage:
+            __slots__ = ("_message", "content")
+
+            def __init__(self, original: discord.Message, content: str):
+                self._message = original
+                self.content = content
+
+            def __getattr__(self, name: str):
+                return getattr(self._message, name)
+
+        return _PromptMessage(message, text)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
         if message.author.bot or not bot_config.AI_OPERATOR_ENABLED:
             return
-        if not isinstance(message.channel, discord.DMChannel):
-            return
+
+        is_dm = isinstance(message.channel, discord.DMChannel)
+        if not is_dm:
+            # Production safety: server/database/operator control is private-DM only.
+            # Public channels may still use AI chat for server information, but they
+            # must never create/approve proposals or trigger maintenance actions.
+            if getattr(bot_config, "AI_OPERATOR_DM_ONLY", True):
+                return
+            if not getattr(bot_config, "AI_OPERATOR_SERVER_PROMPTS_ENABLED", False):
+                return
+            if not getattr(message, "guild", None):
+                return
+            configured = set(getattr(bot_config, "SERVER_ADMIN_GUILD_IDS", set()) or set())
+            if configured and message.guild.id not in configured:
+                return
+            if getattr(bot_config, "AI_OPERATOR_SERVER_REQUIRE_MENTION", True) and not self._bot_was_addressed(message):
+                return
+
         access_allowed, access_level, access_reason = await self._operator_access_for(message.author.id)
         if not access_allowed:
             return
 
-        command, proposal_id = self._parse_operator_command(message.content)
+        prompt_text = self._strip_bot_addressing(message.content) if not is_dm else sanitize_text(message.content).strip()
+        prompt_message = self._with_prompt_text(message, prompt_text)
+
+        command, proposal_id = self._parse_operator_command(prompt_text)
         if command == "pending":
             await self._send_pending(message.channel)
             return
@@ -1619,20 +2074,20 @@ class AIOperator(commands.Cog):
             await self._reject(None, message.author.id, message.channel)
             return
 
-        if await self._continue_draft(message):
+        if await self._continue_draft(prompt_message):
             return
 
-        if await self._update_pending_proposal(message):
+        if await self._update_pending_proposal(prompt_message):
             return
 
-        server_action, params = self._parse_server_content_request(message.content)
+        server_action, params = self._parse_server_content_request(prompt_text)
         if server_action:
-            await self._create_server_content_proposal(message, server_action, params)
+            await self._create_server_content_proposal(prompt_message, server_action, params)
             return
 
-        action = self._parse_action_request(message.content)
+        action = self._parse_action_request(prompt_text)
         if action:
-            await self._create_owner_requested_proposal(message, action)
+            await self._create_owner_requested_proposal(prompt_message, action)
 
 
 async def setup(bot):

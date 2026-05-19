@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from datetime import timedelta
 from typing import Any
 
 import discord
@@ -249,14 +250,25 @@ class ServerAdmin(commands.Cog):
             params,
             fallback_names=bot_config.SERVER_ADMIN_ANNOUNCEMENT_CHANNEL_NAMES,
         )
-        title = str(params.get("title") or "Announcement").strip()[:256]
-        content = self._require_text(params, "content", max_chars=3800)
-        embed = self._server_embed(title=title, description=content, color=COLOR_INFO)
+        content = self._require_text(params, "content", max_chars=30000)
+        chunks = self._split_text(content, limit=1900)
+        if not chunks:
+            raise ValueError("Announcement content is empty after parsing.")
+        if len(chunks) > 16:
+            raise ValueError("Announcement content is too long. Maximum is 16 Discord messages.")
+
         image_url = str(params.get("image_url") or "").strip()
-        if image_url.startswith(("http://", "https://")):
-            embed.set_image(url=image_url)
-        message = await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-        return f"Announcement sent to #{channel.name} ({channel.id}). Message ID: {message.id}"
+        sent_messages: list[discord.Message] = []
+        for index, chunk in enumerate(chunks):
+            if index == len(chunks) - 1 and image_url.startswith(("http://", "https://")):
+                chunk = f"{chunk}\n{image_url}".strip()
+            sent_messages.append(
+                await channel.send(content=chunk, allowed_mentions=discord.AllowedMentions.none())
+            )
+        return (
+            f"Announcement sent to #{channel.name} ({channel.id}) as plain message(s). "
+            f"Messages: {len(sent_messages)}. First message ID: {sent_messages[0].id}"
+        )
 
     async def update_rules(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)
@@ -417,31 +429,407 @@ class ServerAdmin(commands.Cog):
         if not name:
             raise ValueError("Channel name is invalid.")
         normalized_name = self._normalize_channel_name(name)
-        if discord.utils.find(
+        channel = discord.utils.find(
             lambda item: self._normalize_channel_name(item.name) == normalized_name,
             guild.text_channels,
-        ):
-            raise ValueError(f"Text channel #{name} already exists.")
-
-        category = None
-        category_name = str(params.get("category") or "").strip().lower()
-        if category_name:
-            normalized_category = self._normalize_channel_name(category_name)
-            category = discord.utils.find(
-                lambda item: item.name.lower().replace(" ", "-") == normalized_category,
-                guild.categories,
-            )
-            if not category:
-                raise ValueError(f"Category `{category_name}` was not found.")
-
-        topic = str(params.get("topic") or "").strip()[:1024] or None
-        channel = await guild.create_text_channel(
-            name=name,
-            topic=topic,
-            category=category,
-            reason="Owner-approved text channel creation",
         )
-        return f"Created text channel #{channel.name} ({channel.id})."
+
+        category = await self._ensure_category(guild, str(params.get("category") or ""))
+        topic = str(params.get("topic") or "").strip()[:1024] or None
+        created = False
+
+        if channel:
+            edit_kwargs: dict[str, Any] = {}
+            if topic and channel.topic != topic:
+                edit_kwargs["topic"] = topic
+            if category and channel.category_id != category.id:
+                edit_kwargs["category"] = category
+            if edit_kwargs:
+                await channel.edit(**edit_kwargs, reason="Owner-approved existing channel configuration")
+        else:
+            channel = await guild.create_text_channel(
+                name=name,
+                topic=topic,
+                category=category,
+                reason="Owner-approved text channel creation",
+            )
+            created = True
+
+        access_mode = str(params.get("access_mode") or params.get("mode") or "").strip().lower()
+        access_note = ""
+        if access_mode in {"admin_mod_only_send", "staff_only_send"}:
+            access_note = " " + await self.configure_channel_access({**params, "channel_id": str(channel.id), "mode": access_mode})
+
+        verb = "Created" if created else "Configured existing"
+        return f"{verb} text channel #{channel.name} ({channel.id}).{access_note}"
+
+    async def _ensure_category(self, guild: discord.Guild, value: str) -> discord.CategoryChannel | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        normalized = self._normalize_channel_name(raw)
+        category = discord.utils.find(
+            lambda item: self._normalize_channel_name(item.name) == normalized,
+            guild.categories,
+        )
+        if category:
+            return category
+        return await guild.create_category(name=raw[:100], reason="Owner-approved category setup")
+
+    def _template_channels(self, template: str) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+        key = self._normalize_channel_name(template or "")
+        if key in {"game", "games", "game-category", "gaming"}:
+            return (
+                [
+                    {"name": "info", "topic": "Game information and pinned resources."},
+                    {"name": "download-links", "topic": "Approved game download resources."},
+                    {"name": "support", "topic": "Help and troubleshooting."},
+                    {"name": "chat", "topic": "General discussion for this game/category."},
+                ],
+                [
+                    {"name": "Voice 1", "topic": ""},
+                    {"name": "Voice 2", "topic": ""},
+                ],
+            )
+        if key in {"support", "help"}:
+            return (
+                [
+                    {"name": "support", "topic": "Support requests and troubleshooting."},
+                    {"name": "faq", "topic": "Frequently asked questions."},
+                    {"name": "known-issues", "topic": "Known issues and fixes."},
+                ],
+                [],
+            )
+        if key in {"community", "standard", "server"}:
+            return (
+                [
+                    {"name": "rules", "topic": "Read before using the server."},
+                    {"name": "announcement", "topic": "Official announcements."},
+                    {"name": "resources", "topic": "Useful links and resources."},
+                    {"name": "general", "topic": "General discussion."},
+                ],
+                [{"name": "General Voice", "topic": ""}],
+            )
+        raise ValueError("Unsupported template. Use `game`, `support`, or `community`.")
+
+    async def setup_channel_template(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        template = str(params.get("template") or "game").strip().lower()
+        category_name = str(params.get("category") or params.get("name") or template).strip()
+        category = await self._ensure_category(guild, category_name)
+        if not category:
+            raise ValueError("`category` is required for channel template setup.")
+
+        text_defs, voice_defs = self._template_channels(template)
+        prefix = self._normalize_channel_name(str(params.get("prefix") or ""))
+        access_mode = str(params.get("access_mode") or params.get("mode") or "admin_mod_only_send").strip().lower()
+
+        created_text = configured_text = created_voice = configured_voice = 0
+        results: list[str] = []
+
+        for item in text_defs:
+            base_name = item["name"]
+            name = self._normalize_channel_name(f"{prefix}-{base_name}" if prefix else base_name)
+            channel = discord.utils.find(
+                lambda ch: self._normalize_channel_name(ch.name) == name,
+                guild.text_channels,
+            )
+            if channel:
+                await channel.edit(category=category, topic=item.get("topic") or None, reason="Owner-approved template configuration")
+                configured_text += 1
+            else:
+                channel = await guild.create_text_channel(
+                    name=name,
+                    topic=item.get("topic") or None,
+                    category=category,
+                    reason="Owner-approved channel template setup",
+                )
+                created_text += 1
+            if access_mode in {"admin_mod_only_send", "staff_only_send"} and name in {"rules", "announcement", "download-links", "info"}:
+                await self.configure_channel_access({"guild_id": str(guild.id), "channel_id": str(channel.id), "mode": access_mode})
+            results.append(f"#{channel.name}")
+
+        for item in voice_defs:
+            base_name = item["name"]
+            name = f"{prefix} {base_name}".strip() if prefix else base_name
+            normalized = self._normalize_channel_name(name)
+            channel = discord.utils.find(
+                lambda ch: self._normalize_channel_name(ch.name) == normalized,
+                guild.voice_channels,
+            )
+            if channel:
+                await channel.edit(category=category, reason="Owner-approved template configuration")
+                configured_voice += 1
+            else:
+                channel = await guild.create_voice_channel(
+                    name=name[:100],
+                    category=category,
+                    reason="Owner-approved channel template setup",
+                )
+                created_voice += 1
+            results.append(f"🔊 {channel.name}")
+
+        return (
+            f"Template `{template}` applied to category `{category.name}`. "
+            f"Text created={created_text}, text configured={configured_text}, "
+            f"voice created={created_voice}, voice configured={configured_voice}. "
+            f"Channels: {', '.join(results[:12])}"
+        )
+
+    @staticmethod
+    def _parse_discord_color(value: str) -> discord.Color | None:
+        text = str(value or "").strip().lower().lstrip("#")
+        if not text:
+            return None
+        named = {
+            "red": discord.Color.red(),
+            "green": discord.Color.green(),
+            "blue": discord.Color.blue(),
+            "purple": discord.Color.purple(),
+            "orange": discord.Color.orange(),
+            "gold": discord.Color.gold(),
+            "yellow": discord.Color.gold(),
+            "teal": discord.Color.teal(),
+            "grey": discord.Color.greyple(),
+            "gray": discord.Color.greyple(),
+        }
+        if text in named:
+            return named[text]
+        if re.fullmatch(r"[0-9a-f]{6}", text):
+            return discord.Color(int(text, 16))
+        raise ValueError("Unsupported color. Use a hex value like #5865F2 or a simple color name.")
+
+    def _resolve_role(self, guild: discord.Guild, params: dict[str, Any]) -> discord.Role:
+        role_id = str(params.get("role_id") or "").strip()
+        role_name = str(params.get("role") or params.get("role_name") or params.get("name") or "").strip()
+        role = None
+        if role_id.isdigit():
+            role = guild.get_role(int(role_id))
+        if not role and role_name:
+            normalized = role_name.lower().lstrip("@")
+            role = discord.utils.find(lambda item: item.name.lower() == normalized, guild.roles)
+        if not role:
+            raise ValueError("Target role was not found.")
+        return role
+
+    def _assert_role_manageable(self, guild: discord.Guild, role: discord.Role) -> None:
+        me = guild.me
+        if not me or not me.guild_permissions.manage_roles and not me.guild_permissions.administrator:
+            raise ValueError("TriadBot is missing Manage Roles permission.")
+        if role >= me.top_role or role.is_default() or role.managed:
+            raise ValueError("That role cannot be managed by TriadBot because of role hierarchy or Discord restrictions.")
+
+    async def create_role(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        name = self._require_text(params, "name", max_chars=100)
+        existing = discord.utils.find(lambda item: item.name.lower() == name.lower(), guild.roles)
+        color = self._parse_discord_color(str(params.get("color") or ""))
+        reason = "Owner-approved role creation"
+        if existing:
+            updates: dict[str, Any] = {}
+            if color is not None:
+                updates["color"] = color
+            if "hoist" in params:
+                updates["hoist"] = bool(params.get("hoist"))
+            if "mentionable" in params:
+                updates["mentionable"] = bool(params.get("mentionable"))
+            if updates:
+                self._assert_role_manageable(guild, existing)
+                await existing.edit(reason=reason, **updates)
+            return f"Configured existing role @{existing.name} ({existing.id})."
+        role = await guild.create_role(
+            name=name,
+            color=color or discord.Color.default(),
+            hoist=bool(params.get("hoist", False)),
+            mentionable=bool(params.get("mentionable", False)),
+            reason=reason,
+        )
+        return f"Created role @{role.name} ({role.id})."
+
+    async def update_role(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        role = self._resolve_role(guild, params)
+        self._assert_role_manageable(guild, role)
+        updates: dict[str, Any] = {}
+        new_name = str(params.get("new_name") or "").strip()
+        if new_name:
+            updates["name"] = new_name[:100]
+        if str(params.get("color") or "").strip():
+            color = self._parse_discord_color(str(params.get("color") or ""))
+            if color is not None:
+                updates["color"] = color
+        if "hoist" in params:
+            updates["hoist"] = bool(params.get("hoist"))
+        if "mentionable" in params:
+            updates["mentionable"] = bool(params.get("mentionable"))
+        if not updates:
+            raise ValueError("No supported role updates were provided.")
+        await role.edit(reason="Owner-approved role update", **updates)
+        return f"Updated role @{role.name} ({role.id})."
+
+    async def delete_role(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        role = self._resolve_role(guild, params)
+        name = role.name
+        role_id = role.id
+        self._assert_role_manageable(guild, role)
+        await role.delete(reason="Owner-approved role deletion")
+        return f"Deleted role @{name} ({role_id})."
+
+    async def _resolve_member(self, guild: discord.Guild, params: dict[str, Any]) -> discord.Member:
+        raw = str(params.get("member_id") or params.get("user_id") or params.get("member") or "").strip()
+        match = re.search(r"(\d{16,25})", raw)
+        if match:
+            member_id = int(match.group(1))
+            member = guild.get_member(member_id)
+            if member:
+                return member
+            return await guild.fetch_member(member_id)
+        name = raw.lower().lstrip("@")
+        member = discord.utils.find(
+            lambda item: item.name.lower() == name or item.display_name.lower() == name,
+            guild.members,
+        )
+        if member:
+            return member
+        raise ValueError("Target member was not found. Use a mention or user ID.")
+
+    @staticmethod
+    def _parse_duration_seconds(value: Any, default: int = 600) -> int:
+        text = str(value or "").strip().lower()
+        if not text:
+            return default
+        match = re.fullmatch(r"(\d+)\s*(s|sec|secs|second|seconds|m|min|minute|minutes|h|hour|hours|d|day|days)?", text)
+        if not match:
+            raise ValueError("Unsupported duration. Use values like 10m, 1h, or 1d.")
+        amount = int(match.group(1))
+        unit = match.group(2) or "m"
+        multiplier = 1 if unit.startswith("s") else 60 if unit.startswith("m") else 3600 if unit.startswith("h") else 86400
+        return max(1, min(amount * multiplier, 28 * 86400))
+
+    async def timeout_member(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        member = await self._resolve_member(guild, params)
+        seconds = self._parse_duration_seconds(params.get("duration") or params.get("duration_seconds"), default=600)
+        reason = str(params.get("reason") or "Owner-approved timeout")[:512]
+        until = discord.utils.utcnow() + timedelta(seconds=seconds)
+        await member.timeout(until, reason=reason)
+        return f"Timed out {member} ({member.id}) for {seconds} seconds."
+
+    async def kick_member(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        member = await self._resolve_member(guild, params)
+        reason = str(params.get("reason") or "Owner-approved kick")[:512]
+        await member.kick(reason=reason)
+        return f"Kicked {member} ({member.id})."
+
+    async def ban_member(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        member = await self._resolve_member(guild, params)
+        reason = str(params.get("reason") or "Owner-approved ban")[:512]
+        delete_seconds = self._parse_duration_seconds(params.get("delete_message_duration") or "0s", default=0)
+        await guild.ban(member, reason=reason, delete_message_seconds=delete_seconds)
+        return f"Banned {member} ({member.id})."
+
+    async def create_webhook(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        channel = self._resolve_text_channel(guild, params)
+        name = str(params.get("name") or "TriadBot Webhook").strip()[:80] or "TriadBot Webhook"
+        webhook = await channel.create_webhook(name=name, reason="Owner-approved webhook creation")
+        return f"Created webhook `{webhook.name}` in #{channel.name}. Webhook ID: {webhook.id}. Token is not shown."
+
+    async def delete_webhook(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        webhook_id = str(params.get("webhook_id") or params.get("id") or "").strip()
+        if not webhook_id.isdigit():
+            raise ValueError("`webhook_id` is required.")
+        for channel in guild.text_channels:
+            try:
+                webhooks = await channel.webhooks()
+            except discord.HTTPException:
+                continue
+            webhook = discord.utils.get(webhooks, id=int(webhook_id))
+            if webhook:
+                name = webhook.name
+                await webhook.delete(reason="Owner-approved webhook deletion")
+                return f"Deleted webhook `{name}` ({webhook_id})."
+        raise ValueError("Webhook was not found in this guild.")
+
+    async def update_server_settings(self, params: dict[str, Any]) -> str:
+        guild = self._resolve_guild(params)
+        updates: dict[str, Any] = {}
+        name = str(params.get("name") or "").strip()
+        description = str(params.get("description") or "").strip()
+        if name:
+            updates["name"] = name[:100]
+        if description:
+            updates["description"] = description[:120]
+        if not updates:
+            raise ValueError("No supported server setting was provided. Supported: name, description.")
+        await guild.edit(reason="Owner-approved server settings update", **updates)
+        changed = ", ".join(updates.keys())
+        return f"Updated server setting(s): {changed}."
+
+    def _invalidate_server_knowledge(self, reason: str, payload: dict[str, Any] | None = None) -> None:
+        setattr(self.bot, "ai_server_knowledge_cache", None)
+        if hasattr(self.bot, "record_ai_event"):
+            self.bot.record_ai_event("info", "server_admin", f"Server knowledge cache invalidated: {reason}", payload or {})
+        if hasattr(self.bot, "queue_ai_caretaker"):
+            self.bot.queue_ai_caretaker(reason, payload or {}, force=False)
+
+    @commands.Cog.listener()
+    async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
+        if getattr(channel, "guild", None) and not bot_config.SERVER_ADMIN_ENABLED:
+            return
+        self._invalidate_server_knowledge(
+            "discord-channel-created",
+            {"channel": getattr(channel, "name", ""), "channel_id": str(getattr(channel, "id", ""))},
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
+        if getattr(channel, "guild", None) and not bot_config.SERVER_ADMIN_ENABLED:
+            return
+        self._invalidate_server_knowledge(
+            "discord-channel-deleted",
+            {"channel": getattr(channel, "name", ""), "channel_id": str(getattr(channel, "id", ""))},
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_channel_update(self, before: discord.abc.GuildChannel, after: discord.abc.GuildChannel):
+        if getattr(after, "guild", None) and not bot_config.SERVER_ADMIN_ENABLED:
+            return
+        before_name = getattr(before, "name", "")
+        after_name = getattr(after, "name", "")
+        if before_name == after_name and getattr(before, "category_id", None) == getattr(after, "category_id", None):
+            return
+        self._invalidate_server_knowledge(
+            "discord-channel-updated",
+            {"before": before_name, "after": after_name, "channel_id": str(getattr(after, "id", ""))},
+        )
+
+    @commands.Cog.listener()
+    async def on_guild_role_create(self, role: discord.Role):
+        if not bot_config.SERVER_ADMIN_ENABLED:
+            return
+        self._invalidate_server_knowledge("discord-role-created", {"role": role.name, "role_id": str(role.id)})
+
+    @commands.Cog.listener()
+    async def on_guild_role_delete(self, role: discord.Role):
+        if not bot_config.SERVER_ADMIN_ENABLED:
+            return
+        self._invalidate_server_knowledge("discord-role-deleted", {"role": role.name, "role_id": str(role.id)})
+
+    @commands.Cog.listener()
+    async def on_guild_role_update(self, before: discord.Role, after: discord.Role):
+        if not bot_config.SERVER_ADMIN_ENABLED:
+            return
+        if before.name == after.name and before.permissions == after.permissions and before.color == after.color:
+            return
+        self._invalidate_server_knowledge(
+            "discord-role-updated",
+            {"before": before.name, "after": after.name, "role_id": str(after.id)},
+        )
 
     async def _alert(self, summary: ServerAdminSummary) -> None:
         notifier = getattr(self.bot, "notify_admins", None)

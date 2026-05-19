@@ -35,3 +35,23 @@ Packaging notes:
 
 - `.env` was intentionally removed from the returned ZIP.
 - `.git/`, `__pycache__/`, and log files were not included.
+
+## Server operator upgrade
+
+- Removed `/operator` slash command additions; operator actions now stay prompt-only through DM or mention/reply prompts.
+- Added bulk channel template setup for game/support/community categories.
+- Changed `create_channel` to configure existing channels instead of failing or duplicating.
+- Added owner-approved role, member moderation, webhook, server settings, and schedule actions behind config flags.
+- Announcements now send as plain text messages, not embeds.
+- Added server role/channel event listeners to invalidate AI server knowledge cache when Discord state changes.
+- Added diagnostics and `.env.example` flags for the new operator actions.
+
+
+## DM-only operator/public info-only update
+
+- Operator prompts now default to DM-only via `AI_OPERATOR_DM_ONLY=true`.
+- Public server channels no longer create/approve/reject operator proposals.
+- Public AI replies are info-only via `AI_CHAT_PUBLIC_INFO_ONLY=true`.
+- Public context strips R2/database internals, logs, IDs, and operator state.
+- Owner/Admin users can manage server/database/R2 through DM when `AI_OPERATOR_ALLOW_DISCORD_ADMINS=true`.
+- Added `docs/DM_ONLY_OPERATOR_ACCESS.md`.

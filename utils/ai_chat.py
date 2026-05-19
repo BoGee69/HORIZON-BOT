@@ -433,6 +433,84 @@ async def collect_server_knowledge(bot: Any) -> dict[str, Any]:
     setattr(bot, "ai_server_knowledge_cache", {"created_at": now, "data": data})
     return data
 
+def _public_server_knowledge(server_knowledge: dict[str, Any]) -> dict[str, Any]:
+    """Return a channel-safe view of server knowledge for public replies."""
+    if not isinstance(server_knowledge, dict):
+        return {"enabled": False}
+
+    public_guilds: list[dict[str, Any]] = []
+    for guild in list(server_knowledge.get("guilds") or [])[:3]:
+        if not isinstance(guild, dict):
+            continue
+        server = guild.get("server") or {}
+        public_server = {
+            "name": sanitize_text(server.get("name", ""))[:120],
+            "member_count": server.get("member_count"),
+            "description": sanitize_text(server.get("description", ""))[:200],
+        }
+
+        categories: list[dict[str, Any]] = []
+        for category in list(guild.get("categories") or [])[:20]:
+            if not isinstance(category, dict):
+                continue
+            channels = []
+            for channel in list(category.get("channels") or [])[:30]:
+                if not isinstance(channel, dict):
+                    continue
+                channels.append({
+                    "name": sanitize_text(channel.get("name", ""))[:80],
+                    "type": sanitize_text(channel.get("type", ""))[:40],
+                    "topic": sanitize_text(channel.get("topic", ""))[:180],
+                })
+            categories.append({
+                "name": sanitize_text(category.get("name", ""))[:80],
+                "channels": channels,
+            })
+
+        public_channels = []
+        for channel in list(guild.get("channels") or [])[:80]:
+            if not isinstance(channel, dict):
+                continue
+            public_channels.append({
+                "name": sanitize_text(channel.get("name", ""))[:80],
+                "category": sanitize_text(channel.get("category", ""))[:80],
+                "topic": sanitize_text(channel.get("topic", ""))[:180],
+            })
+
+        knowledge_channels: list[dict[str, Any]] = []
+        for channel in list(guild.get("knowledge_channels") or [])[:12]:
+            if not isinstance(channel, dict):
+                continue
+            messages = []
+            for item in list(channel.get("messages") or [])[:8]:
+                if not isinstance(item, dict):
+                    continue
+                text = sanitize_text(item.get("text", ""))[:900]
+                if text:
+                    messages.append({"text": text})
+            knowledge_channels.append({
+                "name": sanitize_text(channel.get("name", ""))[:80],
+                "topic": sanitize_text(channel.get("topic", ""))[:180],
+                "messages": messages,
+            })
+
+        public_guilds.append({
+            "server": public_server,
+            "categories": categories,
+            "channels": public_channels,
+            "knowledge_channels": knowledge_channels,
+        })
+
+    return sanitize_data({
+        "enabled": bool(server_knowledge.get("enabled", True)),
+        "guilds": public_guilds,
+        "notes": [
+            "Public channel context only. Do not expose internal IDs, logs, storage credentials, R2 object details, database internals, or operator state.",
+            "Use rules/resources/announcement/welcome knowledge to answer community-facing questions.",
+        ],
+    })
+
+
 
 def _build_operational_pulse(
     health: dict[str, Any],
@@ -506,7 +584,56 @@ async def build_chat_prompt(
     history: list[dict[str, str]],
     is_owner: bool = False,
     user_access_level: str = "member",
+    is_dm: bool = True,
 ) -> str:
+    message_limit = max(500, int(bot_config.AI_CHAT_MAX_MESSAGE_CHARS or 1800))
+    if "[Attachment content]" in user_message or "Attachment text:" in user_message:
+        message_limit = max(message_limit, int(bot_config.AI_ATTACHMENT_MAX_TEXT_CHARS or 12000))
+    message = sanitize_text(user_message)[:message_limit]
+    reply_language = _detect_reply_language(message)
+
+    server_knowledge = await collect_server_knowledge(bot)
+    public_info_only = bool((not is_dm) and getattr(bot_config, "AI_CHAT_PUBLIC_INFO_ONLY", True))
+
+    if public_info_only:
+        public_context = sanitize_data({
+            "mode": "public_info_only",
+            "server_public_knowledge": _public_server_knowledge(server_knowledge),
+            "allowed_public_topics": [
+                "server rules",
+                "server channel directions",
+                "resources and guide channels",
+                "general bot feature explanation",
+                "how to DM an owner/admin-only request privately",
+            ],
+            "blocked_public_topics": [
+                "R2 storage internals",
+                "database maintenance details",
+                "logs, errors, tokens, environment variables, credentials",
+                "proposal approval, reject, approve all/latest",
+                "creating/editing/deleting channels, roles, permissions, webhooks, members",
+                "admin-only operational status beyond public service availability",
+            ],
+        })
+        context_limit = max(4000, min(14000, int(getattr(bot_config, "AI_CHAT_SERVER_KNOWLEDGE_MAX_CHARS", 9000) or 9000) + 3000))
+        context_json = json.dumps(public_context, ensure_ascii=False)
+        history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
+        return (
+            "You are TriadBot — the Discord bot for TriadGames. You are replying in a PUBLIC SERVER CHANNEL. "
+            "This channel mode is information-only, even if the sender is an owner or admin. "
+            "Never create, submit, approve, reject, or simulate operator proposals in public. "
+            "Never expose internal R2/database state, object names, logs, stack traces, token/env names, channel IDs, role IDs, user IDs, or private admin reasoning. "
+            "Never say you will perform a real server/database action from this public message. "
+            "If the user asks to manage the server, database, R2, GitHub, roles, channels, permissions, members, webhooks, announcements, rules updates, or approvals, "
+            "tell them briefly that management commands must be sent through DM by an authorized Owner/Admin and cannot be handled in public. "
+            "For normal community questions, answer only from public server knowledge such as #rules, #resources, welcome, guides, and announcement context. "
+            "Speak in first person as TriadBot. Do not call the user Owner in public.\n\n"
+            f"Required reply language: {reply_language}. Match the latest user message language exactly.\n\n"
+            f"Public context:\n{context_json[:context_limit]}\n\n"
+            f"Conversation history:\n{history_json[:2500]}\n\n"
+            f"Latest public message:\n{message}\n"
+        )
+
     health = await collect_health(bot)
     recent_events = getattr(bot, "ai_events", None)
 
@@ -529,8 +656,6 @@ async def build_chat_prompt(
         last_steam_sync=last_steam,
         recent_events=recent_events,
     )
-
-    server_knowledge = await collect_server_knowledge(bot)
 
     context = sanitize_data({
         "operational_pulse": pulse,
@@ -557,13 +682,6 @@ async def build_chat_prompt(
     )
     context_json = json.dumps(context, ensure_ascii=False)
     history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
-
-    message_limit = max(500, int(bot_config.AI_CHAT_MAX_MESSAGE_CHARS or 1800))
-    if "[Attachment content]" in user_message or "Attachment text:" in user_message:
-        message_limit = max(message_limit, int(bot_config.AI_ATTACHMENT_MAX_TEXT_CHARS or 12000))
-    message = sanitize_text(user_message)[:message_limit]
-
-    reply_language = _detect_reply_language(message)
 
     # Addressing mode
     access_level = "owner" if is_owner else sanitize_text(user_access_level or "member").strip().lower()
@@ -684,6 +802,7 @@ async def chat_with_triadbot(
     memory: AIChatMemory,
     is_owner: bool = False,
     user_access_level: str = "member",
+    is_dm: bool = True,
 ) -> str:
     history = memory.snapshot(user_id)
     prompt = await build_chat_prompt(
@@ -693,6 +812,7 @@ async def chat_with_triadbot(
         history=history,
         is_owner=is_owner,
         user_access_level=user_access_level,
+        is_dm=is_dm,
     )
     reply = await call_ai_provider(
         bot.session,
