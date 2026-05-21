@@ -363,16 +363,28 @@ class GameCommands(commands.Cog):
 
     @gen.error
     async def gen_error(self, interaction: discord.Interaction, error):
+        # Unwrap CommandInvokeError to get the actual cause
+        cause = getattr(error, "original", error)
+
+        # 40060 = already acknowledged, 10062 = unknown/expired interaction.
+        # Both mean the user already received a response — no need to alert or re-respond.
+        if isinstance(cause, discord.HTTPException) and cause.code in (40060, 10062):
+            log.debug(f"/gen stale interaction ignored (code {cause.code}) for user {interaction.user.id}")
+            return
+
         if isinstance(error, app_commands.CommandOnCooldown):
             embed = discord.Embed(
                 title="⏳  Cooldown Active",
                 description=f"Please wait **{error.retry_after:.1f}s** before using `/gen` again.",
                 color=COLOR_WARNING,
             )
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+            try:
+                if interaction.response.is_done():
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception:
+                pass
         else:
             log.error(f"/gen error: {error}", exc_info=error)
             notifier = getattr(self.bot, "notify_admins", None)
