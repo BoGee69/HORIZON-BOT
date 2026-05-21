@@ -46,6 +46,13 @@ except Exception:  # pragma: no cover - optional helper
     def invalidate_r2_inventory_cache() -> None:
         return None
 
+try:
+    from utils.database import R2InventoryDB, SQLITE_PATH as _SQLITE_PATH
+    _r2_inventory_db: R2InventoryDB | None = R2InventoryDB()
+except Exception:  # pragma: no cover
+    _r2_inventory_db = None
+    _SQLITE_PATH = None
+
 
 log = logging.getLogger(__name__)
 
@@ -512,6 +519,37 @@ class OpenDirSync(commands.Cog):
             await self._upload_if_needed(session, remote, existing_keys, summary)
 
     def _load_games(self) -> list[GameRecord]:
+        """
+        Load game list from SQLite (primary) with games.json as fallback.
+
+        SQLite is the single source of truth — it is kept up-to-date by
+        steam_db_sync and other cogs. Reading it here means OpenDir always
+        has the freshest list without any file-read / JSON-parse overhead.
+        """
+        # ── 1. Try SQLite first ───────────────────────────────────────
+        try:
+            import sqlite3 as _sqlite3
+            db_path = _SQLITE_PATH or Path(
+                getattr(bot_config, "DATA_DIR", Path("data"))
+            ) / "games.db"
+            records: list[GameRecord] = []
+            with _sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT appid, name FROM games WHERE appid IS NOT NULL AND name IS NOT NULL AND name != '' ORDER BY CAST(appid AS INTEGER) ASC"
+                ).fetchall()
+            for appid_raw, name_raw in rows:
+                appid = str(appid_raw or "").strip()
+                name = str(name_raw or "").strip()
+                if appid.isdigit() and name:
+                    records.append(GameRecord(appid=appid, name=name))
+            if records:
+                log.debug("OpenDir loaded %d games from SQLite", len(records))
+                return records
+            log.warning("OpenDir: SQLite returned 0 games — falling back to games.json")
+        except Exception as exc:
+            log.warning("OpenDir: SQLite load failed (%s) — falling back to games.json", exc)
+
+        # ── 2. Fallback: games.json ───────────────────────────────────
         path = self.games_json_path
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
@@ -519,7 +557,7 @@ class OpenDirSync(commands.Cog):
             log.warning("Cannot read games.json for OpenDir sync: %s", exc)
             return []
 
-        records: list[GameRecord] = []
+        fallback_records: list[GameRecord] = []
         seen: set[str] = set()
 
         if isinstance(raw, dict):
@@ -541,10 +579,10 @@ class OpenDirSync(commands.Cog):
             if not appid.isdigit() or not name or appid in seen:
                 continue
             seen.add(appid)
-            records.append(GameRecord(appid=appid, name=name))
+            fallback_records.append(GameRecord(appid=appid, name=name))
 
-        records.sort(key=lambda g: int(g.appid))
-        return records
+        fallback_records.sort(key=lambda g: int(g.appid))
+        return fallback_records
 
     def _load_state(self) -> SyncState:
         try:
@@ -839,6 +877,10 @@ class OpenDirSync(commands.Cog):
 
             uploaded_bytes = await self._stream_url_to_r2(session, remote_file.url, r2_key, remote_file)
             existing_keys.add(r2_key)
+            # Keep the SQLite R2 cache in sync so subsequent checks in the same
+            # run (and future runs before the next rebuild) know this key exists.
+            if _r2_inventory_db is not None:
+                _r2_inventory_db.mark_uploaded(r2_key, uploaded_bytes)
             summary.files_uploaded += 1
             summary.bytes_uploaded += uploaded_bytes
             summary.add_sample(f"uploaded {remote_file.filename} -> {r2_key}")
@@ -937,7 +979,55 @@ class OpenDirSync(commands.Cog):
             Config=self.transfer_config,
         )
 
+    # ── R2 key cache (SQLite-backed) ──────────────────────────────────
+
+    # How old (seconds) the R2 SQLite cache may be before we trigger a
+    # background rebuild.  Default 12 h — change via OPENDIR_R2_CACHE_TTL_HOURS.
+    _R2_CACHE_TTL = max(3600.0, _cfg_float("OPENDIR_R2_CACHE_TTL_HOURS", 12.0) * 3600)
+
+    async def _ensure_r2_cache(self) -> None:
+        """
+        Rebuild the R2 → SQLite inventory if it is stale or empty.
+        This is called once per sync run, so subsequent ``contains()``
+        checks are pure SQLite — no network round-trips.
+        """
+        if _r2_inventory_db is None or self.s3 is None:
+            return
+        last = _r2_inventory_db.last_synced_at(self.r2_prefix)
+        age = time.time() - last
+        count = _r2_inventory_db.count(self.r2_prefix)
+        if count == 0 or age > self._R2_CACHE_TTL:
+            log.info(
+                "OpenDir: R2 SQLite cache is %s (age=%.0fs, count=%d) — rebuilding from R2 …",
+                "empty" if count == 0 else "stale",
+                age,
+                count,
+            )
+            bucket = _cfg_str("R2_BUCKET_NAME")
+            summary_info = await asyncio.to_thread(
+                _r2_inventory_db.rebuild, self.s3, bucket, self.r2_prefix
+            )
+            log.info("OpenDir: R2 cache rebuilt — %s", summary_info)
+        else:
+            log.debug(
+                "OpenDir: R2 SQLite cache OK (age=%.0fs, count=%d keys)", age, count
+            )
+
     async def _list_r2_keys(self) -> set[str]:
+        """
+        Return the set of existing R2 keys.
+
+        Prefer the SQLite-backed cache (R2InventoryDB) so we avoid listing
+        R2 on every sync run.  Falls back to a live R2 list when the cache
+        is unavailable.
+        """
+        if _r2_inventory_db is not None:
+            await self._ensure_r2_cache()
+            keys = _r2_inventory_db.get_all_keys(self.r2_prefix)
+            log.debug("OpenDir: loaded %d existing keys from SQLite cache", len(keys))
+            return keys
+        # Fallback: live R2 list (original behaviour)
+        log.warning("OpenDir: R2InventoryDB not available — falling back to live R2 list")
         return await asyncio.to_thread(self._list_r2_keys_sync)
 
     def _list_r2_keys_sync(self) -> set[str]:

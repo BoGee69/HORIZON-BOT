@@ -178,3 +178,172 @@ class DatabaseManager:
             }
         except Exception:
             return {"total": 0, "with_files": 0, "with_names": 0, "last_appid": 0}
+
+
+# ─────────────────────────────────────────────
+# R2 Inventory cache stored inside SQLite
+# ─────────────────────────────────────────────
+
+class R2InventoryDB:
+    """
+    Stores R2 object keys inside SQLite so OpenDir never needs to call
+    list_objects_v2 during a sync run.
+
+    Schema
+    ------
+    r2_inventory(key TEXT PRIMARY KEY, size INTEGER, last_modified TEXT, synced_at REAL)
+
+    Typical usage
+    -------------
+    1. On bot start (or on a schedule), call ``rebuild(s3_client, bucket, prefix)``
+       to do a full R2 → SQLite snapshot.
+    2. In OpenDir, replace ``_list_r2_keys()`` with ``contains(key)`` /
+       ``get_all_keys()`` which are O(1) / O(n) SQLite queries.
+    3. After every successful upload, call ``mark_uploaded(key)`` so the local
+       cache stays accurate without needing another full rebuild.
+    """
+
+    def __init__(self, db_path: Path | None = None):
+        self.db_path = db_path or SQLITE_PATH
+        self._init_table()
+
+    def _init_table(self) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS r2_inventory (
+                    key           TEXT PRIMARY KEY,
+                    size          INTEGER,
+                    last_modified TEXT,
+                    synced_at     REAL
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_r2_key ON r2_inventory(key)")
+            conn.commit()
+
+    # ------------------------------------------------------------------
+    # Rebuild (full sync from R2)
+    # ------------------------------------------------------------------
+
+    def rebuild(self, s3_client, bucket: str, prefix: str = "") -> dict:
+        """
+        Full-scan R2 bucket/prefix and store every key in SQLite.
+        Returns a summary dict with counts and timing.
+        """
+        import time
+        started = time.time()
+        keys_found: list[tuple] = []
+        paginator = s3_client.get_paginator("list_objects_v2")
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                k = obj.get("Key") or ""
+                if not k:
+                    continue
+                keys_found.append((
+                    k,
+                    int(obj.get("Size") or 0),
+                    str(obj.get("LastModified") or ""),
+                    time.time(),
+                ))
+
+        now = time.time()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Wipe stale data for this prefix then bulk-insert
+            conn.execute("DELETE FROM r2_inventory WHERE key LIKE ?", (f"{prefix}%",))
+            conn.executemany(
+                "INSERT OR REPLACE INTO r2_inventory (key, size, last_modified, synced_at) VALUES (?,?,?,?)",
+                keys_found,
+            )
+            conn.commit()
+
+        elapsed = time.time() - started
+        log.info(
+            "R2InventoryDB: rebuilt %d keys under prefix=%r in %.1fs",
+            len(keys_found), prefix, elapsed,
+        )
+        return {
+            "keys_synced": len(keys_found),
+            "prefix": prefix,
+            "elapsed_seconds": round(elapsed, 2),
+        }
+
+    # ------------------------------------------------------------------
+    # Query helpers
+    # ------------------------------------------------------------------
+
+    def contains(self, key: str) -> bool:
+        """O(1) primary-key lookup."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT 1 FROM r2_inventory WHERE key = ? LIMIT 1", (key,)
+                ).fetchone()
+                return row is not None
+        except Exception:
+            return False
+
+    def get_all_keys(self, prefix: str = "") -> set[str]:
+        """Return all cached keys, optionally filtered by prefix."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if prefix:
+                    rows = conn.execute(
+                        "SELECT key FROM r2_inventory WHERE key LIKE ?",
+                        (f"{prefix}%",),
+                    ).fetchall()
+                else:
+                    rows = conn.execute("SELECT key FROM r2_inventory").fetchall()
+                return {r[0] for r in rows}
+        except Exception:
+            return set()
+
+    def count(self, prefix: str = "") -> int:
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                if prefix:
+                    return conn.execute(
+                        "SELECT COUNT(*) FROM r2_inventory WHERE key LIKE ?",
+                        (f"{prefix}%",),
+                    ).fetchone()[0]
+                return conn.execute("SELECT COUNT(*) FROM r2_inventory").fetchone()[0]
+        except Exception:
+            return 0
+
+    def last_synced_at(self, prefix: str = "") -> float:
+        """Return the oldest synced_at timestamp for the given prefix (0 if empty)."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute(
+                    "SELECT MIN(synced_at) FROM r2_inventory WHERE key LIKE ?",
+                    (f"{prefix}%",),
+                ).fetchone()
+                return float(row[0] or 0)
+        except Exception:
+            return 0.0
+
+    # ------------------------------------------------------------------
+    # Mutation helpers (keep cache fresh after uploads/deletes)
+    # ------------------------------------------------------------------
+
+    def mark_uploaded(self, key: str, size: int = 0) -> None:
+        """Call after a successful upload so the cache reflects the new key."""
+        import time
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO r2_inventory (key, size, last_modified, synced_at) VALUES (?,?,?,?)",
+                    (key, size, "", time.time()),
+                )
+                conn.commit()
+        except Exception as exc:
+            log.warning("R2InventoryDB.mark_uploaded failed: %r", exc)
+
+    def mark_deleted(self, key: str) -> None:
+        """Call after a successful delete."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("DELETE FROM r2_inventory WHERE key = ?", (key,))
+                conn.commit()
+        except Exception as exc:
+            log.warning("R2InventoryDB.mark_deleted failed: %r", exc)
