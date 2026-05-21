@@ -2,7 +2,7 @@
 Games.json-driven Open Directory -> Cloudflare R2 sync cog.
 
 Purpose:
-- Use SQLite (games.db) as the source list of AppIDs and game names.
+- Use data/games.json as the source list of AppIDs and game names.
 - For each game, check whether matching files exist in a configured Open Directory.
 - Stream matching files directly from HTTP to Cloudflare R2 without writing to local disk.
 - Rename uploaded objects into the normal TriadBot format: "Game Name (AppID).zip".
@@ -272,7 +272,7 @@ class SyncSummary:
 
 
 class OpenDirSync(commands.Cog):
-    """Background SQLite-driven OpenDir sync cog."""
+    """Background games.json-driven OpenDir sync cog."""
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
@@ -344,7 +344,7 @@ class OpenDirSync(commands.Cog):
 
     async def cog_load(self) -> None:
         if not self.enabled:
-            log.info("OpenDir SQLite-driven sync disabled. Set OPENDIR_SYNC_ENABLED=true to enable.")
+            log.info("OpenDir games.json sync disabled. Set OPENDIR_SYNC_ENABLED=true to enable.")
             return
         if not self.base_url:
             log.warning("OpenDir sync enabled but OPENDIR_BASE_URL is empty; task will not start.")
@@ -360,8 +360,9 @@ class OpenDirSync(commands.Cog):
         self.s3 = self._make_r2_client()
         self._task = asyncio.create_task(self._sync_loop(), name="opendir-games-json-sync-loop")
         log.info(
-            "OpenDir SQLite-driven sync task enabled for %s",
+            "OpenDir games.json sync task enabled for %s using %s",
             self._redact_url(self.base_url),
+            self.games_json_path,
         )
 
     async def cog_unload(self) -> None:
@@ -371,32 +372,38 @@ class OpenDirSync(commands.Cog):
         with suppress(asyncio.CancelledError):
             await self._task
 
-    async def _wait_for_sqlite(self, *, poll_interval: float = 15.0) -> bool:
+    async def _wait_for_db_ready(self, timeout: float = 300.0, poll_interval: float = 5.0) -> bool:
         """
-        Block until SQLite has at least one game record, or until timeout.
-        Returns True if games are available, False on timeout.
-        Timeout configurable via OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS (default 600).
+        Poll SQLite until at least one game record exists.
+
+        This guards against the startup race where steam_db_sync is still
+        fetching data from the Steam API while OpenDir fires its initial run.
+        Returns True if games were found within *timeout* seconds, False if
+        timed out (caller proceeds anyway and will see a cleaner error).
         """
-        timeout = max(30.0, _cfg_float("OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS", 600.0))
         import sqlite3 as _sqlite3
         db_path = _SQLITE_PATH or Path(
             getattr(bot_config, "DATA_DIR", Path("data"))
         ) / "games.db"
-        deadline = time.time() + timeout
-        waited = 0.0
-        while time.time() < deadline:
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
             try:
                 with _sqlite3.connect(db_path) as conn:
-                    count = conn.execute("SELECT COUNT(*) FROM games WHERE name IS NOT NULL AND name != ''").fetchone()[0]
+                    count = conn.execute(
+                        "SELECT COUNT(*) FROM games "
+                        "WHERE appid IS NOT NULL AND name IS NOT NULL AND name != ''"
+                    ).fetchone()[0]
                 if count > 0:
-                    log.info("OpenDir: SQLite ready with %d games (waited %.0fs)", count, waited)
+                    log.info("OpenDir: SQLite ready with %d games — starting initial sync", count)
                     return True
             except Exception:
-                pass
-            log.info("OpenDir: waiting for SQLite to be populated … (%.0fs elapsed)", waited)
+                pass  # DB may not exist yet; keep waiting
+            log.debug(
+                "OpenDir: SQLite not populated yet — retrying in %.0fs (steam_db_sync still running?)",
+                poll_interval,
+            )
             await asyncio.sleep(poll_interval)
-            waited += poll_interval
-        log.error("OpenDir: timed out waiting for SQLite after %.0fs — aborting run", timeout)
+        log.warning("OpenDir: timed out waiting for SQLite after %.0fs — proceeding anyway", timeout)
         return False
 
     async def _sync_loop(self) -> None:
@@ -406,10 +413,12 @@ class OpenDirSync(commands.Cog):
         if not self.run_on_start:
             await asyncio.sleep(self.interval_seconds)
 
-        # Wait for Steam DB sync (or any other cog) to populate SQLite first
-        if not await self._wait_for_sqlite():
-            log.error("OpenDir sync loop aborting: SQLite never populated.")
-            return
+        # Before the very first run, wait until SQLite is populated.
+        # steam_db_sync runs concurrently and may still be fetching game data
+        # from the Steam API at this point — without this guard, _load_games()
+        # returns [] and the initial sync aborts with a misleading error.
+        if not self._initial_done:
+            await self._wait_for_db_ready()
 
         while not self.bot.is_closed():
             mode = "initial" if not self._initial_done else "monitor"
@@ -420,7 +429,7 @@ class OpenDirSync(commands.Cog):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log.exception("OpenDir SQLite-driven sync loop failed")
+                log.exception("OpenDir games.json sync loop failed")
                 summary = SyncSummary(mode=mode)
                 summary.add_error(repr(exc))
                 await self._report_summary(summary)
@@ -436,7 +445,10 @@ class OpenDirSync(commands.Cog):
             summary.cursor_start = min(max(0, state.cursor), max(0, len(games) - 1)) if games else 0
 
             if not games:
-                summary.add_error("SQLite has no valid appid/name records — is Steam DB sync running?")
+                summary.add_error(
+                    "No games found — SQLite is empty and games.json fallback unavailable. "
+                    "Ensure steam_db_sync has run (or set OPENDIR_START_DELAY_SECONDS high enough)."
+                )
                 return summary
 
             existing_keys = await self._list_r2_keys()
@@ -552,33 +564,69 @@ class OpenDirSync(commands.Cog):
 
     def _load_games(self) -> list[GameRecord]:
         """
-        Load game list exclusively from SQLite.
+        Load game list from SQLite (primary) with games.json as fallback.
 
-        games.json is no longer used. SQLite is kept up-to-date by
-        steam_db_sync, so this is always the freshest source.
+        SQLite is the single source of truth — it is kept up-to-date by
+        steam_db_sync and other cogs. Reading it here means OpenDir always
+        has the freshest list without any file-read / JSON-parse overhead.
         """
-        import sqlite3 as _sqlite3
-        db_path = _SQLITE_PATH or Path(
-            getattr(bot_config, "DATA_DIR", Path("data"))
-        ) / "games.db"
+        # ── 1. Try SQLite first ───────────────────────────────────────
         try:
+            import sqlite3 as _sqlite3
+            db_path = _SQLITE_PATH or Path(
+                getattr(bot_config, "DATA_DIR", Path("data"))
+            ) / "games.db"
+            records: list[GameRecord] = []
             with _sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
-                    "SELECT appid, name FROM games "
-                    "WHERE appid IS NOT NULL AND name IS NOT NULL AND name != '' "
-                    "ORDER BY CAST(appid AS INTEGER) ASC"
+                    "SELECT appid, name FROM games WHERE appid IS NOT NULL AND name IS NOT NULL AND name != '' ORDER BY CAST(appid AS INTEGER) ASC"
                 ).fetchall()
-            records: list[GameRecord] = []
             for appid_raw, name_raw in rows:
                 appid = str(appid_raw or "").strip()
                 name = str(name_raw or "").strip()
                 if appid.isdigit() and name:
                     records.append(GameRecord(appid=appid, name=name))
-            log.debug("OpenDir loaded %d games from SQLite", len(records))
-            return records
+            if records:
+                log.debug("OpenDir loaded %d games from SQLite", len(records))
+                return records
+            log.warning("OpenDir: SQLite returned 0 games — falling back to games.json")
         except Exception as exc:
-            log.error("OpenDir: failed to read games from SQLite: %s", exc)
+            log.warning("OpenDir: SQLite load failed (%s) — falling back to games.json", exc)
+
+        # ── 2. Fallback: games.json ───────────────────────────────────
+        path = self.games_json_path
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            log.warning("Cannot read games.json for OpenDir sync: %s", exc)
             return []
+
+        fallback_records: list[GameRecord] = []
+        seen: set[str] = set()
+
+        if isinstance(raw, dict):
+            iterable: Iterable[Any]
+            if isinstance(raw.get("games"), list):
+                iterable = raw["games"]
+            else:
+                iterable = raw.values()
+        elif isinstance(raw, list):
+            iterable = raw
+        else:
+            return []
+
+        for item in iterable:
+            if not isinstance(item, dict):
+                continue
+            appid = str(item.get("appid") or item.get("id") or item.get("app_id") or "").strip()
+            name = str(item.get("name") or item.get("title") or item.get("game_name") or "").strip()
+            if not appid.isdigit() or not name or appid in seen:
+                continue
+            seen.add(appid)
+            fallback_records.append(GameRecord(appid=appid, name=name))
+
+        fallback_records.sort(key=lambda g: int(g.appid))
+        return fallback_records
 
     def _load_state(self) -> SyncState:
         try:
@@ -1046,7 +1094,7 @@ class OpenDirSync(commands.Cog):
             self.bot.record_ai_event(
                 "error" if summary.has_errors else "info",
                 "opendir_sync",
-                "OpenDir SQLite-driven sync finished.",
+                "OpenDir games.json sync finished.",
                 {
                     "fields": summary.to_fields(),
                     "errors": summary.errors[:10],
@@ -1079,13 +1127,13 @@ class OpenDirSync(commands.Cog):
         if summary.errors:
             fields["Errors"] = "\n".join(summary.errors[:8])
 
-        title = "OpenDir SQLite sync needs attention" if summary.has_errors else "OpenDir SQLite sync completed"
+        title = "OpenDir games.json sync needs attention" if summary.has_errors else "OpenDir games.json sync completed"
         if summary.full_cycle_completed and not summary.has_errors:
-            title = "OpenDir SQLite sync full cycle completed"
+            title = "OpenDir games.json full cycle completed"
 
         result = notifier(
             title,
-            "The SQLite-driven Open Directory to R2 sync task finished.",
+            "The games.json-driven Open Directory to R2 sync task finished.",
             level="error" if summary.has_errors else "info",
             fields=fields,
             key="opendir-sync-error" if summary.has_errors else "opendir-sync-ok",

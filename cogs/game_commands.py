@@ -243,7 +243,8 @@ class GameCommands(commands.Cog):
 
             self.db.add_game(target_id, game_name)
             
-            priority_file = Path("data/priority_requests.json")
+            from config import DATA_DIR
+            priority_file = DATA_DIR / "priority_requests.json"
             priority_data = {}
             if priority_file.exists():
                 try: priority_data = json.loads(priority_file.read_text())

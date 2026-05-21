@@ -42,19 +42,48 @@ def parse_str_list(value: str) -> list[str]:
     return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
+BASE_DIR = Path(__file__).parent
+LOCAL_DATA_DIR = BASE_DIR / "data"
+
+
+def _running_on_railway() -> bool:
+    return any(
+        os.getenv(name)
+        for name in (
+            "RAILWAY_ENVIRONMENT",
+            "RAILWAY_PROJECT_ID",
+            "RAILWAY_SERVICE_ID",
+            "RAILWAY_DEPLOYMENT_ID",
+        )
+    )
+
+
+def _default_data_dir() -> Path:
+    # Railway volume mount from the Settings page is /data in this project.
+    # Prefer the explicit Railway env var when present, otherwise auto-use /data
+    # when the service is running on Railway and the mount exists.
+    railway_mount = os.getenv("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if railway_mount:
+        return Path(railway_mount)
+
+    if _running_on_railway() and Path("/data").exists():
+        return Path("/data")
+
+    return LOCAL_DATA_DIR
+
+
 def env_path(name: str, default: Path) -> Path:
-    raw = os.getenv(name, "").strip()
+    raw = os.getenv(name, "").strip().strip('"').strip("'")
     path = Path(raw) if raw else default
     if not path.is_absolute():
-        path = Path(__file__).parent / path
+        path = BASE_DIR / path
     return path
 
 
-BASE_DIR  = Path(__file__).parent
-DATA_DIR  = BASE_DIR / "data"
-LOGS_DIR  = BASE_DIR / "logs"
-CACHE_DIR = DATA_DIR / "cache_games"
-FILES_DIR = BASE_DIR / "Files"
+DATA_DIR = env_path("DATA_DIR", _default_data_dir())
+LOGS_DIR = env_path("LOGS_DIR", BASE_DIR / "logs")
+CACHE_DIR = env_path("CACHE_DIR", DATA_DIR / "cache_games")
+FILES_DIR = env_path("FILES_DIR", BASE_DIR / "Files")
 
 for directory in [DATA_DIR, LOGS_DIR, CACHE_DIR, FILES_DIR]:
     directory.mkdir(parents=True, exist_ok=True)
@@ -365,11 +394,15 @@ GITHUB_API_BASE      = "https://api.github.com/repos/SteamAutoCracks/ManifestHub
 GITHUB_BRANCHES_URL  = f"{GITHUB_API_BASE}/branches"
 MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHub")
 
-DB_PATH         = env_path("DB_PATH", DATA_DIR / "games.json")
-GEN_USAGE_PATH  = env_path("GEN_USAGE_PATH", DATA_DIR / "gen_usage.json")
-BACKFILL_STATE  = DATA_DIR / "backfill_state.json"
-CRAWLER_STATE   = DATA_DIR / "crawler_state.json"
-CACHE_FILE      = DATA_DIR / "cache.json"
+# JSON catalog path is only used as a fallback/source. SQLite is the runtime DB.
+# Keep the packaged data/games.json as the default source so first Railway boot can
+# seed /data/games.db automatically even when /data/games.json does not exist.
+DB_PATH = env_path("DB_PATH", LOCAL_DATA_DIR / "games.json")
+SQLITE_PATH = env_path("SQLITE_PATH", DATA_DIR / "games.db")
+GEN_USAGE_PATH = env_path("GEN_USAGE_PATH", DATA_DIR / "gen_usage.json")
+BACKFILL_STATE = env_path("BACKFILL_STATE", DATA_DIR / "backfill_state.json")
+CRAWLER_STATE = env_path("CRAWLER_STATE", DATA_DIR / "crawler_state.json")
+CACHE_FILE = env_path("CACHE_FILE", DATA_DIR / "cache.json")
 
 LOG_LEVEL       = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_FILE        = LOGS_DIR / "bot.log"

@@ -2,16 +2,27 @@
 Database manager for game database operations (SQLite Version)
 Handles SQLite storage, indexing, and backup management
 """
+import os
 import sqlite3
 import json
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
-from config import DATA_DIR, ENABLE_AUTO_BACKUP, MAX_BACKUPS
+from typing import Dict, Iterable, List, Optional
+from config import BASE_DIR, DATA_DIR, DB_PATH, ENABLE_AUTO_BACKUP, MAX_BACKUPS, SQLITE_PATH as CONFIG_SQLITE_PATH
 
 log = logging.getLogger(__name__)
-SQLITE_PATH = DATA_DIR / "games.db"
+
+
+def _resolve_sqlite_path() -> Path:
+    raw = os.getenv("SQLITE_PATH", "").strip().strip('"').strip("'")
+    path = Path(raw) if raw else Path(CONFIG_SQLITE_PATH)
+    if not path.is_absolute():
+        path = DATA_DIR / path
+    return path
+
+
+SQLITE_PATH = _resolve_sqlite_path()
 PLACEHOLDER_RE = re.compile(r"^game\s+\d+$", re.IGNORECASE)
 
 def is_placeholder_game_name(name: Optional[str], appid: str) -> bool:
@@ -45,7 +56,90 @@ class DatabaseManager:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_games_name ON games(name COLLATE NOCASE)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_games_has_file ON games(has_file)")
         conn.commit()
+        self._bootstrap_from_json_if_empty(conn)
         conn.close()
+
+    def _json_source_candidates(self) -> Iterable[Path]:
+        raw_candidates = [
+            os.getenv("SOURCE_GAMES_JSON", ""),
+            os.getenv("GAMES_JSON_PATH", ""),
+            DB_PATH,
+            DATA_DIR / "games.json",
+            BASE_DIR / "data" / "games.json",
+        ]
+        seen: set[str] = set()
+        for candidate in raw_candidates:
+            if not candidate:
+                continue
+            path = Path(str(candidate).strip().strip('"').strip("'"))
+            if not path.is_absolute():
+                path = BASE_DIR / path
+            key = str(path)
+            if key not in seen:
+                seen.add(key)
+                yield path
+
+    def _find_games_json_source(self) -> Optional[Path]:
+        for path in self._json_source_candidates():
+            if path.exists() and path.is_file():
+                return path
+        return None
+
+    def _bootstrap_from_json_if_empty(self, conn: sqlite3.Connection) -> None:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM games")
+        existing = cursor.fetchone()[0]
+        if existing > 0:
+            return
+
+        source = self._find_games_json_source()
+        if not source:
+            log.warning("SQLite database is empty and no games.json source was found. DB path: %s", self.db_path)
+            return
+
+        try:
+            log.info("Bootstrapping empty SQLite database from %s -> %s", source, self.db_path)
+            with source.open("r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            if isinstance(payload, dict):
+                items = list(payload.values())
+            elif isinstance(payload, list):
+                items = payload
+            else:
+                log.warning("Unsupported games.json format at %s", source)
+                return
+
+            batch: list[tuple[str, Optional[str], int, str]] = []
+            inserted = 0
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                appid = str(item.get("appid") or item.get("id") or "").strip()
+                if not appid:
+                    continue
+                name = item.get("name")
+                has_file = 1 if item.get("file") else 0
+                batch.append((appid, name, has_file, json.dumps(item, ensure_ascii=False)))
+                if len(batch) >= 5000:
+                    cursor.executemany(
+                        "INSERT OR REPLACE INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
+                        batch,
+                    )
+                    inserted += len(batch)
+                    batch.clear()
+
+            if batch:
+                cursor.executemany(
+                    "INSERT OR REPLACE INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
+                    batch,
+                )
+                inserted += len(batch)
+
+            conn.commit()
+            log.info("Bootstrapped %s games into SQLite at %s", f"{inserted:,}", self.db_path)
+        except Exception as exc:
+            log.exception("Failed to bootstrap SQLite from games.json: %s", exc)
 
     def load(self) -> bool:
         """Verify database connection and integrity"""
@@ -62,7 +156,7 @@ class DatabaseManager:
             cursor.execute("SELECT COUNT(*) FROM games")
             count = cursor.fetchone()[0]
             conn.close()
-            log.info(f"✅ SQLite Database ready with {count:,} games (WAL mode active)")
+            log.info(f"✅ SQLite Database ready at {self.db_path} with {count:,} games (WAL mode active)")
             return True
         except Exception as e:
             log.error(f"Error connecting to SQLite: {e}")
