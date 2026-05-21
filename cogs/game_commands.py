@@ -143,7 +143,21 @@ class GameCommands(commands.Cog):
                 )
                 return
 
-        await interaction.response.defer()
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            # Interaction already expired before we could defer (e.g. after bot restart)
+            log.warning(f"/gen interaction expired before defer for user {interaction.user.id}")
+            return
+
+        async def safe_edit(embed):
+            """Edit original response, silently dropping stale-interaction errors."""
+            try:
+                await interaction.edit_original_response(embed=embed)
+            except discord.NotFound:
+                log.debug("/gen: interaction token expired, dropping edit")
+            except Exception as e:
+                log.error(f"/gen safe_edit error: {e}")
 
         cc        = resolve_country_code(interaction)
         target_id = query.strip()
@@ -151,17 +165,21 @@ class GameCommands(commands.Cog):
         if not target_id.isdigit():
             results = await self.steam_api.search_games(urllib.parse.quote(target_id), limit=1)
             if not results:
-                await interaction.edit_original_response(embed=self._embed_not_found(target_id))
+                await safe_edit(self._embed_not_found(target_id))
                 return
             target_id = results[0]["id"]
 
         if not is_valid_appid(target_id):
-            await interaction.edit_original_response(embed=self._embed_not_found(query))
+            await safe_edit(self._embed_not_found(query))
             return
 
         steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
         if not steam_data:
-            await interaction.edit_original_response(embed=self._embed_steam_unavailable(query))
+            # Retry once with a short delay before giving up
+            await asyncio.sleep(1.5)
+            steam_data = await self.steam_api.get_app_details(target_id, cc=cc)
+        if not steam_data:
+            await safe_edit(self._embed_steam_unavailable(query))
             return
 
         game_info = self.steam_api.extract_game_info(steam_data)
@@ -170,24 +188,30 @@ class GameCommands(commands.Cog):
 
         dl = await self._find_download(target_id, game_info["name"])
 
-        await interaction.edit_original_response(
-            embed=self._embed_game_card(game_info, db_entry, dl)
-        )
+        await safe_edit(self._embed_game_card(game_info, db_entry, dl))
 
         if dl["available"]:
             self.db.mark_as_starred(target_id, game_info["name"])
             self.db.save()
             if not is_limit_exempt:
                 limit_status = self.gen_limiter.consume(interaction.user.id)
-            await self._send_download_followup(interaction, game_info, dl)
-            if limit_status:
-                used, remaining = limit_status
-                await self._send_gen_limit_usage_followup(interaction, used, remaining)
+            try:
+                await self._send_download_followup(interaction, game_info, dl)
+                if limit_status:
+                    used, remaining = limit_status
+                    await self._send_gen_limit_usage_followup(interaction, used, remaining)
+            except discord.NotFound:
+                log.debug("/gen: interaction expired before followup could be sent")
+            except Exception as e:
+                log.error(f"/gen followup error: {e}")
         else:
-            await interaction.followup.send(
-                embed=self._embed_unavailable(game_info["name"]),
-                ephemeral=True,
-            )
+            try:
+                await interaction.followup.send(
+                    embed=self._embed_unavailable(game_info["name"]),
+                    ephemeral=True,
+                )
+            except discord.NotFound:
+                log.debug("/gen: interaction expired before unavailable followup")
 
     
     # ── /request ─────────────────────────────────────────────────────────────
