@@ -149,7 +149,9 @@ OPENDIR_STATE_PATH = env_path("OPENDIR_STATE_PATH", DATA_DIR / "opendir_sync_sta
 OPENDIR_INDEX_SCAN_ENABLED = parse_bool(os.getenv("OPENDIR_INDEX_SCAN_ENABLED", "true"), True)
 OPENDIR_DIRECT_PROBE_ENABLED = parse_bool(os.getenv("OPENDIR_DIRECT_PROBE_ENABLED", "true"), True)
 OPENDIR_FALLBACK_GET_PROBE = parse_bool(os.getenv("OPENDIR_FALLBACK_GET_PROBE", "true"), True)
-OPENDIR_GAMES_PER_RUN = int(os.getenv("OPENDIR_GAMES_PER_RUN", "500"))
+OPENDIR_GAMES_PER_RUN     = int(os.getenv("OPENDIR_GAMES_PER_RUN", "500"))       # backward compat
+OPENDIR_MAX_GAMES_PER_RUN = int(os.getenv("OPENDIR_MAX_GAMES_PER_RUN",            # name used by cog
+                                           os.getenv("OPENDIR_GAMES_PER_RUN", "500")))
 OPENDIR_TARGET_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_TARGET_EXTENSIONS", "zip"), "zip")
 OPENDIR_SOURCE_PATTERNS = parse_str_list(os.getenv(
     "OPENDIR_SOURCE_PATTERNS",
@@ -186,8 +188,8 @@ R2_MAINTENANCE_FALLBACK_TO_APPID = parse_bool(os.getenv("R2_MAINTENANCE_FALLBACK
 R2_MAINTENANCE_BLACKLIST_THRESHOLD = int(os.getenv("R2_MAINTENANCE_BLACKLIST_THRESHOLD", "3"))
 R2_MAINTENANCE_STATE_PATH = env_path("R2_MAINTENANCE_STATE_PATH", DATA_DIR / "r2_maintenance_state.json")
 
-STEAM_DB_SYNC_ENABLED = parse_bool(os.getenv("STEAM_DB_SYNC_ENABLED", "false"), False)
-STEAM_DB_SYNC_APPLY = parse_bool(os.getenv("STEAM_DB_SYNC_APPLY", "false"), False)
+STEAM_DB_SYNC_ENABLED = parse_bool(os.getenv("STEAM_DB_SYNC_ENABLED", "true"), True)
+STEAM_DB_SYNC_APPLY = parse_bool(os.getenv("STEAM_DB_SYNC_APPLY", "true"), True)
 STEAM_DB_SYNC_RUN_ON_START = parse_bool(os.getenv("STEAM_DB_SYNC_RUN_ON_START", "true"), True)
 STEAM_DB_SYNC_START_DELAY_SECONDS = float(os.getenv("STEAM_DB_SYNC_START_DELAY_SECONDS", "5"))
 STEAM_DB_SYNC_INTERVAL_HOURS = float(os.getenv("STEAM_DB_SYNC_INTERVAL_HOURS", "24"))

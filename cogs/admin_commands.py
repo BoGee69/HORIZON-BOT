@@ -456,14 +456,19 @@ class AdminCommands(commands.Cog):
 
         found = 0
         checked = 0
-        to_check = [g for g in self.db.game_db if not g.get("file")][:limit]
+        # SQLite DB: use search_games to get games without files.
+        # search_games returns dicts with "appid" key, not "id".
+        all_without_file = [g for g in self.db.search_games("", limit=limit * 10) if not g.get("file")]
+        to_check = all_without_file[:limit]
 
         # Batch HEAD requests (max 20 concurrent)
         sem = asyncio.Semaphore(20)
 
         async def check_one(game):
             nonlocal found, checked
-            appid = str(game["id"])
+            appid = str(game.get("appid") or game.get("id") or "")
+            if not appid:
+                return
             url = f"{R2_BASE_URL}/Database/{appid}.zip"
             async with sem:
                 try:
@@ -551,8 +556,15 @@ class AdminCommands(commands.Cog):
             return
 
         game_name = game.get("name", "Unknown")
-        self.db.game_db = [g for g in self.db.game_db if str(g["id"]) != appid]
-        self.db.game_index.pop(appid, None)
+        # SQLite DB: delete via direct SQL — game_db/game_index don't exist.
+        try:
+            import sqlite3 as _sqlite3
+            conn = _sqlite3.connect(self.db.db_path)
+            conn.execute("DELETE FROM games WHERE appid = ?", (str(appid),))
+            conn.commit()
+            conn.close()
+        except Exception as _del_exc:
+            log.error("Failed to delete game %s from SQLite: %s", appid, _del_exc)
         self.db.save()
 
         embed = discord.Embed(
@@ -597,7 +609,19 @@ class AdminCommands(commands.Cog):
     async def backup(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
 
-        ok = self.db._create_backup()
+        # SQLite DB has no _create_backup(). We export current data as a JSON snapshot.
+        import json as _json
+        from config import DATA_DIR
+        from datetime import datetime as _dt
+        ok = False
+        try:
+            all_games = self.db.search_games("", limit=999999)
+            ts = _dt.utcnow().strftime("%Y%m%d_%H%M%S")
+            backup_path = DATA_DIR / f"games_backup_{ts}.json"
+            backup_path.write_text(_json.dumps(all_games, indent=2, ensure_ascii=False), encoding="utf-8")
+            ok = True
+        except Exception as _bk_exc:
+            log.error("Backup failed: %s", _bk_exc)
         if ok:
             embed = discord.Embed(
                 title="💾 Backup Successful",

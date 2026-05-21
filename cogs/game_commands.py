@@ -53,40 +53,48 @@ async def autocomplete_games(
     bot = interaction.client
     db  = bot.db
 
-    q_raw   = (current or "").lower().strip()
-    q_clean = clean_search_string(q_raw)
+    q_raw   = (current or "").strip()
 
     starred, normal = [], []
-    for game in db.game_db:
-        name  = game.get("name")
-        appid = str(game.get("id", ""))
-        if not name:
+
+    # SQLite-backed DB: use search_games() — db.game_db does not exist anymore.
+    # search_games returns dicts with "appid" key (not "id").
+    try:
+        all_results = db.search_games(q_raw or "", limit=50) if q_raw else db.search_games("", limit=50)
+    except Exception:
+        all_results = []
+
+    for game in all_results:
+        appid = str(game.get("appid") or game.get("id") or "")
+        name  = game.get("name") or ""
+        if not appid or not name:
             continue
-        name_raw   = name.lower()
-        name_clean = clean_search_string(name_raw)
-        if not q_raw or q_raw in name_raw or (q_clean and q_clean in name_clean) or q_raw in appid:
-            (starred if game.get("file") else normal).append(game)
+        (starred if game.get("file") else normal).append(game)
 
     results:   List[app_commands.Choice] = []
     found_ids: set = set()
 
     for game in starred[:15]:
-        results.append(app_commands.Choice(name=game["name"][:100], value=str(game["id"])))
-        found_ids.add(str(game["id"]))
+        appid = str(game.get("appid") or game.get("id") or "")
+        name  = game.get("name", "")[:100]
+        if appid and appid not in found_ids:
+            results.append(app_commands.Choice(name=name, value=appid))
+            found_ids.add(appid)
 
     for game in normal[: 25 - len(results)]:
-        gid = str(game["id"])
-        if gid not in found_ids:
-            results.append(app_commands.Choice(name=game["name"][:100], value=gid))
-            found_ids.add(gid)
+        appid = str(game.get("appid") or game.get("id") or "")
+        name  = game.get("name", "")[:100]
+        if appid and appid not in found_ids:
+            results.append(app_commands.Choice(name=name, value=appid))
+            found_ids.add(appid)
 
     if q_raw and len(results) < 25:
         try:
             steam_api   = SteamAPI(bot.session)
             steam_items = await steam_api.search_games(urllib.parse.quote(q_raw), limit=25 - len(results))
             for item in steam_items:
-                aid = item["id"]
-                if aid not in found_ids:
+                aid = str(item.get("id") or item.get("appid") or "")
+                if aid and aid not in found_ids:
                     results.append(app_commands.Choice(name=item["name"][:100], value=aid))
                     found_ids.add(aid)
                 if len(results) >= 25:
@@ -221,7 +229,7 @@ class GameCommands(commands.Cog):
             priority_file.parent.mkdir(parents=True, exist_ok=True)
             priority_file.write_text(json.dumps(priority_data, indent=2))
             # Trigger instant sync for this game
-            opendir_cog = self.bot.get_cog("OpenDirSyncCommands")
+            opendir_cog = self.bot.get_cog("OpenDirSync")  # class name in cogs/opendir_sync.py
             if opendir_cog:
                 # Run sync in background so it doesn't block the response
                 asyncio.create_task(opendir_cog.run_sync_once(priority_appid=target_id))
@@ -267,7 +275,7 @@ class GameCommands(commands.Cog):
 
         for game in results:
             name   = game.get("name", "Unknown")
-            appid  = game["id"]
+            appid  = str(game.get("appid") or game.get("id") or "?")
             status = "📦  File Available" if game.get("file") else "🔹  Registered"
             embed.add_field(
                 name=name,

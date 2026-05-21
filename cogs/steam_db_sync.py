@@ -117,6 +117,7 @@ class SteamDbSyncCommands(commands.Cog):
     async def _sync_loop(self):
         await self.bot.wait_until_ready()
         interval_seconds = max(1.0, bot_config.STEAM_DB_SYNC_INTERVAL_HOURS) * 3600
+        retry_delay = 300  # 5 minutes retry on failure
         first_run = True
 
         while not self.bot.is_closed():
@@ -127,6 +128,10 @@ class SteamDbSyncCommands(commands.Cog):
                 elif bot_config.STEAM_DB_SYNC_START_DELAY_SECONDS > 0:
                     await asyncio.sleep(bot_config.STEAM_DB_SYNC_START_DELAY_SECONDS)
 
+            log.info(
+                f"\U0001f504 Steam DB sync starting "
+                f"(apply={bot_config.STEAM_DB_SYNC_APPLY}, include_new={bot_config.STEAM_DB_SYNC_INCLUDE_NEW})"
+            )
             try:
                 summary = await self._run_threaded(
                     apply_changes=bot_config.STEAM_DB_SYNC_APPLY,
@@ -134,6 +139,15 @@ class SteamDbSyncCommands(commands.Cog):
                     max_new=max(0, bot_config.STEAM_DB_SYNC_MAX_NEW),
                     max_updates=max(0, bot_config.STEAM_DB_SYNC_MAX_UPDATES),
                 )
+                if summary.errors:
+                    log.warning(f"Steam DB sync finished with {len(summary.errors)} error(s)")
+                    await asyncio.sleep(retry_delay)
+                else:
+                    log.info(
+                        f"\u2705 Steam DB sync done: {summary.new_entries_added} new, "
+                        f"{summary.names_updated} updated, {summary.fetched_apps} fetched"
+                    )
+                    await asyncio.sleep(interval_seconds)
                 await self._alert_if_needed(summary, automatic=True)
             except asyncio.CancelledError:
                 raise
@@ -154,8 +168,8 @@ class SteamDbSyncCommands(commands.Cog):
                         {"error": repr(exc)[:1000]},
                         force=True,
                     )
-
-            await asyncio.sleep(interval_seconds)
+                # Retry after short delay instead of waiting full interval
+                await asyncio.sleep(retry_delay)
 
     async def _alert_if_needed(self, summary: SteamDbSyncSummary, *, automatic: bool) -> None:
         self.bot.last_steam_db_sync_summary = summary

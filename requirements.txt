@@ -32,3 +32,7 @@ pypdf>=4.0.0
 
 # HTML parser for authorized Open Directory sync
 beautifulsoup4>=4.12.0
+lxml>=5.0.0  # faster/more robust parser backend for BeautifulSoup
+
+# System metrics for /pulse command (CPU, RAM, temperature)
+psutil>=5.9.0

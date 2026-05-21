@@ -41,6 +41,9 @@ class DatabaseManager:
             raw_data TEXT
         )
         """)
+        # Index for fast name/appid search used by autocomplete
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_games_name ON games(name COLLATE NOCASE)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_games_has_file ON games(has_file)")
         conn.commit()
         conn.close()
 
@@ -126,15 +129,27 @@ class DatabaseManager:
             return None
     
     def search_games(self, query: str, limit: int = 25) -> List[Dict]:
-        """Search games by name or AppID using SQL"""
+        """Search games by name or AppID. Empty query returns starred games first."""
         results = []
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT raw_data FROM games WHERE name LIKE ? OR appid LIKE ? LIMIT ?",
-                (f"%{query}%", f"%{query}%", limit)
-            )
+            if query:
+                cursor.execute(
+                    """SELECT raw_data FROM games
+                       WHERE name LIKE ? OR appid LIKE ?
+                       ORDER BY has_file DESC, name ASC
+                       LIMIT ?""",
+                    (f"%{query}%", f"%{query}%", limit)
+                )
+            else:
+                cursor.execute(
+                    """SELECT raw_data FROM games
+                       WHERE name IS NOT NULL AND name != ''
+                       ORDER BY has_file DESC, name ASC
+                       LIMIT ?""",
+                    (limit,)
+                )
             rows = cursor.fetchall()
             conn.close()
             for row in rows:
