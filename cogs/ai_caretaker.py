@@ -85,7 +85,7 @@ class AICaretaker(commands.Cog):
                 "Provider": bot_config.AI_MAINTENANCE_PROVIDER,
                 "Model": bot_config.AI_MAINTENANCE_MODEL,
                 "Error": message,
-                "Next step": "Check the selected provider API key, quota, and model name in Railway variables.",
+                "Next step": "Check the selected provider API key, quota, and model name in .env file.",
             },
             key="ai-caretaker-unavailable",
         )

@@ -4,7 +4,7 @@ This patch lets trusted Discord admins chat with TriadBot in DM without hardcodi
 
 ## AI chat access
 
-Set this in Railway variables:
+Set this in .env file:
 
 ```env
 AI_CHAT_ENABLED=true

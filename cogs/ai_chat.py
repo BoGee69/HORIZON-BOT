@@ -289,7 +289,7 @@ class AIChat(commands.Cog):
                 await message.channel.send(
                     "AI provider utama belum siap. "
                     f"Provider: `{bot_config.AI_CHAT_PROVIDER}`, model: `{bot_config.AI_CHAT_MODEL}`. "
-                    "Cek API key, quota, dan nama model di Railway variables.",
+                    "Cek API key, quota, dan nama model di .env file.",
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
             except Exception as exc:

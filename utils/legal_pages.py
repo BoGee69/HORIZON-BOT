@@ -201,7 +201,7 @@ PRIVACY_HTML = _page(
     <p>The bot may rely on third-party infrastructure and APIs, including:</p>
     <ul>
       <li>Discord, for bot operation, commands, roles, guild data, and user identity.</li>
-      <li>Railway, for hosting and persistent service storage.</li>
+      <li>your .env file, for hosting and persistent service storage.</li>
       <li>Cloudflare R2, for storage configured by the server operator.</li>
       <li>Steam public APIs, for game metadata and search results.</li>
     </ul>

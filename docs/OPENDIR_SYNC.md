@@ -20,7 +20,7 @@ Alur kerja:
 
 Tidak ada file yang disimpan ke local disk.
 
-## Railway env penting
+## your .env file env penting
 
 ```env
 OPENDIR_SYNC_ENABLED=true

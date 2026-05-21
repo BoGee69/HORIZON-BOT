@@ -15,7 +15,7 @@ from config import (
 
 log = logging.getLogger(__name__)
 
-# FIX 4: .strip() mencegah whitespace tersembunyi saat copy-paste di Railway env editor
+# FIX 4: .strip() mencegah whitespace tersembunyi saat copy-paste di your .env file env editor
 _KEY     = (R2_ACCESS_KEY_ID     or "").strip()
 _SECRET  = (R2_SECRET_ACCESS_KEY or "").strip()
 _ACCOUNT = (R2_ACCOUNT_ID        or "").strip()

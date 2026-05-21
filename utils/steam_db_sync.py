@@ -1,17 +1,18 @@
 """
-Steam app list database sync.
+Steam app list database sync (SQLite Compatible).
 
-Fills placeholder names in games.json and can add newly published Steam app IDs.
+Fills placeholder names in games.db and can add newly published Steam app IDs.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
+import sqlite3
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Any
 
 import config as bot_config
 from utils.database import DatabaseManager, is_placeholder_game_name
@@ -99,7 +100,7 @@ def _fetch_store_service_app_names(
     if not api_key:
         raise RuntimeError(
             "STEAM_API_KEY is required for full Steam database sync. "
-            "Add a Steam Web API key in Railway; ManifestHub keys are not used for game names."
+            "Add a Steam Web API key in your .env file; ManifestHub keys are not used for game names."
         )
 
     names: dict[str, str] = {}
@@ -171,7 +172,7 @@ def fetch_steam_app_names(timeout: int = bot_config.STEAM_DB_SYNC_TIMEOUT_SECOND
         return _fetch_public_app_names(timeout)
     except Exception as exc:
         raise RuntimeError(
-            "Steam app list fetch failed. Set STEAM_API_KEY in Railway for the official "
+            "Steam app list fetch failed. Set STEAM_API_KEY in your .env file for the official "
             f"Steam StoreService sync. Last fallback error: {exc}"
         ) from exc
 
@@ -186,7 +187,8 @@ def sync_steam_database(
     timeout: int = bot_config.STEAM_DB_SYNC_TIMEOUT_SECONDS,
 ) -> SteamDbSyncSummary:
     summary = SteamDbSyncSummary(dry_run=not apply)
-    summary.existing_entries = len(db.game_db)
+    stats = db.get_stats()
+    summary.existing_entries = stats.get("total", 0)
 
     try:
         steam_names = fetch_steam_app_names(timeout=timeout)
@@ -196,51 +198,74 @@ def sync_steam_database(
 
     summary.fetched_apps = len(steam_names)
 
-    for entry in db.game_db:
-        appid = str(entry.get("id", "")).strip()
-        if not appid.isdigit():
-            summary.skipped_invalid += 1
-            continue
-        if not is_placeholder_game_name(entry.get("name"), appid):
-            continue
-
-        summary.placeholders_found += 1
-        steam_name = steam_names.get(appid)
-        if not steam_name:
-            continue
-        if max_updates > 0 and summary.names_updated >= max_updates:
-            continue
-
-        summary.names_updated += 1
-        summary.add_sample(f"name: {entry.get('name')} -> {steam_name} ({appid})")
-        if apply:
-            entry["name"] = steam_name
-
-    if include_new:
-        existing_ids = {str(entry.get("id", "")).strip() for entry in db.game_db}
-        for appid in sorted(steam_names, key=lambda item: int(item)):
-            if appid in existing_ids:
+    try:
+        conn = sqlite3.connect(db.db_path)
+        cursor = conn.cursor()
+        
+        # 1. Update existing placeholders
+        cursor.execute("SELECT appid, name, raw_data FROM games")
+        rows = cursor.fetchall()
+        
+        for appid, name, raw_data in rows:
+            if not appid.isdigit():
+                summary.skipped_invalid += 1
                 continue
-            if max_new > 0 and summary.new_entries_added >= max_new:
-                summary.skipped_new_limit += 1
-                continue
+                
+            if is_placeholder_game_name(name, appid):
+                summary.placeholders_found += 1
+                steam_name = steam_names.get(appid)
+                if steam_name and steam_name != name:
+                    if max_updates > 0 and summary.names_updated >= max_updates:
+                        continue
+                    
+                    summary.names_updated += 1
+                    summary.add_sample(f"update: {name} -> {steam_name} ({appid})")
+                    if apply:
+                        try:
+                            data = json.loads(raw_data)
+                        except Exception:
+                            data = {"appid": appid, "name": name, "file": False}
+                        data["name"] = steam_name
+                        cursor.execute(
+                            "UPDATE games SET name = ?, raw_data = ? WHERE appid = ?",
+                            (steam_name, json.dumps(data), appid)
+                        )
 
-            summary.new_entries_added += 1
-            summary.add_sample(f"new: {steam_names[appid]} ({appid})")
-            if apply:
-                db.add_game(appid, steam_names[appid], has_file=False)
-                existing_ids.add(appid)
+        # 2. Add new entries
+        if include_new:
+            cursor.execute("SELECT appid FROM games")
+            existing_ids = {row[0] for row in cursor.fetchall()}
+            
+            for appid in sorted(steam_names, key=lambda item: int(item) if item.isdigit() else 0):
+                if appid in existing_ids:
+                    continue
+                if max_new > 0 and summary.new_entries_added >= max_new:
+                    summary.skipped_new_limit += 1
+                    continue
 
-    if apply and summary.has_changes:
-        summary.saved = db.save()
-    elif apply:
-        db.game_index = {str(g["id"]): g for g in db.game_db}
+                summary.new_entries_added += 1
+                summary.add_sample(f"new: {steam_names[appid]} ({appid})")
+                if apply:
+                    raw_data = json.dumps({"appid": appid, "name": steam_names[appid], "file": False})
+                    cursor.execute(
+                        "INSERT INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
+                        (appid, steam_names[appid], 0, raw_data)
+                    )
+                    existing_ids.add(appid)
+
+        if apply and summary.has_changes:
+            conn.commit()
+            summary.saved = True
+        
+        conn.close()
+    except Exception as exc:
+        summary.add_error(f"SQLite sync error: {exc}")
 
     return summary
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Sync games.json names from Steam App List.")
+    parser = argparse.ArgumentParser(description="Sync Steam App List names to SQLite database.")
     parser.add_argument("--apply", action="store_true", help="Write changes. Default is dry-run.")
     parser.add_argument("--no-new", action="store_true", help="Do not add new Steam app IDs.")
     parser.add_argument("--max-new", type=int, default=bot_config.STEAM_DB_SYNC_MAX_NEW)

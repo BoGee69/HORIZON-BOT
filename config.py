@@ -107,8 +107,8 @@ DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 
-# FIX 3: WEB_URL — WAJIB di-set di Railway env agar JWT link tidak nunjuk ke localhost.
-# Isi dengan URL Railway kamu, e.g. https://triadbot-production.up.railway.app
+# FIX 3: WEB_URL — WAJIB di-set di your .env file env agar JWT link tidak nunjuk ke localhost.
+# Isi dengan URL your .env file kamu, e.g. https://triadbot-production.up.railway.app
 WEB_URL    = os.getenv("WEB_URL", DEFAULT_WEB_URL).rstrip("/")
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 PORT       = int(os.getenv("PORT", "8080"))
@@ -412,7 +412,7 @@ def validate_config():
         import logging
         logging.getLogger(__name__).warning(
             "⚠️  WEB_URL tidak di-set! Download link via JWT akan mengarah ke localhost. "
-            "Set WEB_URL=https://<nama-app>.up.railway.app di Railway environment variables."
+            "Set WEB_URL=https://<nama-app>.up.railway.app di your .env file environment variables."
         )
     if errors:
         raise ValueError(f"Configuration errors: {', '.join(errors)}")

@@ -1,3 +1,4 @@
+from pathlib import Path
 """
 Game Commands Cog  —  /gen  /search  /info
 """
@@ -179,6 +180,63 @@ class GameCommands(commands.Cog):
                 embed=self._embed_unavailable(game_info["name"]),
                 ephemeral=True,
             )
+
+    
+    # ── /request ─────────────────────────────────────────────────────────────
+
+    @app_commands.command(name="request", description="Request a game to be prioritized for Cloudflare R2 mirroring")
+    @app_commands.describe(query="Game title or App ID")
+    @app_commands.autocomplete(query=autocomplete_games)
+    async def request(self, interaction: discord.Interaction, query: str):
+        from pathlib import Path
+        import json
+        import time
+        
+        try:
+            await interaction.response.send_message("🔍 Processing your request...", ephemeral=True)
+        except:
+            pass
+        
+        target_id = query.strip()
+        game_name = query
+        
+        try:
+            if not target_id.isdigit():
+                results = await self.steam_api.search_games(query, limit=1)
+                if not results:
+                    await interaction.edit_original_response(content="❌ Game not found on Steam.")
+                    return
+                target_id = results[0]["id"]
+                game_name = results[0]["name"]
+
+            self.db.add_game(target_id, game_name)
+            
+            priority_file = Path("data/priority_requests.json")
+            priority_data = {}
+            if priority_file.exists():
+                try: priority_data = json.loads(priority_file.read_text())
+                except: pass
+            
+            priority_data[target_id] = {"name": game_name, "requested_by": interaction.user.id, "time": time.time()}
+            priority_file.parent.mkdir(parents=True, exist_ok=True)
+            priority_file.write_text(json.dumps(priority_data, indent=2))
+            # Trigger instant sync for this game
+            opendir_cog = self.bot.get_cog("OpenDirSyncCommands")
+            if opendir_cog:
+                # Run sync in background so it doesn't block the response
+                asyncio.create_task(opendir_cog.run_sync_once(priority_appid=target_id))
+                log.info(f"⚡ Instant Priority Sync triggered for {game_name} ({target_id})")
+
+
+            embed = discord.Embed(
+                title="✅ Request Received",
+                description=f"**{game_name} ({target_id})** has been added to the priority sync queue and an instant sync has been triggered! ⚡",
+                color=0x00ff00
+            )
+            await interaction.edit_original_response(content=None, embed=embed)
+        except Exception as e:
+            try: await interaction.edit_original_response(content=f"❌ An error occurred: {e}")
+            except: pass
 
     # ── /search ───────────────────────────────────────────────────────────────
 

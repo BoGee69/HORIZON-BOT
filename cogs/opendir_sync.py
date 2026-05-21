@@ -388,42 +388,61 @@ class OpenDirSync(commands.Cog):
 
             await asyncio.sleep(self.interval_seconds)
 
-    async def run_sync_once(self, *, mode: str = "manual") -> SyncSummary:
+    async def run_sync_once(self, *, mode: str = "manual", priority_appid: str = None) -> SyncSummary:
         async with self._lock:
-            summary = SyncSummary(mode=mode)
+            summary = SyncSummary(mode="targeted" if priority_appid else mode)
             state = self._load_state()
             games = self._load_games()
             summary.games_total = len(games)
             summary.cursor_start = min(max(0, state.cursor), max(0, len(games) - 1)) if games else 0
 
             if not games:
-                summary.add_error(f"games.json has no valid appid/name records: {self.games_json_path}")
+                summary.add_error(f"games.json has no valid appid/name records")
                 return summary
 
             existing_keys = await self._list_r2_keys()
             connector = aiohttp.TCPConnector(limit=max(4, self.concurrency * 2), ttl_dns_cache=300)
-            headers = {"User-Agent": self.user_agent}
-
+            
             async with aiohttp.ClientSession(
                 timeout=self.request_timeout,
                 connector=connector,
-                headers=headers,
+                headers={"User-Agent": self.user_agent},
                 raise_for_status=False,
             ) as session:
-                indexed_files: list[RemoteFile] = []
+                indexed_files = []
                 if self.index_scan_enabled:
-                    with suppress(Exception):
+                    try:
                         indexed_files = await self._scan_index(session, summary)
-                    summary.indexed_files = len(indexed_files)
-
+                    except: pass
+                
+                summary.indexed_files = len(indexed_files)
                 indexed_by_name = self._build_remote_index(indexed_files)
+
+                # --- TARGETED PRIORITY SYNC ---
+                if priority_appid:
+                    game_record = self.bot.db.get_game(priority_appid)
+                    if game_record:
+                        # Convert SQLite dict to GameRecord dataclass expected by sync_one
+                        from utils.database import GameRecord as GR
+                        rec = GR(appid=str(game_record.get("appid") or game_record.get("id")), name=game_record.get("name"))
+                        log.info(f"⚡ INSTANT TARGETED SYNC: {rec.name} ({rec.appid})")
+                        await self._sync_one_game(session, rec, indexed_by_name, existing_keys, summary)
+                        # We return early for targeted sync
+                        await self._report_summary(summary)
+                        return summary
+
+                # --- NORMAL SYNC ---
                 await self._sync_games_window(session, games, indexed_by_name, existing_keys, state, summary)
 
             if summary.files_uploaded:
-                invalidate_r2_inventory_cache()
+                try:
+                    from utils.r2_inventory import invalidate_r2_inventory_cache
+                    invalidate_r2_inventory_cache()
+                except: pass
 
             state.last_run_at = time.time()
             self._save_state(state)
+            await self._report_summary(summary)
             return summary
 
     async def _sync_games_window(
@@ -445,6 +464,9 @@ class OpenDirSync(commands.Cog):
             game = games[current]
             summary.games_checked += 1
             checked += 1
+
+            if checked % 100 == 0:
+                log.info("🔍 OpenDir Progress: Checked %d/%d games in this run (AppID: %s)", checked, max_games, game.appid)
 
             await self._sync_one_game(session, game, indexed_by_name, existing_keys, summary)
 

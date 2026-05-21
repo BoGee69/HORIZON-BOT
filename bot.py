@@ -3,6 +3,7 @@ Steam Game Database & Download Manager Bot
 """
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import sys
 import traceback
 from pathlib import Path
@@ -34,7 +35,12 @@ logging.basicConfig(
     datefmt=LOG_DATE_FORMAT,
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
+        RotatingFileHandler(
+            LOG_FILE,
+            encoding="utf-8",
+            maxBytes=5 * 1024 * 1024,  # 5MB
+            backupCount=3,             # Keep 3 old logs
+        ),
     ],
 )
 logging.getLogger("discord").setLevel(logging.WARNING)
@@ -77,8 +83,16 @@ class SteamBot(commands.Bot):
         asyncio.create_task(self.start_web_server())
 
         try:
+            # 1. Sync Global (butuh 1-2 jam untuk muncul di DM)
             synced = await self.tree.sync()
-            log.info(f"✅ Synced {len(synced)} slash commands")
+            log.info(f"✅ Synced {len(synced)} global slash commands")
+            
+            # 2. Sync ke setiap server (INSTAN muncul di server tersebut)
+            # Ini meniru cara Railway yang membuat perintah langsung aktif
+            for guild in self.guilds:
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+                log.info(f"⚡ Aggressive Sync successful for server: {guild.name}")
         except Exception as e:
             log.error(f"Failed to sync commands: {e}")
 
@@ -228,7 +242,16 @@ class SteamBot(commands.Bot):
 
 
     async def on_app_command_error(self, interaction: discord.Interaction, error):
+        error_str = str(error)
         command_name = getattr(getattr(interaction, "command", None), "qualified_name", "unknown")
+
+        if "Interaction has already been acknowledged" in error_str or "Unknown interaction" in error_str:
+            if interaction.response.is_done():
+                return
+
+        # Jika ini adalah error 'not found' yang sudah ditangani secara visual di /gen, jangan lapor admin
+        if "NotFound" in error_str and command_name == "gen":
+            return
         user_text = f"{interaction.user} ({interaction.user.id})" if interaction.user else "unknown"
         guild_text = f"{interaction.guild} ({interaction.guild.id})" if interaction.guild else "DM"
 
@@ -300,6 +323,13 @@ async def main():
 if __name__ == "__main__":
     if sys.platform.startswith("win"):
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    else:
+        try:
+            import uvloop
+            asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+        except ImportError:
+            pass
+
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

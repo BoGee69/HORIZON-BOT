@@ -70,7 +70,7 @@ async def collect_health(bot) -> dict[str, Any]:
         "database": {
             "total_games": stats.get("total", 0),
             "with_files": stats.get("with_files", 0),
-            "db_path": str(bot_config.DB_PATH),
+            "db_path": str(bot_config.DATA_DIR / "games.db"),
         },
         "steam_db_sync": {
             "enabled": bool(bot_config.STEAM_DB_SYNC_ENABLED),

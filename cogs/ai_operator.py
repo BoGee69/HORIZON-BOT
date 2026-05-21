@@ -853,7 +853,7 @@ class AIOperator(commands.Cog):
             await self.create_proposal(
                 action=action,
                 reason=item.get("reason") or result.summary or f"AI caretaker triggered by {reason}",
-                impact=item.get("impact") or "This action will use the current Railway configuration.",
+                impact=item.get("impact") or "This action will use the current your .env file configuration.",
                 params=item.get("params") if isinstance(item.get("params"), dict) else {},
                 source=f"ai-caretaker:{reason}",
                 dedupe=True,
@@ -1681,11 +1681,11 @@ class AIOperator(commands.Cog):
         default_impacts = {
             "run_r2_maintenance": (
                 "This can rename R2 ZIP objects and clean configured file comments if "
-                "R2_MAINTENANCE_APPLY is true. It uses the current Railway variables."
+                "R2_MAINTENANCE_APPLY is true. It uses the current .env file."
             ),
             "run_steam_db_sync": (
                 "This can update games.json from Steam if STEAM_DB_SYNC_APPLY is true. "
-                "It uses the current Railway variables."
+                "It uses the current .env file."
             ),
             "run_ai_check": "This only asks the caretaker to re-check the current sanitized bot status.",
             "run_server_audit": "This is read-only and checks Discord server permissions, roles, channels, and Booster role consistency.",
@@ -1706,7 +1706,7 @@ class AIOperator(commands.Cog):
         proposal = await self.create_proposal(
             action=action,
             reason=f"Authorized user requested this action from DM: {sanitize_text(message.content)[:220]}",
-            impact=default_impacts.get(action, "This action uses the current Railway variables."),
+            impact=default_impacts.get(action, "This action uses the current .env file."),
             params={},
             source="authorized-dm",
             requested_by=message.author.id,

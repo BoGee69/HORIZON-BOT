@@ -277,7 +277,7 @@ def _build_name_map(
     for item in source_games:
         if not isinstance(item, dict):
             continue
-        appid = str(item.get("id", "")).strip()
+        appid = str(item.get("id") or item.get("appid") or "").strip()
         if appid.isdigit():
             set_name(name_map, appid, item.get("name"), "games.json", 10)
 
@@ -671,7 +671,7 @@ def run_r2_maintenance(
                     "R2 write permission denied. The current R2 access key can read/list objects, "
                     "but it cannot write, copy, or delete objects. Create a Cloudflare R2 API token "
                     "with Object Read & Write permission for this bucket, then update "
-                    "R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in Railway."
+                    "R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY in your .env file."
                 )
                 break
             summary.add_error(f"Failed processing {source_key}: {exc}")
