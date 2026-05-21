@@ -171,8 +171,7 @@ OPENDIR_ALLOWED_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_ALLOWED_EXTENSIONS
 OPENDIR_ALLOWED_HOSTS = {x.strip().lower() for x in os.getenv("OPENDIR_ALLOWED_HOSTS", "").split(",") if x.strip()}
 OPENDIR_USER_AGENT = os.getenv("OPENDIR_USER_AGENT", "TriadBot OpenDirSync").strip()
 
-# Games.json-driven OpenDir sync. The cog uses games.json as the list of appids/names,
-# probes the OpenDir for matching files, then uploads them to R2 as "Game Name (AppID).zip".
+# Legacy variable kept only for compatibility. OpenDir sync now reads from SQLite, not games.json.
 OPENDIR_GAMES_JSON_PATH = env_path("OPENDIR_GAMES_JSON_PATH", DATA_DIR / "games.json")
 OPENDIR_STATE_PATH = env_path("OPENDIR_STATE_PATH", DATA_DIR / "opendir_sync_state.json")
 OPENDIR_INDEX_SCAN_ENABLED = parse_bool(os.getenv("OPENDIR_INDEX_SCAN_ENABLED", "true"), True)
