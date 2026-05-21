@@ -1,799 +1,1210 @@
 """
-Open Directory → Cloudflare R2 Sync Module
+Games.json-driven Open Directory -> Cloudflare R2 sync cog.
 
-Dual-mode logic:
-  1. Initial Sync  — saat startup, scan semua folder di Open Directory dan upload
-                     file yang belum ada di R2 (dibandingkan via key set).
-  2. Monitor Mode  — setelah initial sync selesai, background task cek file baru
-                     setiap OPENDIR_SYNC_INTERVAL_HOURS jam.
+Purpose:
+- Use SQLite (games.db) as the source list of AppIDs and game names.
+- For each game, check whether matching files exist in a configured Open Directory.
+- Stream matching files directly from HTTP to Cloudflare R2 without writing to local disk.
+- Rename uploaded objects into the normal TriadBot format: "Game Name (AppID).zip".
+- Notify admins through the existing bot notifier when a sync run finishes.
 
-Design principles:
-  - Zero local storage: aiohttp stream → BytesIO → boto3 (RAM only).
-  - Non-blocking      : semua boto3 call dibungkus asyncio.to_thread().
-  - Resilient         : timeout, retry, dan error handling per-file/per-folder
-                        agar satu file rusak tidak menghentikan seluruh sync.
-  - Concurrency       : asyncio.Semaphore membatasi upload paralel.
+This cog is intentionally disabled by default. Only enable it for sources that you own
+or have permission to mirror.
 """
 from __future__ import annotations
 
 import asyncio
+import inspect
+import json
 import logging
+import posixpath
+import queue
+import re
 import time
-from dataclasses import dataclass, field
-from io import BytesIO
-from typing import Optional
-from urllib.parse import urljoin
+from contextlib import suppress
+from dataclasses import dataclass, field, replace
+from pathlib import Path
+from typing import Any, Iterable
+from urllib.parse import quote, unquote, urldefrag, urljoin, urlparse
 
 import aiohttp
 import boto3
-import discord
-from botocore.exceptions import BotoCoreError, ClientError
+from boto3.s3.transfer import TransferConfig
 from bs4 import BeautifulSoup
-from discord import app_commands
 from discord.ext import commands
 
 import config as bot_config
-from config import (
-    ADMIN_IDS,
-    ADMIN_ROLE_IDS,
-    ADMIN_ROLE_NAMES,
-    COLOR_ERROR,
-    COLOR_INFO,
-    COLOR_SUCCESS,
-    COLOR_WARNING,
-    R2_ACCESS_KEY_ID,
-    R2_ACCOUNT_ID,
-    R2_BUCKET_NAME,
-    R2_SECRET_ACCESS_KEY,
-)
-from utils.helpers import is_admin_interaction
+
+try:
+    from utils.rename_database_files import sanitize_game_name as _sanitize_game_name
+except Exception:  # pragma: no cover - fallback if utility is not importable
+    _sanitize_game_name = None
+
+try:
+    from utils.r2_inventory import invalidate_r2_inventory_cache
+except Exception:  # pragma: no cover - optional helper
+    def invalidate_r2_inventory_cache() -> None:
+        return None
+
+try:
+    from utils.database import R2InventoryDB, SQLITE_PATH as _SQLITE_PATH
+    _r2_inventory_db: R2InventoryDB | None = R2InventoryDB()
+except Exception:  # pragma: no cover
+    _r2_inventory_db = None
+    _SQLITE_PATH = None
+
 
 log = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────────────────────
-# Konstanta & threshold
-# ──────────────────────────────────────────────────────────────
-_MULTIPART_THRESHOLD = getattr(bot_config, "OPENDIR_SYNC_MULTIPART_THRESHOLD_MB", 50) * 1024 * 1024
-_CHUNK_SIZE          = getattr(bot_config, "OPENDIR_SYNC_CHUNK_SIZE_MB", 8) * 1024 * 1024
-_MIN_PART_SIZE       = 5 * 1024 * 1024   # R2/S3 minimum 5 MB per part (hard limit AWS)
-_HTTP_TIMEOUT        = aiohttp.ClientTimeout(
-    total=getattr(bot_config, "OPENDIR_SYNC_TIMEOUT_SECONDS", 120),
-    connect=15,
-    sock_read=60,
-)
-_MAX_RETRIES  = 3
-_RETRY_BACKOFF = 2.0   # seconds, doubles tiap retry
+_SENTINEL = object()
+_DEFAULT_CHUNK_SIZE = 1024 * 1024
+_APPID_RE = re.compile(r"(?<!\d)(\d{2,10})(?!\d)")
+_HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
+_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
 
 
-# ──────────────────────────────────────────────────────────────
-# Admin guard (konsisten dengan cog lain)
-# ──────────────────────────────────────────────────────────────
-def admin_check():
-    async def predicate(interaction: discord.Interaction) -> bool:
-        if is_admin_interaction(interaction, ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES):
-            return True
-        await interaction.response.send_message(
-            embed=discord.Embed(
-                title="Access Denied",
-                description="This command is restricted to bot admins.",
-                color=COLOR_ERROR,
-            ),
-            ephemeral=True,
-        )
+def _cfg_str(name: str, default: str = "") -> str:
+    return str(getattr(bot_config, name, default) or default).strip()
+
+
+def _cfg_int(name: str, default: int) -> int:
+    try:
+        return int(getattr(bot_config, name, default))
+    except Exception:
+        return default
+
+
+def _cfg_float(name: str, default: float) -> float:
+    try:
+        return float(getattr(bot_config, name, default))
+    except Exception:
+        return default
+
+
+def _cfg_bool(name: str, default: bool = False) -> bool:
+    raw = getattr(bot_config, name, default)
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cfg_list(name: str, default: str = "") -> list[str]:
+    raw = getattr(bot_config, name, default)
+    if isinstance(raw, (list, tuple, set)):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    return [x.strip() for x in str(raw or default).split(",") if x.strip()]
+
+
+def _cfg_path(name: str, default: Path) -> Path:
+    raw = _cfg_str(name, "")
+    if not raw:
+        return default
+    path = Path(raw)
+    if not path.is_absolute():
+        base_dir = Path(getattr(bot_config, "BASE_DIR", Path(__file__).resolve().parents[1]))
+        path = base_dir / path
+    return path
+
+
+def _safe_game_name(name: str, *, max_len: int = 170) -> str:
+    if _sanitize_game_name:
+        cleaned = _sanitize_game_name(str(name), max_len=max_len)
+        if cleaned:
+            return cleaned
+    cleaned = "".join(" " if ch in _INVALID_FILENAME_CHARS or ord(ch) < 32 else ch for ch in str(name))
+    cleaned = " ".join(cleaned.split()).strip(" .")
+    return (cleaned[:max_len].strip(" .") or "Unknown Game")
+
+
+class OpenDirSyncError(RuntimeError):
+    """Raised for recoverable sync failures."""
+
+
+class QueueReadStream:
+    """
+    Blocking file-like object backed by a queue.
+
+    aiohttp runs in the asyncio event loop as producer. boto3 runs in a worker
+    thread as consumer and calls .read(). This keeps the sync RAM-only and avoids
+    writing downloaded files to local storage.
+    """
+
+    def __init__(self, q: "queue.Queue[bytes | object | BaseException]") -> None:
+        self._q = q
+        self._buffer = bytearray()
+        self._closed = False
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
         return False
-    return app_commands.check(predicate)
+
+    def close(self) -> None:
+        self._closed = True
+
+    def read(self, size: int = -1) -> bytes:
+        if self._closed:
+            return b""
+
+        if size is None or size < 0:
+            chunks: list[bytes] = []
+            if self._buffer:
+                chunks.append(bytes(self._buffer))
+                self._buffer.clear()
+            while True:
+                item = self._q.get()
+                if item is _SENTINEL:
+                    self._closed = True
+                    break
+                if isinstance(item, BaseException):
+                    self._closed = True
+                    raise item
+                chunks.append(item)  # type: ignore[arg-type]
+            return b"".join(chunks)
+
+        while len(self._buffer) < size:
+            item = self._q.get()
+            if item is _SENTINEL:
+                self._closed = True
+                break
+            if isinstance(item, BaseException):
+                self._closed = True
+                raise item
+            self._buffer.extend(item)  # type: ignore[arg-type]
+
+        if not self._buffer:
+            return b""
+
+        out = bytes(self._buffer[:size])
+        del self._buffer[:size]
+        return out
 
 
-# ──────────────────────────────────────────────────────────────
-# Data classes
-# ──────────────────────────────────────────────────────────────
-@dataclass
-class SyncStats:
-    """Statistik untuk satu sesi sync."""
-    folders_scanned: int = 0
-    files_found:     int = 0
-    files_skipped:   int = 0   # sudah ada di R2
-    files_uploaded:  int = 0
-    files_failed:    int = 0
-    bytes_uploaded:  int = 0
-    errors: list[str]    = field(default_factory=list)
-    started_at: float    = field(default_factory=time.time)
+@dataclass(slots=True)
+class GameRecord:
+    appid: str
+    name: str
 
     @property
-    def elapsed(self) -> float:
-        return time.time() - self.started_at
+    def safe_name(self) -> str:
+        return _safe_game_name(self.name)
 
-    def to_embed_fields(self) -> dict[str, str]:
+
+@dataclass(slots=True)
+class RemoteFile:
+    url: str
+    relative_path: str
+    filename: str
+    target_key: str
+    appid: str
+    game_name: str
+    extension: str
+    size: int | None = None
+
+
+@dataclass(slots=True)
+class SyncState:
+    cursor: int = 0
+    completed_cycles: int = 0
+    last_run_at: float = 0.0
+
+
+@dataclass(slots=True)
+class SyncSummary:
+    mode: str
+    started_at: float = field(default_factory=time.time)
+    games_total: int = 0
+    games_checked: int = 0
+    cursor_start: int = 0
+    cursor_next: int = 0
+    full_cycle_completed: bool = False
+    directories_scanned: int = 0
+    indexed_files: int = 0
+    candidates_checked: int = 0
+    remote_matches: int = 0
+    files_seen: int = 0
+    files_existing: int = 0
+    files_uploaded: int = 0
+    files_skipped: int = 0
+    no_match: int = 0
+    bytes_uploaded: int = 0
+    errors: list[str] = field(default_factory=list)
+    samples: list[str] = field(default_factory=list)
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return max(0.0, time.time() - self.started_at)
+
+    @property
+    def has_errors(self) -> bool:
+        return bool(self.errors)
+
+    def add_error(self, message: str) -> None:
+        safe = str(message).replace("\n", " ")[:500]
+        self.errors.append(safe)
+
+    def add_sample(self, message: str) -> None:
+        if len(self.samples) < 12:
+            self.samples.append(str(message).replace("\n", " ")[:300])
+
+    def to_fields(self) -> dict[str, str]:
         return {
-            "📁 Folders Scanned":   str(self.folders_scanned),
-            "🔍 Files Found":       str(self.files_found),
-            "✅ Uploaded":          str(self.files_uploaded),
-            "⏭️ Skipped (exist)":  str(self.files_skipped),
-            "❌ Failed":            str(self.files_failed),
-            "📦 Data Transferred":  _fmt_bytes(self.bytes_uploaded),
-            "⏱️ Duration":         f"{self.elapsed:.1f}s",
+            "Mode": self.mode,
+            "Games total": str(self.games_total),
+            "Games checked": str(self.games_checked),
+            "Cursor": f"{self.cursor_start} -> {self.cursor_next}",
+            "Cycle completed": str(self.full_cycle_completed),
+            "Directories": str(self.directories_scanned),
+            "Indexed files": str(self.indexed_files),
+            "Candidates checked": str(self.candidates_checked),
+            "Remote matches": str(self.remote_matches),
+            "Already existed": str(self.files_existing),
+            "Uploaded": str(self.files_uploaded),
+            "Skipped": str(self.files_skipped),
+            "No match": str(self.no_match),
+            "Bytes uploaded": str(self.bytes_uploaded),
+            "Errors": str(len(self.errors)),
+            "Elapsed": f"{self.elapsed_seconds:.1f}s",
         }
 
 
-def _fmt_bytes(n: int) -> str:
-    for unit in ("B", "KB", "MB", "GB", "TB"):
-        if n < 1024:
-            return f"{n:.2f} {unit}"
-        n /= 1024
-    return f"{n:.2f} PB"
+class OpenDirSync(commands.Cog):
+    """Background SQLite-driven OpenDir sync cog."""
 
+    def __init__(self, bot: commands.Bot) -> None:
+        self.bot = bot
+        self._task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self._initial_done = False
 
-# ──────────────────────────────────────────────────────────────
-# Core sync engine
-# ──────────────────────────────────────────────────────────────
-def _make_s3_client():
-    """Buat boto3 S3 client yang mengarah ke Cloudflare R2."""
-    return boto3.client(
-        "s3",
-        endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
-        aws_access_key_id=R2_ACCESS_KEY_ID,
-        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-        region_name="auto",
-    )
+        self.enabled = _cfg_bool("OPENDIR_SYNC_ENABLED", False)
+        self.base_url = self._normalize_base_url(_cfg_str("OPENDIR_BASE_URL", ""))
+        self.r2_prefix = self._normalize_r2_prefix(_cfg_str("OPENDIR_R2_PREFIX", "Database/"))
 
+        self.games_json_path = _cfg_path(
+            "OPENDIR_GAMES_JSON_PATH",
+            Path(getattr(bot_config, "DB_PATH", Path(getattr(bot_config, "DATA_DIR", ".")) / "games.json")),
+        )
+        self.state_path = _cfg_path(
+            "OPENDIR_STATE_PATH",
+            Path(getattr(bot_config, "DATA_DIR", Path("data"))) / "opendir_sync_state.json",
+        )
 
-async def _list_r2_keys(s3, prefix: str) -> set[str]:
-    """
-    Ambil semua key di R2 bucket di bawah prefix tertentu.
-    Dijalankan di thread pool karena boto3 bersifat blocking.
-    """
-    def _do_list():
-        keys = set()
-        paginator = s3.get_paginator("list_objects_v2")
-        for page in paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix=prefix):
-            for obj in page.get("Contents", []):
-                keys.add(obj["Key"])
+        self.target_extensions = {
+            ext.lower().lstrip(".")
+            for ext in _cfg_list("OPENDIR_TARGET_EXTENSIONS", "zip")
+            if ext.strip()
+        } or {"zip"}
+        allowed_extensions = _cfg_list("OPENDIR_ALLOWED_EXTENSIONS", ",".join(sorted(self.target_extensions)))
+        self.allowed_extensions = {ext.lower().lstrip(".") for ext in allowed_extensions if ext}
+
+        allowed_hosts = _cfg_list("OPENDIR_ALLOWED_HOSTS", "")
+        self.allowed_hosts = {host.lower() for host in allowed_hosts if host}
+
+        self.index_scan_enabled = _cfg_bool("OPENDIR_INDEX_SCAN_ENABLED", True)
+        self.direct_probe_enabled = _cfg_bool("OPENDIR_DIRECT_PROBE_ENABLED", True)
+        self.use_head = _cfg_bool("OPENDIR_USE_HEAD", True)
+        self.fallback_get_probe = _cfg_bool("OPENDIR_FALLBACK_GET_PROBE", True)
+        self.run_on_start = _cfg_bool("OPENDIR_RUN_ON_START", True)
+        self.notify_on_success = _cfg_bool("OPENDIR_NOTIFY_ON_SUCCESS", False)
+
+        self.max_depth = max(0, _cfg_int("OPENDIR_MAX_DEPTH", 3))
+        self.max_games_per_run = max(0, _cfg_int("OPENDIR_MAX_GAMES_PER_RUN", 500))
+        self.max_files_per_run = max(0, _cfg_int("OPENDIR_MAX_FILES_PER_RUN", 20))
+        self.max_file_bytes = max(1, _cfg_int("OPENDIR_MAX_FILE_MB", 1024)) * 1024 * 1024
+        self.concurrency = max(1, _cfg_int("OPENDIR_CONCURRENCY", 2))
+        self.queue_chunks = max(1, _cfg_int("OPENDIR_QUEUE_CHUNKS", 8))
+        self.chunk_size = max(64 * 1024, _cfg_int("OPENDIR_CHUNK_SIZE_BYTES", _DEFAULT_CHUNK_SIZE))
+        self.interval_seconds = max(0.1, _cfg_float("OPENDIR_INTERVAL_HOURS", 6.0)) * 3600
+        self.start_delay = max(0.0, _cfg_float("OPENDIR_START_DELAY_SECONDS", 20.0))
+        self.user_agent = _cfg_str("OPENDIR_USER_AGENT", "TriadBot OpenDirSync/1.0")
+
+        self.source_patterns = _cfg_list(
+            "OPENDIR_SOURCE_PATTERNS",
+            "{appid}.{ext},{appid}/{appid}.{ext},{target_filename},{safe_name}.{ext},{safe_name} ({appid}).{ext}",
+        )
+
+        self.request_timeout = aiohttp.ClientTimeout(
+            total=max(5.0, _cfg_float("OPENDIR_REQUEST_TIMEOUT_SECONDS", 300.0)),
+            connect=max(3.0, _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0)),
+            sock_read=max(5.0, _cfg_float("OPENDIR_READ_TIMEOUT_SECONDS", 120.0)),
+        )
+
+        self.s3 = None
+        multipart_size = max(5 * 1024 * 1024, self.chunk_size * 8)
+        self.transfer_config = TransferConfig(
+            multipart_threshold=multipart_size,
+            multipart_chunksize=multipart_size,
+            max_concurrency=1,
+            use_threads=False,
+        )
+
+    async def cog_load(self) -> None:
+        if not self.enabled:
+            log.info("OpenDir SQLite-driven sync disabled. Set OPENDIR_SYNC_ENABLED=true to enable.")
+            return
+        if not self.base_url:
+            log.warning("OpenDir sync enabled but OPENDIR_BASE_URL is empty; task will not start.")
+            return
+        if not self._r2_configured():
+            log.warning("OpenDir sync enabled but R2 credentials/bucket are incomplete; task will not start.")
+            return
+
+        base_host = urlparse(self.base_url).hostname
+        if base_host and not self.allowed_hosts:
+            self.allowed_hosts.add(base_host.lower())
+
+        self.s3 = self._make_r2_client()
+        self._task = asyncio.create_task(self._sync_loop(), name="opendir-games-json-sync-loop")
+        log.info(
+            "OpenDir SQLite-driven sync task enabled for %s",
+            self._redact_url(self.base_url),
+        )
+
+    async def cog_unload(self) -> None:
+        if not self._task:
+            return
+        self._task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self._task
+
+    async def _wait_for_sqlite(self, *, poll_interval: float = 15.0) -> bool:
+        """
+        Block until SQLite has at least one game record, or until timeout.
+        Returns True if games are available, False on timeout.
+        Timeout configurable via OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS (default 600).
+        """
+        timeout = max(30.0, _cfg_float("OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS", 600.0))
+        import sqlite3 as _sqlite3
+        db_path = _SQLITE_PATH or Path(
+            getattr(bot_config, "DATA_DIR", Path("data"))
+        ) / "games.db"
+        deadline = time.time() + timeout
+        waited = 0.0
+        while time.time() < deadline:
+            try:
+                with _sqlite3.connect(db_path) as conn:
+                    count = conn.execute("SELECT COUNT(*) FROM games WHERE name IS NOT NULL AND name != ''").fetchone()[0]
+                if count > 0:
+                    log.info("OpenDir: SQLite ready with %d games (waited %.0fs)", count, waited)
+                    return True
+            except Exception:
+                pass
+            log.info("OpenDir: waiting for SQLite to be populated … (%.0fs elapsed)", waited)
+            await asyncio.sleep(poll_interval)
+            waited += poll_interval
+        log.error("OpenDir: timed out waiting for SQLite after %.0fs — aborting run", timeout)
+        return False
+
+    async def _sync_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        if self.start_delay > 0:
+            await asyncio.sleep(self.start_delay)
+        if not self.run_on_start:
+            await asyncio.sleep(self.interval_seconds)
+
+        # Wait for Steam DB sync (or any other cog) to populate SQLite first
+        if not await self._wait_for_sqlite():
+            log.error("OpenDir sync loop aborting: SQLite never populated.")
+            return
+
+        while not self.bot.is_closed():
+            mode = "initial" if not self._initial_done else "monitor"
+            try:
+                summary = await self.run_sync_once(mode=mode)
+                self._initial_done = True
+                await self._report_summary(summary)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.exception("OpenDir SQLite-driven sync loop failed")
+                summary = SyncSummary(mode=mode)
+                summary.add_error(repr(exc))
+                await self._report_summary(summary)
+
+            await asyncio.sleep(self.interval_seconds)
+
+    async def run_sync_once(self, *, mode: str = "manual", priority_appid: str = None) -> SyncSummary:
+        async with self._lock:
+            summary = SyncSummary(mode="targeted" if priority_appid else mode)
+            state = self._load_state()
+            games = self._load_games()
+            summary.games_total = len(games)
+            summary.cursor_start = min(max(0, state.cursor), max(0, len(games) - 1)) if games else 0
+
+            if not games:
+                summary.add_error("SQLite has no valid appid/name records — is Steam DB sync running?")
+                return summary
+
+            existing_keys = await self._list_r2_keys()
+            connector = aiohttp.TCPConnector(limit=max(4, self.concurrency * 2), ttl_dns_cache=300)
+            
+            async with aiohttp.ClientSession(
+                timeout=self.request_timeout,
+                connector=connector,
+                headers={"User-Agent": self.user_agent},
+                raise_for_status=False,
+            ) as session:
+                indexed_files = []
+                if self.index_scan_enabled:
+                    try:
+                        indexed_files = await self._scan_index(session, summary)
+                    except: pass
+                
+                summary.indexed_files = len(indexed_files)
+                indexed_by_name = self._build_remote_index(indexed_files)
+
+                # --- TARGETED PRIORITY SYNC ---
+                if priority_appid:
+                    game_record = self.bot.db.get_game(priority_appid)
+                    if game_record:
+                        # Convert SQLite dict to GameRecord dataclass expected by sync_one
+                        from utils.database import GameRecord as GR
+                        rec = GR(appid=str(game_record.get("appid") or game_record.get("id")), name=game_record.get("name"))
+                        log.info(f"⚡ INSTANT TARGETED SYNC: {rec.name} ({rec.appid})")
+                        await self._sync_one_game(session, rec, indexed_by_name, existing_keys, summary)
+                        # We return early for targeted sync
+                        await self._report_summary(summary)
+                        return summary
+
+                # --- NORMAL SYNC ---
+                await self._sync_games_window(session, games, indexed_by_name, existing_keys, state, summary)
+
+            if summary.files_uploaded:
+                try:
+                    from utils.r2_inventory import invalidate_r2_inventory_cache
+                    invalidate_r2_inventory_cache()
+                except: pass
+
+            state.last_run_at = time.time()
+            self._save_state(state)
+            await self._report_summary(summary)
+            return summary
+
+    async def _sync_games_window(
+        self,
+        session: aiohttp.ClientSession,
+        games: list[GameRecord],
+        indexed_by_name: dict[str, list[RemoteFile]],
+        existing_keys: set[str],
+        state: SyncState,
+        summary: SyncSummary,
+    ) -> None:
+        total = len(games)
+        start = min(max(0, state.cursor), total - 1)
+        max_games = total if self.max_games_per_run <= 0 else min(self.max_games_per_run, total)
+        checked = 0
+        current = start
+
+        while checked < max_games:
+            game = games[current]
+            summary.games_checked += 1
+            checked += 1
+
+            if checked % 100 == 0:
+                log.info("🔍 OpenDir Progress: Checked %d/%d games in this run (AppID: %s)", checked, max_games, game.appid)
+
+            await self._sync_one_game(session, game, indexed_by_name, existing_keys, summary)
+
+            current = (current + 1) % total
+            if self.max_files_per_run and summary.files_uploaded >= self.max_files_per_run:
+                break
+            if current == start:
+                break
+
+        state.cursor = current
+        summary.cursor_next = state.cursor
+        if current <= start and checked > 0 or checked >= total:
+            state.completed_cycles += 1
+            summary.full_cycle_completed = True
+
+    async def _sync_one_game(
+        self,
+        session: aiohttp.ClientSession,
+        game: GameRecord,
+        indexed_by_name: dict[str, list[RemoteFile]],
+        existing_keys: set[str],
+        summary: SyncSummary,
+    ) -> None:
+        for ext in sorted(self.target_extensions):
+            target_key = self._target_key(game, ext)
+            if target_key in existing_keys:
+                summary.files_existing += 1
+                continue
+
+            remote = self._match_indexed_file(game, ext, target_key, indexed_by_name)
+            if remote is None and self.direct_probe_enabled:
+                remote = await self._probe_game_candidates(session, game, ext, target_key, summary)
+
+            if remote is None:
+                summary.no_match += 1
+                continue
+
+            remote.target_key = target_key
+            remote.appid = game.appid
+            remote.game_name = game.name
+            remote.extension = ext
+            summary.remote_matches += 1
+            await self._upload_if_needed(session, remote, existing_keys, summary)
+
+    def _load_games(self) -> list[GameRecord]:
+        """
+        Load game list exclusively from SQLite.
+
+        games.json is no longer used. SQLite is kept up-to-date by
+        steam_db_sync, so this is always the freshest source.
+        """
+        import sqlite3 as _sqlite3
+        db_path = _SQLITE_PATH or Path(
+            getattr(bot_config, "DATA_DIR", Path("data"))
+        ) / "games.db"
+        try:
+            with _sqlite3.connect(db_path) as conn:
+                rows = conn.execute(
+                    "SELECT appid, name FROM games "
+                    "WHERE appid IS NOT NULL AND name IS NOT NULL AND name != '' "
+                    "ORDER BY CAST(appid AS INTEGER) ASC"
+                ).fetchall()
+            records: list[GameRecord] = []
+            for appid_raw, name_raw in rows:
+                appid = str(appid_raw or "").strip()
+                name = str(name_raw or "").strip()
+                if appid.isdigit() and name:
+                    records.append(GameRecord(appid=appid, name=name))
+            log.debug("OpenDir loaded %d games from SQLite", len(records))
+            return records
+        except Exception as exc:
+            log.error("OpenDir: failed to read games from SQLite: %s", exc)
+            return []
+
+    def _load_state(self) -> SyncState:
+        try:
+            data = json.loads(self.state_path.read_text(encoding="utf-8"))
+            return SyncState(
+                cursor=max(0, int(data.get("cursor", 0))),
+                completed_cycles=max(0, int(data.get("completed_cycles", 0))),
+                last_run_at=float(data.get("last_run_at", 0.0)),
+            )
+        except Exception:
+            return SyncState()
+
+    def _save_state(self, state: SyncState) -> None:
+        try:
+            self.state_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "cursor": state.cursor,
+                "completed_cycles": state.completed_cycles,
+                "last_run_at": state.last_run_at,
+            }
+            self.state_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        except Exception as exc:
+            log.warning("Cannot save OpenDir sync state: %r", exc)
+
+    async def _scan_index(self, session: aiohttp.ClientSession, summary: SyncSummary) -> list[RemoteFile]:
+        visited: set[str] = set()
+        return await self._scan_directory(session, self.base_url, depth=0, summary=summary, visited_dirs=visited)
+
+    async def _scan_directory(
+        self,
+        session: aiohttp.ClientSession,
+        directory_url: str,
+        *,
+        depth: int,
+        summary: SyncSummary,
+        visited_dirs: set[str],
+    ) -> list[RemoteFile]:
+        if depth > self.max_depth:
+            return []
+
+        directory_url = self._normalize_directory_url(directory_url)
+        if directory_url in visited_dirs:
+            return []
+        visited_dirs.add(directory_url)
+
+        try:
+            html = await self._fetch_text(session, directory_url)
+        except Exception as exc:
+            summary.add_error(f"index scan failed at {self._redact_url(directory_url)}: {exc!r}")
+            return []
+
+        soup = BeautifulSoup(html, "html.parser")
+        summary.directories_scanned += 1
+
+        child_dirs: list[str] = []
+        files: list[RemoteFile] = []
+
+        for href in self._iter_hrefs(soup):
+            resolved = self._resolve_in_scope(directory_url, href)
+            if not resolved:
+                continue
+
+            parsed_path = urlparse(resolved).path
+            is_dir = resolved.endswith("/") or parsed_path.endswith("/")
+            if is_dir:
+                if depth < self.max_depth:
+                    child_dirs.append(self._normalize_directory_url(resolved))
+                continue
+
+            rel = self._relative_path_from_url(resolved)
+            if not rel:
+                continue
+
+            filename = posixpath.basename(rel)
+            extension = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if self.allowed_extensions and extension not in self.allowed_extensions:
+                continue
+
+            files.append(
+                RemoteFile(
+                    url=resolved,
+                    relative_path=rel,
+                    filename=filename,
+                    target_key="",
+                    appid="",
+                    game_name="",
+                    extension=extension,
+                )
+            )
+
+        if child_dirs:
+            nested = await asyncio.gather(
+                *(
+                    self._scan_directory(session, url, depth=depth + 1, summary=summary, visited_dirs=visited_dirs)
+                    for url in child_dirs
+                ),
+                return_exceptions=True,
+            )
+            for item in nested:
+                if isinstance(item, BaseException):
+                    summary.add_error(f"directory scan failed: {item!r}")
+                else:
+                    files.extend(item)
+
+        return files
+
+    def _build_remote_index(self, files: list[RemoteFile]) -> dict[str, list[RemoteFile]]:
+        index: dict[str, list[RemoteFile]] = {}
+        for remote in files:
+            tokens = {remote.filename.lower(), posixpath.basename(remote.relative_path).lower()}
+            stem = remote.filename.rsplit(".", 1)[0].lower()
+            tokens.add(stem)
+            for appid in _APPID_RE.findall(remote.filename):
+                tokens.add(appid)
+                tokens.add(f"{appid}.{remote.extension}")
+            for token in tokens:
+                index.setdefault(token, []).append(remote)
+        return index
+
+    def _match_indexed_file(
+        self,
+        game: GameRecord,
+        ext: str,
+        target_key: str,
+        indexed_by_name: dict[str, list[RemoteFile]],
+    ) -> RemoteFile | None:
+        target_filename = posixpath.basename(target_key)
+        names = [
+            f"{game.appid}.{ext}",
+            f"[{game.appid}].{ext}",
+            f"{game.safe_name}.{ext}",
+            f"{game.safe_name} ({game.appid}).{ext}",
+            target_filename,
+            game.appid,
+        ]
+
+        for name in names:
+            candidates = indexed_by_name.get(name.lower())
+            if not candidates:
+                continue
+            for remote in candidates:
+                if remote.extension.lower() == ext:
+                    return replace(remote, target_key=target_key, appid=game.appid, game_name=game.name)
+
+        return None
+
+    async def _probe_game_candidates(
+        self,
+        session: aiohttp.ClientSession,
+        game: GameRecord,
+        ext: str,
+        target_key: str,
+        summary: SyncSummary,
+    ) -> RemoteFile | None:
+        seen: set[str] = set()
+        target_filename = posixpath.basename(target_key)
+        for pattern in self.source_patterns:
+            raw_path = self._format_source_pattern(pattern, game, ext, target_filename)
+            if not raw_path:
+                continue
+            url = self._join_source_url(raw_path)
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            summary.candidates_checked += 1
+            found = await self._probe_source_url(session, url, game, ext, target_key)
+            if found:
+                return found
+        return None
+
+    def _format_source_pattern(self, pattern: str, game: GameRecord, ext: str, target_filename: str) -> str:
+        try:
+            return pattern.format(
+                appid=game.appid,
+                id=game.appid,
+                name=game.name,
+                safe_name=game.safe_name,
+                ext=ext,
+                target_filename=target_filename,
+            ).strip().lstrip("/")
+        except Exception:
+            return ""
+
+    def _join_source_url(self, raw_path: str) -> str | None:
+        if raw_path.startswith(("http://", "https://")):
+            url = raw_path
+        else:
+            encoded = "/".join(quote(unquote(part), safe="-_.()[]") for part in raw_path.split("/"))
+            url = urljoin(self.base_url, encoded)
+        return self._resolve_in_scope(self.base_url, url)
+
+    async def _probe_source_url(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        game: GameRecord,
+        ext: str,
+        target_key: str,
+    ) -> RemoteFile | None:
+        size: int | None = None
+        content_type = ""
+
+        if self.use_head:
+            try:
+                async with session.head(url, allow_redirects=True) as response:
+                    if response.status in {200, 206}:
+                        content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                        if self._looks_like_html(content_type):
+                            return None
+                        raw_size = response.headers.get("Content-Length")
+                        size = int(raw_size) if raw_size and raw_size.isdigit() else None
+                        if size is not None and size > self.max_file_bytes:
+                            return None
+                        return self._remote_from_url(url, game, ext, target_key, size=size)
+                    if response.status not in {403, 405, 406}:
+                        return None
+            except Exception:
+                pass
+
+        if not self.fallback_get_probe:
+            return None
+
+        try:
+            async with session.get(url, headers={"Range": "bytes=0-0"}, allow_redirects=True) as response:
+                if response.status not in {200, 206}:
+                    return None
+                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if self._looks_like_html(content_type):
+                    return None
+                raw_size = response.headers.get("Content-Range") or response.headers.get("Content-Length")
+                size = self._parse_size_header(raw_size)
+                if size is not None and size > self.max_file_bytes:
+                    return None
+                await response.content.read(1)
+                return self._remote_from_url(url, game, ext, target_key, size=size)
+        except Exception:
+            return None
+
+    def _remote_from_url(
+        self,
+        url: str,
+        game: GameRecord,
+        ext: str,
+        target_key: str,
+        *,
+        size: int | None = None,
+    ) -> RemoteFile:
+        rel = self._relative_path_from_url(url) or posixpath.basename(urlparse(url).path)
+        filename = posixpath.basename(rel) or f"{game.appid}.{ext}"
+        return RemoteFile(
+            url=url,
+            relative_path=rel,
+            filename=filename,
+            target_key=target_key,
+            appid=game.appid,
+            game_name=game.name,
+            extension=ext,
+            size=size,
+        )
+
+    async def _fetch_text(self, session: aiohttp.ClientSession, url: str) -> str:
+        async with session.get(url, allow_redirects=True) as response:
+            if response.status >= 400:
+                raise OpenDirSyncError(f"GET {self._redact_url(url)} failed with HTTP {response.status}")
+            return await response.text(errors="replace")
+
+    async def _upload_if_needed(
+        self,
+        session: aiohttp.ClientSession,
+        remote_file: RemoteFile,
+        existing_keys: set[str],
+        summary: SyncSummary,
+    ) -> None:
+        summary.files_seen += 1
+        r2_key = remote_file.target_key
+        if not r2_key:
+            summary.files_skipped += 1
+            summary.add_error(f"missing target key for {remote_file.relative_path}")
+            return
+
+        if r2_key in existing_keys:
+            summary.files_existing += 1
+            return
+
+        try:
+            if remote_file.size is None:
+                remote_file.size = await self._remote_size(session, remote_file.url)
+            if remote_file.size is not None and remote_file.size > self.max_file_bytes:
+                summary.files_skipped += 1
+                summary.add_error(f"skip too large: {remote_file.relative_path} ({remote_file.size} bytes)")
+                return
+
+            uploaded_bytes = await self._stream_url_to_r2(session, remote_file.url, r2_key, remote_file)
+            existing_keys.add(r2_key)
+            # Keep the SQLite R2 cache in sync so subsequent checks in the same
+            # run (and future runs before the next rebuild) know this key exists.
+            if _r2_inventory_db is not None:
+                _r2_inventory_db.mark_uploaded(r2_key, uploaded_bytes)
+            summary.files_uploaded += 1
+            summary.bytes_uploaded += uploaded_bytes
+            summary.add_sample(f"uploaded {remote_file.filename} -> {r2_key}")
+            log.info("OpenDir uploaded %s -> %s (%s bytes)", remote_file.url, r2_key, uploaded_bytes)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            summary.files_skipped += 1
+            summary.add_error(f"{remote_file.appid}/{remote_file.filename}: {exc!r}")
+            log.warning("OpenDir failed to upload %s: %r", remote_file.url, exc)
+
+    async def _remote_size(self, session: aiohttp.ClientSession, url: str) -> int | None:
+        if not self.use_head:
+            return None
+        try:
+            async with session.head(url, allow_redirects=True) as response:
+                if response.status >= 400:
+                    return None
+                raw = response.headers.get("Content-Length")
+                return int(raw) if raw and raw.isdigit() else None
+        except Exception:
+            return None
+
+    async def _queue_put_abortable(
+        self,
+        q: "queue.Queue[bytes | object | BaseException]",
+        item: bytes | object | BaseException,
+        upload_task: asyncio.Task,
+    ) -> None:
+        while True:
+            if upload_task.done():
+                await upload_task
+                return
+            try:
+                await asyncio.to_thread(q.put, item, True, 0.5)
+                return
+            except queue.Full:
+                continue
+
+    async def _stream_url_to_r2(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        r2_key: str,
+        remote_file: RemoteFile,
+    ) -> int:
+        if self.s3 is None:
+            raise OpenDirSyncError("R2 client is not initialized")
+
+        q: "queue.Queue[bytes | object | BaseException]" = queue.Queue(maxsize=self.queue_chunks)
+        stream = QueueReadStream(q)
+        upload_task = asyncio.create_task(asyncio.to_thread(self._upload_stream_sync, stream, r2_key, remote_file))
+        total = 0
+
+        try:
+            async with session.get(url, allow_redirects=True) as response:
+                if response.status >= 400:
+                    raise OpenDirSyncError(f"GET file failed with HTTP {response.status}")
+                content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+                if self._looks_like_html(content_type):
+                    raise OpenDirSyncError(f"source returned HTML instead of .{remote_file.extension} file")
+
+                async for chunk in response.content.iter_chunked(self.chunk_size):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > self.max_file_bytes:
+                        raise OpenDirSyncError(f"file exceeds OPENDIR_MAX_FILE_MB={_cfg_int('OPENDIR_MAX_FILE_MB', 1024)}")
+                    await self._queue_put_abortable(q, chunk, upload_task)
+        except BaseException as exc:
+            with suppress(Exception):
+                await self._queue_put_abortable(q, exc, upload_task)
+            with suppress(Exception):
+                await upload_task
+            raise
+        else:
+            await self._queue_put_abortable(q, _SENTINEL, upload_task)
+            await upload_task
+            return total
+
+    def _upload_stream_sync(self, stream: QueueReadStream, r2_key: str, remote_file: RemoteFile) -> None:
+        assert self.s3 is not None
+        extra_args = {
+            "Metadata": {
+                "source": "opendir-games-json-sync",
+                "synced-by": "triadbot",
+                "appid": str(remote_file.appid),
+                "game-name": str(remote_file.game_name)[:180],
+            }
+        }
+        self.s3.upload_fileobj(
+            stream,
+            _cfg_str("R2_BUCKET_NAME"),
+            r2_key,
+            ExtraArgs=extra_args,
+            Config=self.transfer_config,
+        )
+
+    # ── R2 key cache (SQLite-backed) ──────────────────────────────────
+
+    # How old (seconds) the R2 SQLite cache may be before we trigger a
+    # background rebuild.  Default 12 h — change via OPENDIR_R2_CACHE_TTL_HOURS.
+    _R2_CACHE_TTL = max(3600.0, _cfg_float("OPENDIR_R2_CACHE_TTL_HOURS", 12.0) * 3600)
+
+    async def _ensure_r2_cache(self) -> None:
+        """
+        Rebuild the R2 → SQLite inventory if it is stale or empty.
+        This is called once per sync run, so subsequent ``contains()``
+        checks are pure SQLite — no network round-trips.
+        """
+        if _r2_inventory_db is None or self.s3 is None:
+            return
+        last = _r2_inventory_db.last_synced_at(self.r2_prefix)
+        age = time.time() - last
+        count = _r2_inventory_db.count(self.r2_prefix)
+        if count == 0 or age > self._R2_CACHE_TTL:
+            log.info(
+                "OpenDir: R2 SQLite cache is %s (age=%.0fs, count=%d) — rebuilding from R2 …",
+                "empty" if count == 0 else "stale",
+                age,
+                count,
+            )
+            bucket = _cfg_str("R2_BUCKET_NAME")
+            summary_info = await asyncio.to_thread(
+                _r2_inventory_db.rebuild, self.s3, bucket, self.r2_prefix
+            )
+            log.info("OpenDir: R2 cache rebuilt — %s", summary_info)
+        else:
+            log.debug(
+                "OpenDir: R2 SQLite cache OK (age=%.0fs, count=%d keys)", age, count
+            )
+
+    async def _list_r2_keys(self) -> set[str]:
+        """
+        Return the set of existing R2 keys.
+
+        Prefer the SQLite-backed cache (R2InventoryDB) so we avoid listing
+        R2 on every sync run.  Falls back to a live R2 list when the cache
+        is unavailable.
+        """
+        if _r2_inventory_db is not None:
+            await self._ensure_r2_cache()
+            keys = _r2_inventory_db.get_all_keys(self.r2_prefix)
+            log.debug("OpenDir: loaded %d existing keys from SQLite cache", len(keys))
+            return keys
+        # Fallback: live R2 list (original behaviour)
+        log.warning("OpenDir: R2InventoryDB not available — falling back to live R2 list")
+        return await asyncio.to_thread(self._list_r2_keys_sync)
+
+    def _list_r2_keys_sync(self) -> set[str]:
+        if self.s3 is None:
+            raise OpenDirSyncError("R2 client is not initialized")
+        keys: set[str] = set()
+        paginator = self.s3.get_paginator("list_objects_v2")
+        kwargs = {"Bucket": _cfg_str("R2_BUCKET_NAME"), "Prefix": self.r2_prefix}
+        for page in paginator.paginate(**kwargs):
+            for item in page.get("Contents", []):
+                key = str(item.get("Key") or "")
+                if key:
+                    keys.add(key)
         return keys
 
-    return await asyncio.to_thread(_do_list)
+    async def _report_summary(self, summary: SyncSummary) -> None:
+        self.bot.last_opendir_sync_summary = summary
 
+        if hasattr(self.bot, "record_ai_event"):
+            self.bot.record_ai_event(
+                "error" if summary.has_errors else "info",
+                "opendir_sync",
+                "OpenDir SQLite-driven sync finished.",
+                {
+                    "fields": summary.to_fields(),
+                    "errors": summary.errors[:10],
+                    "samples": summary.samples[:10],
+                },
+            )
 
-async def _fetch_links(session: aiohttp.ClientSession, url: str) -> list[str]:
-    """
-    Fetch HTML dari `url`, parse semua <a href> dengan BeautifulSoup.
-    Return list href mentah. Retry otomatis dengan exponential backoff.
-    """
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            async with session.get(url, timeout=_HTTP_TIMEOUT) as resp:
-                resp.raise_for_status()
-                html = await resp.text(errors="replace")
-            soup = BeautifulSoup(html, "html.parser")
-            return [
-                a["href"]
-                for a in soup.find_all("a", href=True)
-                if a["href"] not in ("#", "", "/", "../", "./")
+        if hasattr(self.bot, "queue_ai_caretaker"):
+            self.bot.queue_ai_caretaker(
+                "opendir-sync-finished",
+                {
+                    "errors": len(summary.errors),
+                    "uploaded": summary.files_uploaded,
+                    "games_checked": summary.games_checked,
+                    "mode": summary.mode,
+                    "full_cycle_completed": summary.full_cycle_completed,
+                },
+                force=summary.has_errors,
+            )
+
+        notifier = getattr(self.bot, "notify_admins", None)
+        if not notifier:
+            return
+        if not summary.has_errors and not self.notify_on_success and not summary.full_cycle_completed:
+            return
+
+        fields = summary.to_fields()
+        if summary.samples:
+            fields["Samples"] = "\n".join(summary.samples[:8])
+        if summary.errors:
+            fields["Errors"] = "\n".join(summary.errors[:8])
+
+        title = "OpenDir SQLite sync needs attention" if summary.has_errors else "OpenDir SQLite sync completed"
+        if summary.full_cycle_completed and not summary.has_errors:
+            title = "OpenDir SQLite sync full cycle completed"
+
+        result = notifier(
+            title,
+            "The SQLite-driven Open Directory to R2 sync task finished.",
+            level="error" if summary.has_errors else "info",
+            fields=fields,
+            key="opendir-sync-error" if summary.has_errors else "opendir-sync-ok",
+            force=summary.has_errors or summary.full_cycle_completed,
+        )
+        if inspect.isawaitable(result):
+            await result
+
+    def _target_key(self, game: GameRecord, ext: str) -> str:
+        safe_name = _safe_game_name(game.name, max_len=160)
+        filename = f"{safe_name} ({game.appid}).{ext.lower().lstrip('.')}"
+        return f"{self.r2_prefix}{filename}"
+
+    def _iter_hrefs(self, soup: BeautifulSoup) -> Iterable[str]:
+        for tag in soup.find_all("a", href=True):
+            href = str(tag.get("href") or "").strip()
+            if not href or href in {"../", "./", "/"}:
+                continue
+            lowered = href.lower()
+            if lowered.startswith(("javascript:", "mailto:", "data:", "tel:")):
+                continue
+            yield href
+
+    def _resolve_in_scope(self, current_url: str, href_or_url: str) -> str | None:
+        clean_href, _fragment = urldefrag(href_or_url)
+        resolved = clean_href if clean_href.startswith(("http://", "https://")) else urljoin(current_url, clean_href)
+        parsed = urlparse(resolved)
+        base = urlparse(self.base_url)
+
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        if parsed.netloc.lower() != base.netloc.lower():
+            return None
+        if self.allowed_hosts and parsed.hostname and parsed.hostname.lower() not in self.allowed_hosts:
+            return None
+
+        base_path = unquote(base.path if base.path.endswith("/") else f"{base.path}/")
+        parsed_path = unquote(parsed.path)
+        if base_path != "/" and not parsed_path.startswith(base_path):
+            return None
+        return resolved
+
+    def _relative_path_from_url(self, url: str) -> str:
+        base_path = unquote(urlparse(self.base_url).path)
+        if not base_path.endswith("/"):
+            base_path = f"{base_path}/"
+
+        path = unquote(urlparse(url).path)
+        if base_path != "/" and not path.startswith(base_path):
+            return ""
+
+        rel = path[len(base_path):].strip("/") if base_path != "/" else path.strip("/")
+        rel = posixpath.normpath(rel).replace("\\", "/")
+        if rel == "." or rel.startswith("../") or "/../" in rel:
+            return ""
+        return rel
+
+    @staticmethod
+    def _parse_size_header(raw: str | None) -> int | None:
+        if not raw:
+            return None
+        raw = raw.strip()
+        # Content-Range: bytes 0-0/12345
+        if "/" in raw:
+            tail = raw.rsplit("/", 1)[-1]
+            return int(tail) if tail.isdigit() else None
+        return int(raw) if raw.isdigit() else None
+
+    @staticmethod
+    def _looks_like_html(content_type: str) -> bool:
+        content_type = (content_type or "").split(";", 1)[0].strip().lower()
+        return content_type in _HTML_CONTENT_TYPES or content_type.endswith("+html")
+
+    def _make_r2_client(self):
+        return boto3.client(
+            "s3",
+            endpoint_url=f"https://{_cfg_str('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com",
+            aws_access_key_id=_cfg_str("R2_ACCESS_KEY_ID"),
+            aws_secret_access_key=_cfg_str("R2_SECRET_ACCESS_KEY"),
+            region_name="auto",
+        )
+
+    def _r2_configured(self) -> bool:
+        return all(
+            [
+                _cfg_str("R2_ACCOUNT_ID"),
+                _cfg_str("R2_ACCESS_KEY_ID"),
+                _cfg_str("R2_SECRET_ACCESS_KEY"),
+                _cfg_str("R2_BUCKET_NAME"),
             ]
-        except asyncio.TimeoutError:
-            log.warning("⏱️ Timeout fetching %s (attempt %d/%d)", url, attempt, _MAX_RETRIES)
-        except aiohttp.ClientResponseError as exc:
-            log.warning("🌐 HTTP %s fetching %s (attempt %d/%d)", exc.status, url, attempt, _MAX_RETRIES)
-            if exc.status in (403, 404, 410):
-                break  # Jangan retry 4xx
-        except aiohttp.ClientError as exc:
-            log.warning("🌐 Client error fetching %s: %s (attempt %d/%d)", url, exc, attempt, _MAX_RETRIES)
-        except Exception as exc:
-            log.error("❌ Unexpected error fetching %s: %s", url, exc)
-            break
-
-        if attempt < _MAX_RETRIES:
-            await asyncio.sleep(_RETRY_BACKOFF * attempt)
-
-    return []
-
-
-async def _upload_small(s3, key: str, data: bytes) -> None:
-    """Upload file kecil via put_object (blocking call di thread)."""
-    def _do():
-        s3.put_object(Bucket=R2_BUCKET_NAME, Key=key, Body=data)
-    await asyncio.to_thread(_do)
-
-
-async def _upload_multipart(
-    s3,
-    key: str,
-    session: aiohttp.ClientSession,
-    url: str,
-) -> int:
-    """
-    Upload file besar via S3 Multipart Upload, streaming dari aiohttp.
-    Data TIDAK pernah menyentuh disk — buffer per-chunk di RAM.
-    Return jumlah bytes yang berhasil diupload.
-    """
-    # Buat multipart upload session di R2
-    def _create():
-        return s3.create_multipart_upload(Bucket=R2_BUCKET_NAME, Key=key)
-    mpu       = await asyncio.to_thread(_create)
-    upload_id = mpu["UploadId"]
-
-    parts        = []
-    part_number  = 1
-    total_bytes  = 0
-    buf          = BytesIO()
-
-    async def _flush_part(part_buf: BytesIO) -> dict:
-        nonlocal part_number, total_bytes
-        part_buf.seek(0)
-        raw  = part_buf.read()
-        pn   = part_number
-        total_bytes += len(raw)
-
-        def _up():
-            return s3.upload_part(
-                Bucket=R2_BUCKET_NAME,
-                Key=key,
-                UploadId=upload_id,
-                PartNumber=pn,
-                Body=raw,
-            )
-        resp = await asyncio.to_thread(_up)
-        part_number += 1
-        return {"PartNumber": pn, "ETag": resp["ETag"]}
-
-    try:
-        async with session.get(url, timeout=_HTTP_TIMEOUT) as resp:
-            resp.raise_for_status()
-            async for chunk in resp.content.iter_chunked(_CHUNK_SIZE):
-                buf.write(chunk)
-                # Flush ke R2 kalau buffer sudah cukup besar (≥ minimum part size)
-                if buf.tell() >= _MIN_PART_SIZE:
-                    parts.append(await _flush_part(buf))
-                    buf = BytesIO()
-
-        # Flush sisa buffer terakhir (bisa < minimum part size — diizinkan untuk part terakhir)
-        if buf.tell() > 0:
-            parts.append(await _flush_part(buf))
-
-        # Complete multipart upload
-        def _complete():
-            s3.complete_multipart_upload(
-                Bucket=R2_BUCKET_NAME,
-                Key=key,
-                UploadId=upload_id,
-                MultipartUpload={"Parts": parts},
-            )
-        await asyncio.to_thread(_complete)
-        return total_bytes
-
-    except Exception:
-        # WAJIB abort agar tidak ada incomplete multipart yang menumpuk di R2 (kena billing!)
-        def _abort():
-            try:
-                s3.abort_multipart_upload(
-                    Bucket=R2_BUCKET_NAME, Key=key, UploadId=upload_id
-                )
-                log.info("🗑️ Aborted incomplete multipart upload for %s", key)
-            except Exception as e:
-                log.warning("⚠️ Failed to abort multipart upload for %s: %s", key, e)
-        await asyncio.to_thread(_abort)
-        raise
-
-
-async def _upload_file(
-    s3,
-    session: aiohttp.ClientSession,
-    file_url: str,
-    r2_key: str,
-) -> int:
-    """
-    Stream file dari Open Directory ke R2. Tidak ada disk I/O.
-    Otomatis pilih strategi: put_object (kecil) atau multipart (besar).
-    Retry dengan exponential backoff. Return jumlah bytes uploaded.
-    """
-    # HEAD request opsional untuk cek ukuran file
-    content_length: Optional[int] = None
-    try:
-        async with session.head(file_url, timeout=aiohttp.ClientTimeout(total=10)) as head:
-            cl = head.headers.get("Content-Length")
-            if cl and cl.isdigit():
-                content_length = int(cl)
-    except Exception:
-        pass  # HEAD gagal → tidak masalah, lanjut ke GET
-
-    # File besar → langsung multipart streaming (tidak perlu buffer penuh di RAM)
-    if content_length is not None and content_length > _MULTIPART_THRESHOLD:
-        log.debug("🔀 Multipart upload: %s (%s)", r2_key, _fmt_bytes(content_length))
-        for attempt in range(1, _MAX_RETRIES + 1):
-            try:
-                return await _upload_multipart(s3, r2_key, session, file_url)
-            except (asyncio.TimeoutError, aiohttp.ClientError) as exc:
-                log.warning("⚠️ Multipart attempt %d/%d failed for %s: %s", attempt, _MAX_RETRIES, r2_key, exc)
-            except (BotoCoreError, ClientError) as exc:
-                log.warning("☁️ R2 multipart error for %s: %s", r2_key, exc)
-            if attempt < _MAX_RETRIES:
-                await asyncio.sleep(_RETRY_BACKOFF * attempt)
-        raise RuntimeError(f"Multipart upload failed after {_MAX_RETRIES} attempts: {r2_key}")
-
-    # File kecil / ukuran tidak diketahui → baca ke BytesIO, lalu put_object
-    for attempt in range(1, _MAX_RETRIES + 1):
-        try:
-            async with session.get(file_url, timeout=_HTTP_TIMEOUT) as resp:
-                resp.raise_for_status()
-                data = await resp.read()  # In-memory, no disk
-
-            await _upload_small(s3, r2_key, data)
-            return len(data)
-
-        except asyncio.TimeoutError:
-            log.warning("⏱️ Timeout downloading %s (attempt %d/%d)", file_url, attempt, _MAX_RETRIES)
-        except aiohttp.ClientResponseError as exc:
-            log.warning("🌐 HTTP %s for %s (attempt %d/%d)", exc.status, file_url, attempt, _MAX_RETRIES)
-            if exc.status in (403, 404, 410):
-                break
-        except (BotoCoreError, ClientError) as exc:
-            log.warning("☁️ R2 error for %s: %s (attempt %d/%d)", r2_key, exc, attempt, _MAX_RETRIES)
-        except Exception as exc:
-            log.error("❌ Unexpected error uploading %s: %s", r2_key, exc)
-            break
-
-        if attempt < _MAX_RETRIES:
-            await asyncio.sleep(_RETRY_BACKOFF * attempt)
-
-    raise RuntimeError(f"Upload failed after {_MAX_RETRIES} attempts: {r2_key}")
-
-
-async def run_sync(
-    session: aiohttp.ClientSession,
-    base_url: str,
-    r2_prefix: str,
-    allowed_exts: set[str],
-    existing_keys: set[str],
-    semaphore: asyncio.Semaphore,
-    stop_event: asyncio.Event,
-) -> SyncStats:
-    """
-    Satu sesi sync penuh:
-      1. Scan semua subfolder di Open Directory.
-      2. Bangun task list: file yang belum ada di existing_keys.
-      3. Upload secara concurrent (bounded oleh semaphore).
-
-    `existing_keys` diupdate in-place saat upload berhasil.
-    `stop_event` memungkinkan pembatalan dari luar.
-    """
-    stats = SyncStats()
-    s3    = _make_s3_client()
-
-    if not base_url.endswith("/"):
-        base_url += "/"
-
-    # ── Tahap 1: Temukan subfolder di root Open Directory ──────
-    log.info("🔍 Scanning root: %s", base_url)
-    root_links = await _fetch_links(session, base_url)
-
-    # href yang berakhiran '/' dan bukan navigasi ('..') = subfolder
-    folders = [
-        urljoin(base_url, href)
-        for href in root_links
-        if href.endswith("/") and href not in ("../", "./", "/")
-    ]
-
-    # Kalau tidak ada subfolder, root sendiri dianggap folder berisi file
-    if not folders:
-        log.info("ℹ️  No subfolders found — treating root as single folder")
-        folders = [base_url]
-
-    log.info("📂 %d folders to scan", len(folders))
-
-    # ── Tahap 2: Kumpulkan task upload dari semua folder ──────
-    upload_tasks: list[tuple[str, str]] = []
-
-    for folder_url in folders:
-        if stop_event.is_set():
-            log.info("🛑 Stop event received — aborting folder scan")
-            break
-
-        stats.folders_scanned += 1
-        file_links = await _fetch_links(session, folder_url)
-
-        for href in file_links:
-            if stop_event.is_set():
-                break
-            if href.endswith("/"):
-                continue  # Lewati nested subfolder (tidak rekursif)
-
-            filename = href.split("/")[-1]
-            ext      = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
-
-            if ext not in allowed_exts:
-                continue
-
-            stats.files_found += 1
-            file_url  = urljoin(folder_url, href)
-
-            # R2 key: preserve path relatif di bawah base_url
-            try:
-                rel = file_url[len(base_url):].lstrip("/")
-            except Exception:
-                rel = filename
-            r2_key = r2_prefix.rstrip("/") + "/" + rel
-
-            if r2_key in existing_keys:
-                stats.files_skipped += 1
-                continue
-
-            upload_tasks.append((file_url, r2_key))
-
-    # ── Tahap 3: Upload concurrent dengan semaphore ────────────
-    async def _bounded_upload(file_url: str, r2_key: str) -> None:
-        if stop_event.is_set():
-            return
-        async with semaphore:
-            if stop_event.is_set():
-                return
-            try:
-                log.info("⬆️  %s → %s", file_url.split("/")[-1], r2_key)
-                size = await _upload_file(s3, session, file_url, r2_key)
-                existing_keys.add(r2_key)
-                stats.files_uploaded += 1
-                stats.bytes_uploaded += size
-                log.info("✅ %s (%s)", r2_key.split("/")[-1], _fmt_bytes(size))
-            except Exception as exc:
-                stats.files_failed += 1
-                msg = f"{r2_key.split('/')[-1]}: {exc}"
-                stats.errors.append(msg[:200])
-                log.error("❌ Upload failed — %s", msg)
-
-    if upload_tasks:
-        log.info(
-            "🚀 %d files to upload (max concurrent: %d)",
-            len(upload_tasks),
-            semaphore._value,  # type: ignore[attr-defined]
-        )
-        await asyncio.gather(*[_bounded_upload(u, k) for u, k in upload_tasks])
-
-    return stats
-
-
-# ──────────────────────────────────────────────────────────────
-# Cog
-# ──────────────────────────────────────────────────────────────
-class OpenDirSync(commands.Cog):
-    """Mensinkronisasi file dari Open Directory ke Cloudflare R2."""
-
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-
-        # Async primitives
-        self._task:        asyncio.Task | None = None
-        self._lock:        asyncio.Lock        = asyncio.Lock()
-        self._stop_event:  asyncio.Event       = asyncio.Event()
-        self._semaphore:   asyncio.Semaphore   = asyncio.Semaphore(
-            getattr(bot_config, "OPENDIR_SYNC_MAX_CONCURRENT", 3)
         )
 
-        # State
-        self._initial_sync_done: bool          = False
-        self._paused:            bool          = False
-        self._last_stats:        SyncStats | None = None
-        self._existing_keys:     set[str]      = set()
+    @staticmethod
+    def _normalize_base_url(url: str) -> str:
+        url = (url or "").strip()
+        if not url:
+            return ""
+        if not url.startswith(("http://", "https://")):
+            url = f"http://{url}"
+        return url if url.endswith("/") else f"{url}/"
 
-        # Config
-        self.enabled        = getattr(bot_config, "OPENDIR_SYNC_ENABLED", False)
-        self.base_url: str  = getattr(bot_config, "OPENDIR_SYNC_URL", "").rstrip("/") + "/"
-        self.r2_prefix      = getattr(bot_config, "OPENDIR_SYNC_R2_PREFIX", "Database/")
-        self.interval_hours = float(getattr(bot_config, "OPENDIR_SYNC_INTERVAL_HOURS", 6.0))
-        self.start_delay    = float(getattr(bot_config, "OPENDIR_SYNC_START_DELAY_SECONDS", 15.0))
-        self.allowed_exts: set[str] = set(
-            getattr(bot_config, "OPENDIR_SYNC_EXTENSIONS", {"zip", "manifest", "lua"})
-        )
+    @staticmethod
+    def _normalize_directory_url(url: str) -> str:
+        return url if url.endswith("/") else f"{url}/"
 
-    # ── Lifecycle ──────────────────────────────────────────────
+    @staticmethod
+    def _normalize_r2_prefix(prefix: str) -> str:
+        prefix = (prefix or "").strip().lstrip("/")
+        if prefix and not prefix.endswith("/"):
+            prefix = f"{prefix}/"
+        return prefix
 
-    async def cog_load(self):
-        if not self.enabled:
-            log.info("ℹ️  OpenDirSync disabled — set OPENDIR_SYNC_ENABLED=true untuk aktifkan")
-            return
-        if not self.base_url or self.base_url == "/":
-            log.warning("⚠️  OPENDIR_SYNC_URL kosong. OpenDirSync tidak akan berjalan.")
-            return
-        if not all([R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID, R2_BUCKET_NAME]):
-            log.warning("⚠️  R2 credentials belum lengkap. OpenDirSync tidak akan berjalan.")
-            return
-
-        self._task = asyncio.create_task(self._sync_loop(), name="opendir_sync_loop")
-        log.info(
-            "🔄 OpenDirSync enabled | URL: %s | Interval: %.1fh | Prefix: %s",
-            self.base_url, self.interval_hours, self.r2_prefix,
-        )
-
-    async def cog_unload(self):
-        self._stop_event.set()
-        if self._task and not self._task.done():
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-        log.info("🛑 OpenDirSync cog unloaded")
-
-    # ── Background loop ────────────────────────────────────────
-
-    async def _sync_loop(self):
-        await self.bot.wait_until_ready()
-        log.info("⏳ OpenDirSync waiting %.1fs before first run...", self.start_delay)
-        await asyncio.sleep(self.start_delay)
-
-        while not self._stop_event.is_set():
-            if self._paused:
-                await asyncio.sleep(60)
-                continue
-
-            mode = "Initial" if not self._initial_sync_done else "Monitor"
-            try:
-                await self._run_sync(automatic=True)
-                self._initial_sync_done = True
-                log.info("✅ %s sync complete. Next in %.1fh.", mode, self.interval_hours)
-            except asyncio.CancelledError:
-                log.info("🛑 OpenDirSync loop cancelled")
-                return
-            except Exception as exc:
-                log.error("❌ OpenDirSync loop error: %s", exc, exc_info=True)
-
-            # Tunggu interval, bisa di-interrupt oleh stop_event
-            try:
-                await asyncio.wait_for(
-                    self._stop_event.wait(),
-                    timeout=self.interval_hours * 3600,
-                )
-            except asyncio.TimeoutError:
-                pass  # Normal → loop lagi
-
-    async def _run_sync(self, automatic: bool = True) -> SyncStats:
-        """
-        Satu sesi sync lengkap, dilindungi oleh lock agar tidak parallel.
-        """
-        async with self._lock:
-            log.info(
-                "🔄 [%s] OpenDirSync dimulai (%s mode)...",
-                "AUTO" if automatic else "MANUAL",
-                "Initial" if not self._initial_sync_done else "Monitor",
-            )
-
-            # Gunakan shared bot session jika tersedia
-            bot_session: aiohttp.ClientSession | None = getattr(self.bot, "session", None)
-            if bot_session and not bot_session.closed:
-                session   = bot_session
-                own_session = False
-            else:
-                session   = aiohttp.ClientSession()
-                own_session = True
-
-            try:
-                # Initial sync: list semua R2 key sebagai baseline pembanding
-                if not self._initial_sync_done or not self._existing_keys:
-                    log.info("📋 Listing R2 keys under prefix '%s'...", self.r2_prefix)
-                    s3 = _make_s3_client()
-                    self._existing_keys = await _list_r2_keys(s3, self.r2_prefix)
-                    log.info("📋 R2 baseline: %d existing keys", len(self._existing_keys))
-
-                stats = await run_sync(
-                    session      = session,
-                    base_url     = self.base_url,
-                    r2_prefix    = self.r2_prefix,
-                    allowed_exts = self.allowed_exts,
-                    existing_keys= self._existing_keys,
-                    semaphore    = self._semaphore,
-                    stop_event   = self._stop_event,
-                )
-                self._last_stats = stats
-
-                log.info(
-                    "📊 Sync: ✅%d uploaded | ⏭️%d skipped | ❌%d failed | %s | %.1fs",
-                    stats.files_uploaded, stats.files_skipped, stats.files_failed,
-                    _fmt_bytes(stats.bytes_uploaded), stats.elapsed,
-                )
-
-                # Notifikasi admin kalau ada failure
-                if stats.files_failed > 0 and hasattr(self.bot, "notify_admins"):
-                    await self.bot.notify_admins(
-                        "OpenDirSync — Partial Failure",
-                        f"{stats.files_failed} file gagal diupload ke R2.",
-                        level="warning",
-                        fields={
-                            "Uploaded": str(stats.files_uploaded),
-                            "Failed":   str(stats.files_failed),
-                            "Sample errors": "\n".join(stats.errors[:3]),
-                        },
-                        key="opendir-sync-partial-failure",
-                    )
-
-                return stats
-
-            finally:
-                if own_session:
-                    await session.close()
-
-    # ── Slash Commands ─────────────────────────────────────────
-
-    sync_group = app_commands.Group(
-        name="opendirsync",
-        description="Kelola sinkronisasi Open Directory → R2",
-    )
-
-    @sync_group.command(name="status", description="Lihat status sync Open Directory")
-    @admin_check()
-    async def cmd_status(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-
-        enabled_txt  = "✅ Enabled"  if self.enabled  else "❌ Disabled"
-        mode_txt     = "Initial Sync" if not self._initial_sync_done else "Monitor Mode"
-        paused_txt   = " (⏸️ Paused)" if self._paused  else ""
-        running_txt  = "🔄 Running"  if self._lock.locked() else "💤 Idle"
-
-        embed = discord.Embed(
-            title="📡 OpenDir Sync — Status",
-            color=COLOR_INFO if self.enabled else COLOR_WARNING,
-            timestamp=discord.utils.utcnow(),
-        )
-        embed.add_field(name="Status",          value=f"{enabled_txt}{paused_txt}", inline=True)
-        embed.add_field(name="Mode",            value=mode_txt,                     inline=True)
-        embed.add_field(name="Task",            value=running_txt,                  inline=True)
-        embed.add_field(name="Source URL",      value=f"`{self.base_url}`",         inline=False)
-        embed.add_field(name="R2 Prefix",       value=f"`{self.r2_prefix}`",        inline=True)
-        embed.add_field(name="Interval",        value=f"{self.interval_hours}h",    inline=True)
-        embed.add_field(name="R2 Keys Tracked", value=str(len(self._existing_keys)),inline=True)
-        embed.add_field(
-            name="Extensions",
-            value=", ".join(sorted(self.allowed_exts)) or "—",
-            inline=True,
-        )
-
-        if self._last_stats:
-            s = self._last_stats
-            embed.add_field(
-                name="Last Sync",
-                value=(
-                    f"✅ {s.files_uploaded} up | ⏭️ {s.files_skipped} skip | "
-                    f"❌ {s.files_failed} fail | 📦 {_fmt_bytes(s.bytes_uploaded)} | ⏱️ {s.elapsed:.1f}s"
-                ),
-                inline=False,
-            )
-            if s.errors:
-                embed.add_field(
-                    name="Last Errors",
-                    value="\n".join(f"• {e}" for e in s.errors[:3])[:1024],
-                    inline=False,
-                )
-
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-    @sync_group.command(name="trigger", description="Jalankan sync manual sekarang")
-    @admin_check()
-    async def cmd_trigger(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        if not self.enabled:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="❌ OpenDirSync Disabled",
-                    description="Set `OPENDIR_SYNC_ENABLED=true` di `.env` untuk mengaktifkan.",
-                    color=COLOR_ERROR,
-                ),
-                ephemeral=True,
-            )
-            return
-
-        if self._lock.locked():
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="⚠️ Sync Sedang Berjalan",
-                    description="Tunggu sync saat ini selesai, atau cek status via `/opendirsync status`.",
-                    color=COLOR_WARNING,
-                ),
-                ephemeral=True,
-            )
-            return
-
-        if self._paused:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="⏸️ Sync Di-pause",
-                    description="Gunakan `/opendirsync pause` untuk resume terlebih dulu.",
-                    color=COLOR_WARNING,
-                ),
-                ephemeral=True,
-            )
-            return
-
-        # Kirim acknowledgement dulu, lalu jalankan sync
-        await interaction.followup.send(
-            embed=discord.Embed(
-                title="🚀 Manual Sync Dimulai",
-                description=(
-                    "Sync berjalan. Tunggu sebentar...\n"
-                    "Cek `/opendirsync status` untuk progress real-time."
-                ),
-                color=COLOR_INFO,
-            ),
-            ephemeral=True,
-        )
-
-        try:
-            stats = await self._run_sync(automatic=False)
-            self._initial_sync_done = True
-
-            color = COLOR_ERROR if stats.files_failed > 0 else COLOR_SUCCESS
-            result_embed = discord.Embed(
-                title="✅ Manual Sync Selesai",
-                color=color,
-                timestamp=discord.utils.utcnow(),
-            )
-            for name, value in stats.to_embed_fields().items():
-                result_embed.add_field(name=name, value=value, inline=True)
-            if stats.errors:
-                result_embed.add_field(
-                    name="Errors",
-                    value="\n".join(f"• {e}" for e in stats.errors[:5])[:1024],
-                    inline=False,
-                )
-            await interaction.followup.send(embed=result_embed, ephemeral=True)
-
-        except Exception as exc:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="❌ Sync Gagal",
-                    description=f"```{str(exc)[:1500]}```",
-                    color=COLOR_ERROR,
-                ),
-                ephemeral=True,
-            )
-
-    @sync_group.command(name="pause", description="Pause atau resume sync otomatis")
-    @admin_check()
-    async def cmd_pause(self, interaction: discord.Interaction):
-        self._paused = not self._paused
-        label = "⏸️ Di-pause" if self._paused else "▶️ Di-resume"
-        color = COLOR_WARNING if self._paused else COLOR_SUCCESS
-        desc  = (
-            "Sync otomatis di-pause. Manual trigger via `/opendirsync trigger` masih bisa."
-            if self._paused
-            else "Sync otomatis aktif kembali."
-        )
-        await interaction.response.send_message(
-            embed=discord.Embed(title=f"OpenDirSync {label}", description=desc, color=color),
-            ephemeral=True,
-        )
-
-    @sync_group.command(name="refresh_keys", description="Refresh cache daftar key dari R2 bucket")
-    @admin_check()
-    async def cmd_refresh_keys(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        try:
-            s3        = _make_s3_client()
-            old_count = len(self._existing_keys)
-            self._existing_keys = await _list_r2_keys(s3, self.r2_prefix)
-            new_count = len(self._existing_keys)
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="🔄 R2 Key Cache Refreshed",
-                    description=(
-                        f"**Sebelum:** {old_count:,} keys\n"
-                        f"**Sekarang:** {new_count:,} keys\n"
-                        f"**Delta:** {new_count - old_count:+,}"
-                    ),
-                    color=COLOR_SUCCESS,
-                    timestamp=discord.utils.utcnow(),
-                ),
-                ephemeral=True,
-            )
-        except Exception as exc:
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="❌ Refresh Gagal",
-                    description=f"```{str(exc)[:1000]}```",
-                    color=COLOR_ERROR,
-                ),
-                ephemeral=True,
-            )
+    @staticmethod
+    def _redact_url(url: str) -> str:
+        parsed = urlparse(url)
+        if not parsed.scheme:
+            return url
+        return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
-# ──────────────────────────────────────────────────────────────
-# Setup hook
-# ──────────────────────────────────────────────────────────────
-async def setup(bot: commands.Bot):
+async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(OpenDirSync(bot))
