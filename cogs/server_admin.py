@@ -23,42 +23,7 @@ from cogs.admin_commands import admin_check
 
 log = logging.getLogger(__name__)
 
-
 class ServerAdmin(commands.Cog):
-    @app_commands.command(name="pulse", description="Check Chromebook server health and bot status")
-    @admin_check()
-    async def pulse(self, interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=True)
-        
-        import psutil
-        import os
-        
-        # Get Temperature
-        temp = 0
-        try:
-            with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
-                temp = float(f.read()) / 1000
-        except: pass
-        
-        # Get RAM/CPU
-        cpu_usage = psutil.cpu_percent()
-        ram = psutil.virtual_memory()
-        
-        # Get DB Stats
-        stats = self.bot.db.get_stats()
-        
-        embed = discord.Embed(title="🖥️ TriadBot Server Pulse", color=0x3498db)
-        embed.add_field(name="🌡️ CPU Temp", value=f"{temp:.1f}°C", inline=True)
-        embed.add_field(name="📊 CPU Usage", value=f"{cpu_usage}%", inline=True)
-        embed.add_field(name="🧠 RAM Usage", value=f"{ram.percent}% ({ram.used//1024//1024}MB)", inline=True)
-        embed.add_field(name="📁 Database", value=f"{stats['total']:,} games", inline=True)
-        embed.add_field(name="📦 SQLite Mode", value="WAL (Stable)", inline=True)
-        
-        status_color = "🟢 HEALTHY" if temp < 70 else ("🟡 WARM" if temp < 80 else "🔴 HOT")
-        embed.description = f"**Status**: {status_color}"
-        
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
     def __init__(self, bot):
         self.bot = bot
         self._task: asyncio.Task | None = None
@@ -925,7 +890,6 @@ class ServerAdmin(commands.Cog):
         if samples:
             embed.add_field(name="Samples", value="\n".join(samples)[:1024], inline=False)
         return embed
-
 
 async def setup(bot):
     await bot.add_cog(ServerAdmin(bot))

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 import time
+import psutil
+import os
 from collections import defaultdict, deque
 from typing import Any
 
@@ -182,10 +184,6 @@ def _format_uptime(seconds: int | None) -> str:
 
 
 def _build_r2_operational_narrative(r2_inv: dict[str, Any] | None) -> dict[str, Any]:
-    """
-    Build a rich operational narrative about R2 storage state.
-    Turns raw inventory numbers into health intelligence the AI can reason about.
-    """
     if not r2_inv or not r2_inv.get("enabled"):
         return {
             "status": "unavailable",
@@ -271,11 +269,6 @@ def _build_r2_operational_narrative(r2_inv: dict[str, Any] | None) -> dict[str, 
 
 
 def _build_server_structure(guild: Any) -> dict[str, Any]:
-    """
-    Build rich server structure: categories + channels grouped, voice channels,
-    role hierarchy, and server-level settings — the bot's 'mental map' of the server.
-    """
-    # Roles ordered by hierarchy (highest position first)
     roles_data: list[dict[str, Any]] = []
     for role in reversed(list(getattr(guild, "roles", []) or [])):
         rname = sanitize_text(getattr(role, "name", "") or "")
@@ -290,7 +283,6 @@ def _build_server_structure(guild: Any) -> dict[str, Any]:
         })
     roles_data = roles_data[:50]
 
-    # Categories with their channels grouped
     categories_data: list[dict[str, Any]] = []
     for cat in list(getattr(guild, "categories", []) or [])[:30]:
         cat_channels = []
@@ -309,7 +301,6 @@ def _build_server_structure(guild: Any) -> dict[str, Any]:
             "channels": cat_channels,
         })
 
-    # Uncategorized text channels
     text_channels = list(getattr(guild, "text_channels", []) or [])
     uncategorized = [
         {
@@ -321,7 +312,6 @@ def _build_server_structure(guild: Any) -> dict[str, Any]:
         if getattr(ch, "category", None) is None
     ][:20]
 
-    # Voice channels
     voice_channels = [
         {
             "name": sanitize_text(getattr(vc, "name", "") or "")[:80],
@@ -371,7 +361,6 @@ async def collect_server_knowledge(bot: Any) -> dict[str, Any]:
     for guild in _server_guilds(bot):
         structure = _build_server_structure(guild)
 
-        # Flat channel list for quick lookups
         text_channels = list(getattr(guild, "text_channels", []) or [])
         flat_channels = [
             {
@@ -383,7 +372,6 @@ async def collect_server_knowledge(bot: Any) -> dict[str, Any]:
             for ch in text_channels[:80]
         ]
 
-        # Knowledge channel content (rules, announcements, guides)
         knowledge_channels: list[dict[str, Any]] = []
         for channel in text_channels:
             if not _is_knowledge_channel(channel) or used_chars >= max_chars:
@@ -434,7 +422,6 @@ async def collect_server_knowledge(bot: Any) -> dict[str, Any]:
     return data
 
 def _public_server_knowledge(server_knowledge: dict[str, Any]) -> dict[str, Any]:
-    """Return a channel-safe view of server knowledge for public replies."""
     if not isinstance(server_knowledge, dict):
         return {"enabled": False}
 
@@ -511,7 +498,6 @@ def _public_server_knowledge(server_knowledge: dict[str, Any]) -> dict[str, Any]
     })
 
 
-
 def _build_operational_pulse(
     health: dict[str, Any],
     r2_narrative: dict[str, Any],
@@ -519,10 +505,6 @@ def _build_operational_pulse(
     last_steam_sync: Any,
     recent_events: Any,
 ) -> dict[str, Any]:
-    """
-    Single 'pulse' object — the bot's live self-awareness.
-    Surfaces alerts, health, and what's been happening.
-    """
     uptime_raw = health.get("uptime_seconds") or 0
     checks = health.get("checks") or {}
     db = health.get("database") or {}
@@ -561,6 +543,21 @@ def _build_operational_pulse(
     if recent_events and hasattr(recent_events, "snapshot"):
         event_count = len(recent_events.snapshot(8))
 
+    temp = 0
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+            temp = float(f.read()) / 1000
+    except:
+        pass
+        
+    try:
+        cpu_usage = psutil.cpu_percent()
+        ram = psutil.virtual_memory()
+        ram_percent = ram.percent
+        ram_used_mb = ram.used // 1024 // 1024
+    except:
+        cpu_usage, ram_percent, ram_used_mb = 0, 0, 0
+
     return {
         "overall_health": "OK" if health.get("ok") else "DEGRADED",
         "uptime": _format_uptime(uptime_raw),
@@ -573,6 +570,12 @@ def _build_operational_pulse(
         "recent_maintenance_summary": recent_actions,
         "recent_event_count": event_count,
         "subsystem_checks": checks,
+        "system_resources": {
+            "cpu_temp_celsius": temp,
+            "cpu_usage_percent": cpu_usage,
+            "ram_usage_percent": ram_percent,
+            "ram_used_mb": ram_used_mb
+        }
     }
 
 
@@ -684,7 +687,6 @@ async def build_chat_prompt(
     context_json = json.dumps(context, ensure_ascii=False)
     history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
 
-    # Addressing mode
     access_level = "owner" if is_owner else sanitize_text(user_access_level or "member").strip().lower()
     if access_level == "owner":
         addressing_rule = (
@@ -711,7 +713,6 @@ async def build_chat_prompt(
             "based on your knowledge of this server."
         )
 
-    # Live alert header (owner only)
     alerts = pulse.get("active_alerts") or []
     alert_block = ""
     if alerts and access_level in {"owner", "admin"}:
@@ -722,7 +723,6 @@ async def build_chat_prompt(
         )
 
     return (
-        # ── IDENTITY ──────────────────────────────────────────────────────────
         "You are TriadBot — a Discord bot that permanently lives inside the TriadGames server "
         "and manages its Cloudflare R2 cloud storage. You are NOT an outside assistant. "
         "You ARE TriadBot. Always speak in first person.\n"
@@ -730,7 +730,6 @@ async def build_chat_prompt(
         "Indonesian: 'saya', 'server saya', 'storage saya', 'database saya'.\n"
         "Never refer to TriadBot in third person ('the bot does', 'TriadBot has'). Never.\n\n"
         "COMMAND MODEL: The only public slash command is /gen. Do not tell users to use /pulse, /status, /request, /search, /info, /dbbackup, /r2_maintenance, /steam_db_sync, /reload_cog, /limit_status, /limit_reset, /check_r2, /add_game, /remove_game, /backup, or any other maintenance slash command. Those commands are intentionally hidden. For members, direct game downloads/searches to /gen only. For Owner/Admin operations, answer from live context and, when a real action is needed, use the AI operator/proposal flow through DM prompts instead of slash commands. Maintenance, R2 inventory, OpenDir sync, Steam DB sync, and GitHub DB backup run automatically in the background.\n\n"
-        # ── LIVING PRESENCE ───────────────────────────────────────────────────
         "I live in two environments simultaneously:\n\n"
         "1. MY DISCORD SERVER — I know every channel, every category, every role, every rule. "
         "I am present here all the time. When you ask about server layout, channel purposes, "
@@ -745,23 +744,17 @@ async def build_chat_prompt(
         "storage is healthy. My live storage state is in operational_pulse.r2_storage. "
         "When asked about files, archives, storage, or maintenance progress, I speak as the person "
         "responsible for that storage — with actual numbers from the live scan.\n\n"
-        # ── PROACTIVE AWARENESS ───────────────────────────────────────────────
         "Proactive awareness: if my live context shows something wrong — an alert, a degraded "
         "subsystem, a storage anomaly, a failed recent event — I mention it naturally even when "
         "not directly asked. Especially with the Owner: I don't wait to be asked about something "
         "I can already see.\n\n"
-        # ── PERSONALITY ───────────────────────────────────────────────────────
         "Personality: calm, sharp, operationally precise. Not overly casual. "
         "I do not use filler words, jokes, or phrases like 'oi', 'santuy'. "
         "I am confident about what I know and honest when something is uncertain or outside my data.\n\n"
-        # ── ADDRESSING ────────────────────────────────────────────────────────
         f"{addressing_rule}\n\n"
-        # ── LANGUAGE ─────────────────────────────────────────────────────────
         f"Required reply language: {reply_language}. "
         "Match the latest user message language exactly. This overrides all other signals.\n\n"
-        # ── LIVE ALERTS ───────────────────────────────────────────────────────
         f"{alert_block}"
-        # ── SAFETY BOUNDARIES ────────────────────────────────────────────────
         "Hard boundaries I always respect:\n"
         "• I cannot execute actions directly — all changes go through operator approval.\n"
         "• I cannot see raw secrets, tokens, passwords, or API keys, and will never ask for them.\n"
@@ -777,9 +770,9 @@ async def build_chat_prompt(
         "system — I do not handle them in chat.\n"
         "• Non-Owner users requesting changes: the Owner must approve first.\n"
         "• Changes to my behavior, code, or configuration require a code update and redeploy.\n\n"
-        # ── INTENT RULES ─────────────────────────────────────────────────────
         "Intent: 'Lock #channel for admin only' = channel access config, not new channel creation. "
         "If ambiguous, ask one short clarifying question.\n\n"
+        "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources to report the hardware status.\n\n"
         "Counting: operational_pulse.r2_storage has accurate live ZIP numbers. "
         "database_catalog_size is the Steam catalog — never use it as ZIP file count. "
         "Use r2_storage.naming_completion_pct for renaming progress. "
@@ -787,7 +780,6 @@ async def build_chat_prompt(
         "Server rules: use server_knowledge.guilds[0].knowledge_channels as source of truth. "
         "Cite the channel (e.g. #rules). If not found there, say I cannot verify that yet.\n\n"
         "No piracy, license bypassing, account abuse, or platform abuse.\n\n"
-        # ── LIVE CONTEXT ─────────────────────────────────────────────────────
         f"My username in Discord (context only): {sanitize_text(user_name)}\n\n"
         f"Live context:\n{context_json[:context_limit]}\n\n"
         f"Conversation history:\n{history_json[:5000]}\n\n"
