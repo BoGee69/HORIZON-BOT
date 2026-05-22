@@ -132,30 +132,31 @@ def get_r2_inventory_snapshot(
             snapshot["cache_age_seconds"] = int(now - fetched_at)
             return snapshot
 
-        try:
-            snapshot = _count_objects_sync(prefix, max_pages)
-        except Exception as exc:
-            snapshot = {
-                "enabled": bool(_PRESIGN_ENABLED),
-                "bucket_configured": bool(_BUCKET),
-                "bucket": _BUCKET or None,
-                "prefix": prefix,
-                "objects_counted": 0,
-                "zip_objects_counted": 0,
-                "named_zip_objects_counted": 0,
-                "appid_only_zip_objects_counted": 0,
-                "unknown_zip_objects_counted": 0,
-                "pages_scanned": 0,
-                "truncated": False,
-                "source": "error",
-                "error": sanitize_text(str(exc))[:300],
-            }
+    try:
+        snapshot = _count_objects_sync(prefix, max_pages)
+    except Exception as exc:
+        snapshot = {
+            "enabled": bool(_PRESIGN_ENABLED),
+            "bucket_configured": bool(_BUCKET),
+            "bucket": _BUCKET or None,
+            "prefix": prefix,
+            "objects_counted": 0,
+            "zip_objects_counted": 0,
+            "named_zip_objects_counted": 0,
+            "appid_only_zip_objects_counted": 0,
+            "unknown_zip_objects_counted": 0,
+            "pages_scanned": 0,
+            "truncated": False,
+            "source": "error",
+            "error": sanitize_text(str(exc))[:300],
+        }
 
+    with _CACHE_LOCK:
         snapshot["cache_age_seconds"] = 0
         _CACHE["prefix"] = prefix
         _CACHE["fetched_at"] = now
         _CACHE["snapshot"] = dict(snapshot)
-        return snapshot
+    return snapshot
 
 
 async def get_r2_inventory_snapshot_async(

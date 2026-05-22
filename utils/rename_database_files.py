@@ -10,6 +10,7 @@ import csv
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 import urllib.request
@@ -21,7 +22,6 @@ from typing import Optional
 
 REPO_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_DATABASE_DIR = REPO_DIR.parent / "Database"
-DEFAULT_DB_JSON = REPO_DIR / "data" / "games.json"
 DEFAULT_CACHE_JSON = REPO_DIR / "data" / "appid_names_cache.json"
 
 NUMERIC_RE = re.compile(r"^\s*[\(\[]?(?P<appid>\d{1,10})[\)\]]?\s*$")
@@ -106,7 +106,47 @@ def save_json(path: Path, payload):
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def build_name_map(database_dir: Path, db_json: Path, cache_json: Path) -> dict[str, tuple[str, str, int]]:
+def _default_sqlite_db() -> Path:
+    raw = os.getenv("SQLITE_PATH", "").strip().strip('"').strip("'")
+    if not raw:
+        return REPO_DIR / "data" / "games.db"
+    if os.name == "nt" and (raw == "/data/games.db" or raw.startswith("/data/")):
+        suffix = raw.removeprefix("/data").lstrip("/\\")
+        return REPO_DIR / "data" / suffix
+    path = Path(raw)
+    if not path.is_absolute():
+        path = REPO_DIR / path
+    return path
+
+
+DEFAULT_SQLITE_DB = _default_sqlite_db()
+
+
+def load_sqlite_game_names(db_path: Path = DEFAULT_SQLITE_DB) -> list[dict[str, str]]:
+    if not db_path.exists():
+        return []
+    try:
+        with sqlite3.connect(db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT appid, name
+                FROM games
+                WHERE appid IS NOT NULL
+                  AND TRIM(CAST(appid AS TEXT)) != ''
+                  AND name IS NOT NULL
+                  AND TRIM(name) != ''
+                """
+            ).fetchall()
+    except Exception:
+        return []
+    return [
+        {"appid": str(appid).strip(), "name": str(name).strip()}
+        for appid, name in rows
+        if str(appid).strip().isdigit() and str(name).strip()
+    ]
+
+
+def build_name_map(database_dir: Path, db_path: Path, cache_json: Path) -> dict[str, tuple[str, str, int]]:
     name_map: dict[str, tuple[str, str, int]] = {}
 
     for file in database_dir.glob("*.zip"):
@@ -119,14 +159,10 @@ def build_name_map(database_dir: Path, db_json: Path, cache_json: Path) -> dict[
         for appid, name in cache.items():
             set_name(name_map, str(appid), name, "steam cache", 20)
 
-    db = load_json(db_json, [])
-    if isinstance(db, list):
-        for item in db:
-            if not isinstance(item, dict):
-                continue
-            appid = str(item.get("id", "")).strip()
-            if appid.isdigit():
-                set_name(name_map, appid, item.get("name"), "games.json", 10)
+    for item in load_sqlite_game_names(db_path):
+        appid = str(item.get("appid", "")).strip()
+        if appid.isdigit():
+            set_name(name_map, appid, item.get("name"), "SQLite games table", 10)
 
     return name_map
 
@@ -344,7 +380,7 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(description="Rename ZIP files to 'Game Name (appid).zip'.")
     parser.add_argument("--directory", type=Path, default=DEFAULT_DATABASE_DIR)
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB_JSON)
+    parser.add_argument("--db", type=Path, default=DEFAULT_SQLITE_DB, help="SQLite games.db path.")
     parser.add_argument("--cache", type=Path, default=DEFAULT_CACHE_JSON)
     parser.add_argument("--report", type=Path, default=None)
     parser.add_argument("--apply", action="store_true", help="Actually rename files. Default is dry-run.")

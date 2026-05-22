@@ -1,5 +1,5 @@
 """
-Admin command and background task for syncing games.json from Steam App List.
+Admin command and background task for syncing the SQLite games table from Steam App List.
 """
 from __future__ import annotations
 
@@ -56,9 +56,9 @@ def _summary_embed(summary: SteamDbSyncSummary, title: str = "Steam DB Sync") ->
     embed = discord.Embed(
         title=title,
         description=(
-            "Dry-run only. games.json was not changed."
+            "Dry-run only. SQLite database was not changed."
             if summary.dry_run
-            else "Steam names were applied to games.json."
+            else "Steam names were applied to the SQLite database."
         ),
         color=color,
         timestamp=discord.utils.utcnow(),
@@ -212,10 +212,10 @@ class SteamDbSyncCommands(commands.Cog):
             key="steam-db-sync-errors" if summary.errors else "steam-db-sync-applied",
         )
 
-    @app_commands.command(name="steam_db_sync", description="[Admin] Fill games.json names from Steam App List")
+    @app_commands.command(name="steam_db_sync", description="[Admin] Fill SQLite game names from Steam App List")
     @app_commands.describe(
-        apply_changes="True writes to games.json. False only previews.",
-        include_new="Add Steam AppIDs that are not yet in games.json",
+        apply_changes="True writes to SQLite. False only previews.",
+        include_new="Add Steam AppIDs that are not yet in SQLite",
         max_new="Maximum new entries to add. 0 means unlimited.",
         max_updates="Maximum placeholder names to update. 0 means unlimited.",
     )

@@ -1684,7 +1684,7 @@ class AIOperator(commands.Cog):
                 "R2_MAINTENANCE_APPLY is true. It uses the current .env file."
             ),
             "run_steam_db_sync": (
-                "This can update games.json from Steam if STEAM_DB_SYNC_APPLY is true. "
+                "This can update the SQLite games table from Steam if STEAM_DB_SYNC_APPLY is true. "
                 "It uses the current .env file."
             ),
             "run_ai_check": "This only asks the caretaker to re-check the current sanitized bot status.",

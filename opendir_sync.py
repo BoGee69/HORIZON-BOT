@@ -632,8 +632,7 @@ class OpenDirSync(commands.Cog):
         """
         Load the OpenDir candidate list from the persistent SQLite database.
 
-        SQLite is the single runtime source of truth.  games.json is only used
-        for the initial bootstrap when the database is empty.
+        SQLite is the single runtime source of truth for appid/name records.
         """
         import sqlite3 as _sqlite3
 

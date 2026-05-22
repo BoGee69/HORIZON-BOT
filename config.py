@@ -74,7 +74,11 @@ def _default_data_dir() -> Path:
 
 def env_path(name: str, default: Path) -> Path:
     raw = os.getenv(name, "").strip().strip('"').strip("'")
-    path = Path(raw) if raw else default
+    if raw and os.name == "nt" and not _running_on_railway() and (raw == "/data" or raw.startswith("/data/")):
+        suffix = raw.removeprefix("/data").lstrip("/\\")
+        path = LOCAL_DATA_DIR / suffix if suffix else LOCAL_DATA_DIR
+    else:
+        path = Path(raw) if raw else default
     if not path.is_absolute():
         path = BASE_DIR / path
     return path
@@ -171,8 +175,6 @@ OPENDIR_ALLOWED_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_ALLOWED_EXTENSIONS
 OPENDIR_ALLOWED_HOSTS = {x.strip().lower() for x in os.getenv("OPENDIR_ALLOWED_HOSTS", "").split(",") if x.strip()}
 OPENDIR_USER_AGENT = os.getenv("OPENDIR_USER_AGENT", "TriadBot OpenDirSync").strip()
 
-# Legacy variable kept only for compatibility. OpenDir sync now reads from SQLite, not games.json.
-OPENDIR_GAMES_JSON_PATH = env_path("OPENDIR_GAMES_JSON_PATH", DATA_DIR / "games.json")
 OPENDIR_STATE_PATH = env_path("OPENDIR_STATE_PATH", DATA_DIR / "opendir_sync_state.json")
 OPENDIR_INDEX_SCAN_ENABLED = parse_bool(os.getenv("OPENDIR_INDEX_SCAN_ENABLED", "true"), True)
 OPENDIR_DIRECT_PROBE_ENABLED = parse_bool(os.getenv("OPENDIR_DIRECT_PROBE_ENABLED", "true"), True)
@@ -265,11 +267,13 @@ AI_CHAT_MODEL = os.getenv(
 ).strip() or ("gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL)
 AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "12"))
 AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
+AI_CHAT_RESPONSE_TIMEOUT_SECONDS = float(os.getenv("AI_CHAT_RESPONSE_TIMEOUT_SECONDS", "60"))
 AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))
 AI_CHAT_MAX_MESSAGE_CHARS = int(os.getenv("AI_CHAT_MAX_MESSAGE_CHARS", "1800"))
 AI_CHAT_R2_STATS_ENABLED = parse_bool(os.getenv("AI_CHAT_R2_STATS_ENABLED", "true"), True)
 AI_CHAT_R2_STATS_CACHE_SECONDS = int(os.getenv("AI_CHAT_R2_STATS_CACHE_SECONDS", "900"))
 AI_CHAT_R2_STATS_MAX_PAGES = int(os.getenv("AI_CHAT_R2_STATS_MAX_PAGES", "2000"))
+AI_CHAT_R2_STATS_TIMEOUT_SECONDS = float(os.getenv("AI_CHAT_R2_STATS_TIMEOUT_SECONDS", "8"))
 AI_CHAT_SERVER_REPLIES_ENABLED = parse_bool(os.getenv("AI_CHAT_SERVER_REPLIES_ENABLED", "true"), True)
 AI_CHAT_SERVER_REQUIRE_MENTION = parse_bool(os.getenv("AI_CHAT_SERVER_REQUIRE_MENTION", "true"), True)
 AI_CHAT_PUBLIC_INFO_ONLY = parse_bool(os.getenv("AI_CHAT_PUBLIC_INFO_ONLY", "true"), True)
@@ -277,6 +281,7 @@ AI_CHAT_SERVER_KNOWLEDGE_ENABLED = parse_bool(os.getenv("AI_CHAT_SERVER_KNOWLEDG
 AI_CHAT_SERVER_KNOWLEDGE_CACHE_SECONDS = int(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_CACHE_SECONDS", "600"))
 AI_CHAT_SERVER_KNOWLEDGE_MAX_MESSAGES = int(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_MAX_MESSAGES", "12"))
 AI_CHAT_SERVER_KNOWLEDGE_MAX_CHARS = int(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_MAX_CHARS", "9000"))
+AI_CHAT_SERVER_KNOWLEDGE_TIMEOUT_SECONDS = float(os.getenv("AI_CHAT_SERVER_KNOWLEDGE_TIMEOUT_SECONDS", "8"))
 AI_CHAT_SERVER_KNOWLEDGE_CHANNEL_NAMES = {
     item.lower()
     for item in parse_str_list(
@@ -397,9 +402,6 @@ GITHUB_API_BASE      = "https://api.github.com/repos/SteamAutoCracks/ManifestHub
 GITHUB_BRANCHES_URL  = f"{GITHUB_API_BASE}/branches"
 MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHub")
 
-# JSON catalog path is only used as a fallback/source. SQLite is the runtime DB.
-# Keep the packaged data/games.json as the default source so first Railway boot can
-# seed /data/games.db automatically even when /data/games.json does not exist.
 SQLITE_PATH = env_path("SQLITE_PATH", DATA_DIR / "games.db")
 
 # Railway SQLite -> GitHub private repo backup.

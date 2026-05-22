@@ -37,9 +37,9 @@ logs/
 
 # Database & Data files
 data/games.db
+data/games.db-*
 !data/.gitkeep
 *.json
-!data/games.json
 !data/appid_names_cache.json
 !.env.example
 !requirements.txt

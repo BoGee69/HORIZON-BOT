@@ -23,8 +23,9 @@ from utils.manifest_cleaner import clean_manifest_bytes
 from utils.r2_presign import _BUCKET, _PRESIGN_ENABLED, _make_client
 from utils.rename_database_files import (
     DEFAULT_CACHE_JSON,
-    DEFAULT_DB_JSON,
+    DEFAULT_SQLITE_DB,
     fetch_steam_name,
+    load_sqlite_game_names,
     load_json,
     parse_appid_from_stem,
     sanitize_game_name,
@@ -248,9 +249,8 @@ def clean_zip_lua_comments(data: bytes) -> ZipCleanResult:
     return clean_zip_comments(data, {"lua"})
 
 
-def _load_games_from_json(path: Path = DEFAULT_DB_JSON) -> list[dict[str, Any]]:
-    payload = load_json(path, [])
-    return payload if isinstance(payload, list) else []
+def _load_games_from_sqlite(path: Path = DEFAULT_SQLITE_DB) -> list[dict[str, Any]]:
+    return load_sqlite_game_names(path)
 
 
 def _build_name_map(
@@ -273,13 +273,13 @@ def _build_name_map(
         for appid, name in cache.items():
             set_name(name_map, str(appid), name, "steam cache", 20)
 
-    source_games = list(games) if games is not None else _load_games_from_json()
+    source_games = list(games) if games is not None else _load_games_from_sqlite()
     for item in source_games:
         if not isinstance(item, dict):
             continue
         appid = str(item.get("id") or item.get("appid") or "").strip()
         if appid.isdigit():
-            set_name(name_map, appid, item.get("name"), "games.json", 10)
+            set_name(name_map, appid, item.get("name"), "SQLite games table", 10)
 
     return name_map
 

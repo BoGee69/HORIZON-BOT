@@ -1,10 +1,10 @@
-# OpenDir Games.json Sync
+# OpenDir SQLite Sync
 
-`cogs/opendir_sync.py` sekarang memakai `games.json` sebagai daftar AppID/nama game.
+`cogs/opendir_sync.py` memakai tabel SQLite `games` sebagai daftar AppID/nama game. OpenDir tidak membaca katalog JSON.
 
 Alur kerja:
 
-1. Bot membaca `data/games.json`.
+1. Bot membaca SQLite dari `SQLITE_PATH`.
 2. Untuk setiap game, bot membangun nama target R2:
    - `Database/Nama Game (AppID).zip`
 3. Bot mengecek Open Directory untuk kandidat file seperti:
@@ -20,13 +20,12 @@ Alur kerja:
 
 Tidak ada file yang disimpan ke local disk.
 
-## your .env file env penting
+## Environment Penting
 
 ```env
 OPENDIR_SYNC_ENABLED=true
 OPENDIR_BASE_URL=https://www.depotgame.my.id/
 OPENDIR_R2_PREFIX=Database/
-OPENDIR_GAMES_JSON_PATH=data/games.json
 OPENDIR_STATE_PATH=data/opendir_sync_state.json
 OPENDIR_INTERVAL_HOURS=6
 OPENDIR_RUN_ON_START=true
@@ -53,14 +52,13 @@ OPENDIR_CONNECT_TIMEOUT_SECONDS=30
 OPENDIR_READ_TIMEOUT_SECONDS=120
 ```
 
-## Perbedaan dengan Open Directory scanner lama
+## Perbedaan Dengan Scanner Lama
 
-Versi lama hanya membuka halaman root lalu mencari tag `<a href="...zip">`.
-Kalau URL root bukan directory listing, hasilnya bisa `Files seen: 0`.
+Versi lama hanya membuka halaman root lalu mencari tag `<a href="...zip">`. Kalau URL root bukan directory listing, hasilnya bisa `Files seen: 0`.
 
-Versi baru tetap bisa scan `<a href>`, tetapi juga bisa probe file berdasarkan daftar `games.json`, misalnya `400.zip`, `620.zip`, atau `Portal (400).zip`.
+Versi ini tetap bisa scan `<a href>`, tetapi juga bisa probe file berdasarkan daftar AppID/nama dari SQLite, misalnya `400.zip`, `620.zip`, atau `Portal (400).zip`.
 
-## State cursor
+## State Cursor
 
 Bot menyimpan posisi terakhir di:
 
@@ -68,11 +66,11 @@ Bot menyimpan posisi terakhir di:
 data/opendir_sync_state.json
 ```
 
-Tujuannya supaya bot tidak harus mengecek puluhan ribu entry `games.json` dalam satu run. Kalau ingin mulai ulang dari awal, hapus file state ini atau set `cursor` ke `0`.
+Tujuannya supaya bot tidak harus mengecek seluruh tabel SQLite dalam satu run. Kalau ingin mulai ulang dari awal, hapus file state ini atau set `cursor` ke `0`.
 
-## Catatan performa
+## Catatan Performa
 
-`games.json` bisa berisi puluhan ribu game. Untuk test awal gunakan:
+Untuk test awal gunakan:
 
 ```env
 OPENDIR_GAMES_PER_RUN=100
@@ -82,11 +80,11 @@ OPENDIR_CONCURRENCY=1
 
 Kalau sudah stabil, naikkan pelan-pelan.
 
-## Output notifikasi
+## Output Notifikasi
 
 Notifikasi akan menampilkan:
 
-- total game di `games.json`
+- total game di SQLite
 - jumlah game yang dicek pada run itu
 - cursor awal dan cursor berikutnya
 - jumlah kandidat URL yang dicek
@@ -95,6 +93,8 @@ Notifikasi akan menampilkan:
 - jumlah file yang berhasil diupload
 - sample upload
 - error jika ada
+
+Jika muncul `SQLite games table has no valid appid/name records`, berarti `SQLITE_PATH` menunjuk ke database kosong atau tabel `games` belum terisi. Jalankan/aktifkan Steam DB sync atau cek path database.
 
 ## Keamanan
 

@@ -6,6 +6,7 @@ and R2 storage — deep operational awareness, not just data lookup.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import time
@@ -148,6 +149,56 @@ def _is_knowledge_channel(channel: Any) -> bool:
             "resource", "announcement", "pengumuman", "link-invite", "welcome",
         )
     )
+
+
+def _r2_inventory_timeout_snapshot(prefix: str, timeout: float) -> dict[str, Any]:
+    return {
+        "enabled": True,
+        "bucket_configured": True,
+        "bucket": None,
+        "prefix": prefix,
+        "objects_counted": 0,
+        "zip_objects_counted": 0,
+        "named_zip_objects_counted": 0,
+        "appid_only_zip_objects_counted": 0,
+        "unknown_zip_objects_counted": 0,
+        "pages_scanned": 0,
+        "truncated": True,
+        "source": "timeout",
+        "error": f"R2 inventory scan timed out after {timeout:.0f}s",
+        "cache_age_seconds": 0,
+    }
+
+
+async def _safe_r2_inventory_snapshot(
+    *,
+    prefix: str,
+    cache_seconds: int,
+    max_pages: int,
+) -> dict[str, Any]:
+    timeout = max(1.0, float(getattr(bot_config, "AI_CHAT_R2_STATS_TIMEOUT_SECONDS", 8) or 8))
+    try:
+        return await asyncio.wait_for(
+            get_r2_inventory_snapshot_async(
+                prefix=prefix,
+                cache_seconds=cache_seconds,
+                max_pages=max_pages,
+            ),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        return _r2_inventory_timeout_snapshot(prefix, timeout)
+
+
+async def _safe_server_knowledge(bot: Any) -> dict[str, Any]:
+    timeout = max(1.0, float(getattr(bot_config, "AI_CHAT_SERVER_KNOWLEDGE_TIMEOUT_SECONDS", 8) or 8))
+    try:
+        return await asyncio.wait_for(collect_server_knowledge(bot), timeout=timeout)
+    except asyncio.TimeoutError:
+        return {
+            "enabled": False,
+            "error": f"Server knowledge collection timed out after {timeout:.0f}s",
+        }
 
 
 def _message_text(message: Any) -> str:
@@ -595,7 +646,7 @@ async def build_chat_prompt(
     message = sanitize_text(user_message)[:message_limit]
     reply_language = _detect_reply_language(message)
 
-    server_knowledge = await collect_server_knowledge(bot)
+    server_knowledge = await _safe_server_knowledge(bot)
     public_info_only = bool((not is_dm) and getattr(bot_config, "AI_CHAT_PUBLIC_INFO_ONLY", True))
 
     if public_info_only:
@@ -643,7 +694,7 @@ async def build_chat_prompt(
 
     r2_raw = None
     if bot_config.AI_CHAT_R2_STATS_ENABLED:
-        r2_raw = await get_r2_inventory_snapshot_async(
+        r2_raw = await _safe_r2_inventory_snapshot(
             prefix=bot_config.R2_MAINTENANCE_PREFIX,
             cache_seconds=bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
             max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,

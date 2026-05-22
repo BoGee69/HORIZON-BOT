@@ -148,11 +148,21 @@ class AIChat(commands.Cog):
         return False
 
     async def _zip_name_stats_reply(self) -> str:
-        inventory = await get_r2_inventory_snapshot_async(
-            prefix=bot_config.R2_MAINTENANCE_PREFIX,
-            cache_seconds=0,
-            max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
-        )
+        timeout = max(1.0, float(getattr(bot_config, "AI_CHAT_R2_STATS_TIMEOUT_SECONDS", 8) or 8))
+        try:
+            inventory = await asyncio.wait_for(
+                get_r2_inventory_snapshot_async(
+                    prefix=bot_config.R2_MAINTENANCE_PREFIX,
+                    cache_seconds=0,
+                    max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return (
+                "Saya belum bisa memverifikasi jumlah ZIP langsung dari R2 sekarang.\n"
+                f"Scan R2 melewati timeout `{timeout:.0f}s`, jadi saya hentikan agar chat tetap responsif."
+            )
         if inventory.get("error"):
             return (
                 "Saya belum bisa memverifikasi jumlah nama ZIP langsung dari R2 saat ini.\n"
@@ -168,7 +178,7 @@ class AIChat(commands.Cog):
         last_renamed = getattr(last_summary, "rename_applied", None)
 
         lines = [
-            "Saya hitung langsung dari R2, bukan dari total katalog games.json:",
+            "Saya hitung langsung dari R2, bukan dari total katalog SQLite:",
             "",
             f"- Total ZIP di R2: `{total_zip:,}`",
             f"- ZIP yang sudah format `Nama Game (AppID).zip`: `{named_zip:,}`",
@@ -280,15 +290,22 @@ class AIChat(commands.Cog):
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
                     else:
-                        reply = await chat_with_triadbot(
-                            self.bot,
-                            user_id=message.author.id,
-                            user_name=str(message.author),
-                            user_message=user_message,
-                            memory=self.memory,
-                            is_owner=is_owner,
-                            user_access_level=access_level,
-                            is_dm=is_dm,
+                        reply_timeout = max(
+                            5.0,
+                            float(getattr(bot_config, "AI_CHAT_RESPONSE_TIMEOUT_SECONDS", 60) or 60),
+                        )
+                        reply = await asyncio.wait_for(
+                            chat_with_triadbot(
+                                self.bot,
+                                user_id=message.author.id,
+                                user_name=str(message.author),
+                                user_message=user_message,
+                                memory=self.memory,
+                                is_owner=is_owner,
+                                user_access_level=access_level,
+                                is_dm=is_dm,
+                            ),
+                            timeout=reply_timeout,
                         )
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):
@@ -297,6 +314,20 @@ class AIChat(commands.Cog):
                         "ai_chat",
                         "AI chat replied.",
                         {"user_id": str(message.author.id), "dm": is_dm, "access_level": access_level, "access_reason": access_reason},
+                    )
+            except asyncio.TimeoutError:
+                log.warning("AI chat response timed out")
+                await message.channel.send(
+                    "AI provider terlalu lama merespons, jadi saya hentikan request ini. "
+                    "Coba kirim ulang sebentar lagi.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                if hasattr(self.bot, "record_ai_event"):
+                    self.bot.record_ai_event(
+                        "warning",
+                        "ai_chat",
+                        "AI chat response timed out.",
+                        {"timeout_seconds": str(getattr(bot_config, "AI_CHAT_RESPONSE_TIMEOUT_SECONDS", 60))},
                     )
             except AICaretakerUnavailable as exc:
                 log.warning("AI chat unavailable: %s", exc)
