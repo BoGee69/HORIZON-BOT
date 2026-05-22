@@ -9,7 +9,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
-from config import BASE_DIR, DATA_DIR, DB_PATH, ENABLE_AUTO_BACKUP, MAX_BACKUPS, SQLITE_PATH as CONFIG_SQLITE_PATH
+from config import BASE_DIR, DATA_DIR, ENABLE_AUTO_BACKUP, MAX_BACKUPS, SQLITE_PATH as CONFIG_SQLITE_PATH
 
 log = logging.getLogger(__name__)
 
