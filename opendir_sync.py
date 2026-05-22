@@ -21,6 +21,7 @@ import posixpath
 import queue
 import re
 import time
+import unicodedata
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -121,6 +122,17 @@ def _safe_game_name(name: str, *, max_len: int = 170) -> str:
     cleaned = "".join(" " if ch in _INVALID_FILENAME_CHARS or ord(ch) < 32 else ch for ch in str(name))
     cleaned = " ".join(cleaned.split()).strip(" .")
     return (cleaned[:max_len].strip(" .") or "Unknown Game")
+
+
+def _safe_metadata_value(value: Any, *, max_len: int = 180) -> str:
+    """
+    S3 user metadata values must be US-ASCII. Object keys may keep Unicode, but
+    metadata such as game-name must be normalized before boto validates it.
+    """
+    text = str(value or "").replace("\r", " ").replace("\n", " ")
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    text = " ".join(text.split()).strip()
+    return (text[:max_len].strip() or "Unknown Game")
 
 
 class OpenDirSyncError(RuntimeError):
@@ -897,8 +909,8 @@ class OpenDirSync(commands.Cog):
             Metadata={
                 "source": "opendir-api-sync",
                 "synced-by": "triadbot",
-                "appid": str(remote_file.appid),
-                "game-name": str(remote_file.game_name)[:180],
+                "appid": _safe_metadata_value(remote_file.appid, max_len=40),
+                "game-name": _safe_metadata_value(remote_file.game_name),
             },
         )
 
@@ -1366,8 +1378,8 @@ class OpenDirSync(commands.Cog):
             "Metadata": {
                 "source": "opendir-sqlite-sync",
                 "synced-by": "triadbot",
-                "appid": str(remote_file.appid),
-                "game-name": str(remote_file.game_name)[:180],
+                "appid": _safe_metadata_value(remote_file.appid, max_len=40),
+                "game-name": _safe_metadata_value(remote_file.game_name),
             }
         }
         self.s3.upload_fileobj(
