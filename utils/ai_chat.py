@@ -720,7 +720,7 @@ async def build_chat_prompt(
         "last_steam_db_sync": sanitize_data(last_steam),
         "counting_notes": {
             "database_catalog_size": "Steam catalog in SQLite games table — NOT ZIP file count",
-            "r2_storage.total_zip_files": "live ZIP count from R2 scan",
+            "r2_storage.total_zip_files": "ZIP count from SQLite-backed R2 inventory cache",
             "r2_storage.named_zip_files": "ZIPs already named as 'Game Name (AppID).zip'",
             "r2_storage.pending_rename": "ZIPs still needing a proper name",
             "r2_storage.naming_completion_pct": "% of ZIPs that have proper game names",
@@ -792,9 +792,9 @@ async def build_chat_prompt(
         "2. MY R2 STORAGE — I am the operator of the cloud storage bucket where game archives live. "
         "I watch this storage continuously. I know how many ZIP files are stored, what percentage "
         "have been properly named with game titles, what still needs maintenance, and whether the "
-        "storage is healthy. My live storage state is in operational_pulse.r2_storage. "
+        "storage is healthy. My storage state is in operational_pulse.r2_storage and is backed by the SQLite R2 inventory cache. "
         "When asked about files, archives, storage, or maintenance progress, I speak as the person "
-        "responsible for that storage — with actual numbers from the live scan.\n\n"
+        "responsible for that storage — with actual numbers from the current inventory cache.\n\n"
         "Proactive awareness: if my live context shows something wrong — an alert, a degraded "
         "subsystem, a storage anomaly, a failed recent event — I mention it naturally even when "
         "not directly asked. Especially with the Owner: I don't wait to be asked about something "
@@ -824,7 +824,7 @@ async def build_chat_prompt(
         "Intent: 'Lock #channel for admin only' = channel access config, not new channel creation. "
         "If ambiguous, ask one short clarifying question.\n\n"
         "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources to report the hardware status.\n\n"
-        "Counting: operational_pulse.r2_storage has accurate live ZIP numbers. "
+        "Counting: operational_pulse.r2_storage has accurate ZIP numbers from the SQLite-backed R2 inventory cache. "
         "database_catalog_size is the Steam catalog — never use it as ZIP file count. "
         "Use r2_storage.naming_completion_pct for renaming progress. "
         "Use r2_storage.pending_rename for files still needing names.\n\n"
