@@ -47,6 +47,11 @@ except Exception:
         return None
 
 try:
+    from utils.r2_maintenance import clean_zip_comments
+except Exception:
+    clean_zip_comments = None
+
+try:
     from utils.database import R2InventoryDB, SQLITE_PATH as _SQLITE_PATH
     _r2_inventory_db: R2InventoryDB | None = R2InventoryDB()
 except Exception:
@@ -231,6 +236,8 @@ class SyncSummary:
     files_skipped: int = 0
     no_match: int = 0
     bytes_uploaded: int = 0
+    cleaned_objects: int = 0
+    cleaned_files: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
 
@@ -266,6 +273,8 @@ class SyncSummary:
             "Skipped": str(self.files_skipped),
             "No match": str(self.no_match),
             "Bytes uploaded": str(self.bytes_uploaded),
+            "Cleaned objects": str(self.cleaned_objects),
+            "Cleaned files": str(self.cleaned_files),
             "Errors": str(len(self.errors)),
             "Elapsed": f"{self.elapsed_seconds:.1f}s",
         }
@@ -283,6 +292,27 @@ class OpenDirSync(commands.Cog):
         self.enabled = _cfg_bool("OPENDIR_SYNC_ENABLED", False)
         self.base_url = self._normalize_base_url(_cfg_str("OPENDIR_BASE_URL", ""))
         self.r2_prefix = self._normalize_r2_prefix(_cfg_str("OPENDIR_R2_PREFIX", "Database/"))
+        self.source_mode = _cfg_str("OPENDIR_SOURCE_MODE", "api").lower() or "api"
+        if self.source_mode in {"manifest", "manifest_api", "generate", "generator"}:
+            self.source_mode = "api"
+        if self.source_mode in {"opendir", "directory", "dir", "direct"}:
+            self.source_mode = "directory"
+        if self.source_mode not in {"api", "directory"}:
+            log.warning("Unknown OPENDIR_SOURCE_MODE=%r; falling back to api", self.source_mode)
+            self.source_mode = "api"
+
+        self.api_base_url = self._normalize_base_url(_cfg_str("OPENDIR_API_BASE_URL", self.base_url))
+        self.api_search_path = _cfg_str("OPENDIR_API_SEARCH_PATH", "/api/search") or "/api/search"
+        self.api_generate_path = _cfg_str("OPENDIR_API_GENERATE_PATH", "/api/generate") or "/api/generate"
+        self.api_default_manifest_id = _cfg_str("OPENDIR_API_DEFAULT_MANIFEST_ID", "7884779798207988041")
+        self.api_branch = _cfg_str("OPENDIR_API_BRANCH", "public") or "public"
+        self.api_depot_key = _cfg_str("OPENDIR_API_DEPOT_KEY", "")
+        self.api_use_ryuu_api = _cfg_bool("OPENDIR_API_USE_RYUU_API", True)
+        self.api_lookup_before_generate = _cfg_bool("OPENDIR_API_LOOKUP_BEFORE_GENERATE", True)
+        self.api_clean_before_upload = _cfg_bool(
+            "OPENDIR_API_CLEAN_BEFORE_UPLOAD",
+            _cfg_bool("R2_MAINTENANCE_CLEAN_COMMENTS", True),
+        )
 
         self.state_path = _cfg_path(
             "OPENDIR_STATE_PATH",
@@ -311,6 +341,14 @@ class OpenDirSync(commands.Cog):
         self.max_games_per_run = max(0, _cfg_int("OPENDIR_MAX_GAMES_PER_RUN", 500))
         self.max_files_per_run = max(0, _cfg_int("OPENDIR_MAX_FILES_PER_RUN", 20))
         self.max_file_bytes = max(1, _cfg_int("OPENDIR_MAX_FILE_MB", 1024)) * 1024 * 1024
+        default_buffer_mb = min(
+            max(1, _cfg_int("OPENDIR_MAX_FILE_MB", 1024)),
+            max(1, _cfg_int("R2_MAINTENANCE_MAX_ZIP_MB", 50)),
+        )
+        self.api_buffer_max_bytes = max(
+            1,
+            _cfg_int("OPENDIR_API_BUFFER_MAX_MB", default_buffer_mb),
+        ) * 1024 * 1024
         self.concurrency = max(1, _cfg_int("OPENDIR_CONCURRENCY", 2))
         self.queue_chunks = max(1, _cfg_int("OPENDIR_QUEUE_CHUNKS", 8))
         self.chunk_size = max(64 * 1024, _cfg_int("OPENDIR_CHUNK_SIZE_BYTES", _DEFAULT_CHUNK_SIZE))
@@ -351,8 +389,11 @@ class OpenDirSync(commands.Cog):
         if not self.enabled:
             log.info("OpenDir SQLite sync disabled. Set OPENDIR_SYNC_ENABLED=true to enable.")
             return
-        if not self.base_url:
-            log.warning("OpenDir sync enabled but OPENDIR_BASE_URL is empty; task will not start.")
+        if self.source_mode == "api" and not self.api_base_url:
+            log.warning("OpenDir API sync enabled but OPENDIR_API_BASE_URL/OPENDIR_BASE_URL is empty; task will not start.")
+            return
+        if self.source_mode == "directory" and not self.base_url:
+            log.warning("OpenDir directory sync enabled but OPENDIR_BASE_URL is empty; task will not start.")
             return
         if not self._r2_configured():
             log.warning("OpenDir sync enabled but R2 credentials/bucket are incomplete; task will not start.")
@@ -361,12 +402,16 @@ class OpenDirSync(commands.Cog):
         base_host = urlparse(self.base_url).hostname
         if base_host and not self.allowed_hosts:
             self.allowed_hosts.add(base_host.lower())
+        api_host = urlparse(self.api_base_url).hostname
+        if api_host and not self.allowed_hosts:
+            self.allowed_hosts.add(api_host.lower())
 
         self.s3 = self._make_r2_client()
         self._task = asyncio.create_task(self._sync_loop(), name="opendir-sqlite-sync-loop")
         log.info(
-            "OpenDir SQLite sync task enabled for %s",
-            self._redact_url(self.base_url),
+            "OpenDir SQLite sync task enabled for %s (mode=%s)",
+            self._redact_url(self.api_base_url if self.source_mode == "api" else self.base_url),
+            self.source_mode,
         )
 
     async def cog_unload(self) -> None:
@@ -480,7 +525,7 @@ class OpenDirSync(commands.Cog):
 
                 # ── Index scan (shared for both modes) ──────────────────
                 indexed_files: list[RemoteFile] = []
-                if self.index_scan_enabled:
+                if self.source_mode == "directory" and self.index_scan_enabled:
                     try:
                         indexed_files = await self._scan_index(session, summary)
                     except Exception as exc:
@@ -610,6 +655,13 @@ class OpenDirSync(commands.Cog):
                 summary.files_existing += 1
                 continue
 
+            if self.source_mode == "api":
+                if ext.lower().lstrip(".") != "zip":
+                    summary.files_skipped += 1
+                    continue
+                await self._sync_one_game_from_api(session, game, target_key, existing_keys, summary)
+                continue
+
             remote = self._match_indexed_file(game, ext, target_key, indexed_by_name)
             if remote is None and self.direct_probe_enabled:
                 remote = await self._probe_game_candidates(session, game, ext, target_key, summary)
@@ -627,6 +679,245 @@ class OpenDirSync(commands.Cog):
             )
             summary.remote_matches += 1
             await self._upload_if_needed(session, remote, existing_keys, summary)
+
+    async def _sync_one_game_from_api(
+        self,
+        session: aiohttp.ClientSession,
+        game: GameRecord,
+        target_key: str,
+        existing_keys: set[str],
+        summary: SyncSummary,
+    ) -> None:
+        summary.files_seen += 1
+        if target_key in existing_keys:
+            summary.files_existing += 1
+            return
+
+        try:
+            game_info = await self._api_lookup_game(session, game, summary)
+            if self.api_lookup_before_generate and game_info is None:
+                summary.no_match += 1
+                return
+
+            name = str((game_info or {}).get("name") or game.name).strip() or game.name
+            depot_id = str((game_info or {}).get("depot_id") or self._default_depot_id(game.appid))
+            remote_file = RemoteFile(
+                url=self._api_url(self.api_generate_path),
+                relative_path=f"api:{game.appid}",
+                filename=f"{game.appid}.zip",
+                target_key=target_key,
+                appid=game.appid,
+                game_name=name,
+                extension="zip",
+            )
+
+            payload = {
+                "app_id": game.appid,
+                "depot_id": depot_id,
+                "manifest_id": self.api_default_manifest_id,
+                "depot_key": self.api_depot_key,
+                "branch": self.api_branch,
+                "game_name": name,
+                "use_ryuu_api": self.api_use_ryuu_api,
+            }
+
+            summary.candidates_checked += 1
+            data = await self._download_api_zip(session, payload, summary)
+            if data is None:
+                summary.no_match += 1
+                return
+
+            summary.remote_matches += 1
+            uploaded_bytes, cleaned_files = await self._upload_api_zip_bytes(
+                data,
+                target_key,
+                remote_file,
+            )
+            existing_keys.add(target_key)
+
+            if _r2_inventory_db is not None:
+                _r2_inventory_db.mark_uploaded(target_key, uploaded_bytes)
+
+            summary.files_uploaded += 1
+            summary.bytes_uploaded += uploaded_bytes
+            if cleaned_files:
+                summary.cleaned_objects += 1
+                summary.cleaned_files += cleaned_files
+            sample = f"api+upload {game.appid} -> {target_key}"
+            if cleaned_files:
+                sample += f" (cleaned {cleaned_files})"
+            summary.add_sample(sample)
+            log.info("OpenDir API uploaded %s -> %s (%d bytes)", game.appid, target_key, uploaded_bytes)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            summary.files_skipped += 1
+            summary.add_error(f"{game.appid}/api-generate: {exc!r}")
+            log.warning("OpenDir API failed for %s (%s): %r", game.name, game.appid, exc)
+
+    def _api_url(self, path: str) -> str:
+        path = (path or "").strip() or "/"
+        if path.startswith(("http://", "https://")):
+            return path
+        return urljoin(self.api_base_url, path.lstrip("/"))
+
+    async def _api_lookup_game(
+        self,
+        session: aiohttp.ClientSession,
+        game: GameRecord,
+        summary: SyncSummary,
+    ) -> dict[str, Any] | None:
+        if not self.api_lookup_before_generate:
+            return None
+
+        url = self._api_url(self.api_search_path)
+        async with session.get(
+            url,
+            params={"q": game.appid},
+            headers={"Accept": "application/json"},
+            allow_redirects=True,
+        ) as response:
+            text = await response.text(errors="replace")
+            if response.status >= 500:
+                raise OpenDirSyncError(
+                    f"API search failed with HTTP {response.status}: {self._short_error_text(text)}"
+                )
+            if response.status >= 400:
+                return None
+            if self._looks_like_html(response.headers.get("Content-Type", "")) or self._looks_like_html_text(text):
+                raise OpenDirSyncError("API search returned HTML instead of JSON")
+            try:
+                data = json.loads(text)
+            except Exception as exc:
+                raise OpenDirSyncError(f"API search returned invalid JSON: {exc}") from exc
+
+        if data.get("success") and isinstance(data.get("game"), dict):
+            return data["game"]
+        error = str(data.get("error") or data.get("message") or "").strip()
+        if error and len(summary.samples) < 3:
+            summary.add_sample(f"api no match {game.appid}: {error[:120]}")
+        return None
+
+    async def _download_api_zip(
+        self,
+        session: aiohttp.ClientSession,
+        payload: dict[str, Any],
+        summary: SyncSummary,
+    ) -> bytes | None:
+        url = self._api_url(self.api_generate_path)
+        async with session.post(
+            url,
+            json=payload,
+            headers={"Accept": "application/zip, application/octet-stream, application/json"},
+            allow_redirects=True,
+        ) as response:
+            content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+            if response.status >= 400:
+                text = await response.text(errors="replace")
+                if response.status >= 500:
+                    raise OpenDirSyncError(
+                        f"API generate failed with HTTP {response.status}: {self._short_error_text(text)}"
+                    )
+                if len(summary.samples) < 3:
+                    summary.add_sample(
+                        f"api no zip {payload.get('app_id')}: HTTP {response.status} {self._short_error_text(text)[:120]}"
+                    )
+                return None
+
+            if self._looks_like_html(content_type):
+                text = await response.text(errors="replace")
+                raise OpenDirSyncError(
+                    f"API generate returned HTML instead of ZIP: {self._short_error_text(text)}"
+                )
+
+            if content_type == "application/json" or content_type.endswith("+json"):
+                text = await response.text(errors="replace")
+                try:
+                    data = json.loads(text)
+                except Exception:
+                    raise OpenDirSyncError(f"API generate returned invalid JSON: {self._short_error_text(text)}")
+                if data.get("success") is False or data.get("error") or data.get("message"):
+                    if len(summary.samples) < 3:
+                        summary.add_sample(
+                            f"api no zip {payload.get('app_id')}: {str(data.get('error') or data.get('message'))[:120]}"
+                        )
+                    return None
+                raise OpenDirSyncError("API generate returned JSON, not a ZIP blob")
+
+            raw_size = response.headers.get("Content-Length")
+            if raw_size and raw_size.isdigit():
+                declared = int(raw_size)
+                if declared > self.max_file_bytes:
+                    raise OpenDirSyncError(f"API ZIP exceeds OPENDIR_MAX_FILE_MB ({declared} bytes)")
+                if declared > self.api_buffer_max_bytes:
+                    raise OpenDirSyncError(f"API ZIP exceeds OPENDIR_API_BUFFER_MAX_MB ({declared} bytes)")
+
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in response.content.iter_chunked(self.chunk_size):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > self.max_file_bytes:
+                    raise OpenDirSyncError(f"API ZIP exceeds OPENDIR_MAX_FILE_MB ({total} bytes)")
+                if total > self.api_buffer_max_bytes:
+                    raise OpenDirSyncError(f"API ZIP exceeds OPENDIR_API_BUFFER_MAX_MB ({total} bytes)")
+                chunks.append(chunk)
+
+        if not chunks:
+            raise OpenDirSyncError("API generate returned an empty ZIP response")
+        return b"".join(chunks)
+
+    async def _upload_api_zip_bytes(
+        self,
+        data: bytes,
+        r2_key: str,
+        remote_file: RemoteFile,
+    ) -> tuple[int, int]:
+        cleaned_files = 0
+        body = data
+        if self.api_clean_before_upload and clean_zip_comments is not None:
+            result = clean_zip_comments(data)
+            body = result.data
+            cleaned_files = int(getattr(result, "files_cleaned", 0) or 0)
+        elif self.api_clean_before_upload and clean_zip_comments is None:
+            log.warning("OpenDir API clean-before-upload requested but r2_maintenance cleaner is unavailable")
+
+        await asyncio.to_thread(self._put_bytes_to_r2_sync, body, r2_key, remote_file)
+        return len(body), cleaned_files
+
+    def _put_bytes_to_r2_sync(self, data: bytes, r2_key: str, remote_file: RemoteFile) -> None:
+        if self.s3 is None:
+            raise OpenDirSyncError("R2 client is not initialized")
+        self.s3.put_object(
+            Bucket=_cfg_str("R2_BUCKET_NAME"),
+            Key=r2_key,
+            Body=data,
+            ContentType="application/zip",
+            Metadata={
+                "source": "opendir-api-sync",
+                "synced-by": "triadbot",
+                "appid": str(remote_file.appid),
+                "game-name": str(remote_file.game_name)[:180],
+            },
+        )
+
+    @staticmethod
+    def _default_depot_id(appid: str) -> str:
+        try:
+            return str(int(appid) + 1)
+        except Exception:
+            return str(appid)
+
+    @staticmethod
+    def _looks_like_html_text(text: str) -> bool:
+        sample = str(text or "").strip().lower()[:120]
+        return sample.startswith("<!doctype") or sample.startswith("<html") or "<body" in sample
+
+    @staticmethod
+    def _short_error_text(text: str) -> str:
+        safe = str(text or "").replace("\r", " ").replace("\n", " ").strip()
+        return safe[:240] or "(empty response)"
 
     def _load_games(self) -> list[GameRecord]:
         """

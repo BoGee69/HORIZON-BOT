@@ -156,6 +156,17 @@ LINK_EXPIRE_SECONDS  = int(os.getenv("LINK_EXPIRE_SECONDS", "3600"))
 OPENDIR_SYNC_ENABLED = parse_bool(os.getenv("OPENDIR_SYNC_ENABLED", "false"), False)
 OPENDIR_BASE_URL = os.getenv("OPENDIR_BASE_URL", os.getenv("OPEN_DIRECTORY_URL", "")).strip()
 OPENDIR_R2_PREFIX = os.getenv("OPENDIR_R2_PREFIX", "Database/").strip()
+OPENDIR_SOURCE_MODE = os.getenv("OPENDIR_SOURCE_MODE", "api").strip().lower() or "api"
+OPENDIR_API_BASE_URL = os.getenv("OPENDIR_API_BASE_URL", OPENDIR_BASE_URL).strip()
+OPENDIR_API_SEARCH_PATH = os.getenv("OPENDIR_API_SEARCH_PATH", "/api/search").strip() or "/api/search"
+OPENDIR_API_GENERATE_PATH = os.getenv("OPENDIR_API_GENERATE_PATH", "/api/generate").strip() or "/api/generate"
+OPENDIR_API_DEFAULT_MANIFEST_ID = os.getenv("OPENDIR_API_DEFAULT_MANIFEST_ID", "7884779798207988041").strip()
+OPENDIR_API_BRANCH = os.getenv("OPENDIR_API_BRANCH", "public").strip() or "public"
+OPENDIR_API_DEPOT_KEY = os.getenv("OPENDIR_API_DEPOT_KEY", "").strip()
+OPENDIR_API_USE_RYUU_API = parse_bool(os.getenv("OPENDIR_API_USE_RYUU_API", "true"), True)
+OPENDIR_API_LOOKUP_BEFORE_GENERATE = parse_bool(os.getenv("OPENDIR_API_LOOKUP_BEFORE_GENERATE", "true"), True)
+OPENDIR_API_CLEAN_BEFORE_UPLOAD = parse_bool(os.getenv("OPENDIR_API_CLEAN_BEFORE_UPLOAD", "true"), True)
+OPENDIR_API_BUFFER_MAX_MB = int(os.getenv("OPENDIR_API_BUFFER_MAX_MB", os.getenv("R2_MAINTENANCE_MAX_ZIP_MB", "50")))
 OPENDIR_INTERVAL_HOURS = float(os.getenv("OPENDIR_INTERVAL_HOURS", os.getenv("SYNC_INTERVAL_HOURS", "6")))
 OPENDIR_RUN_ON_START = parse_bool(os.getenv("OPENDIR_RUN_ON_START", "true"), True)
 OPENDIR_START_DELAY_SECONDS = float(os.getenv("OPENDIR_START_DELAY_SECONDS", "20"))
@@ -432,7 +443,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.10"
+BOT_VERSION     = "9.2.11"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))
