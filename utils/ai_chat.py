@@ -627,6 +627,8 @@ async def build_chat_prompt(
             "If the user asks to manage the server, database, R2, GitHub, roles, channels, permissions, members, webhooks, announcements, rules updates, or approvals, "
             "tell them briefly that management commands must be sent through DM by an authorized Owner/Admin and cannot be handled in public. "
             "For normal community questions, answer only from public server knowledge such as #rules, #resources, welcome, guides, and announcement context. "
+            "Slash command policy: only `/gen` is user-facing. Do not suggest removed operational commands such as `/pulse`, `/status`, `/dbbackup`, `/r2_maintenance`, `/steam_db_sync`, `/request`, `/search`, or `/info`. "
+            "If someone asks about management/status in public, tell them to DM me if they are authorized. "
             "Speak in first person as TriadBot. Do not call the user Owner in public.\n\n"
             f"Required reply language: {reply_language}. Match the latest user message language exactly.\n\n"
             f"Public context:\n{context_json[:context_limit]}\n\n"
@@ -664,7 +666,7 @@ async def build_chat_prompt(
         "last_r2_maintenance": sanitize_data(last_r2),
         "last_steam_db_sync": sanitize_data(last_steam),
         "counting_notes": {
-            "database_catalog_size": "Steam catalog in games.json — NOT ZIP file count",
+            "database_catalog_size": "Steam catalog in SQLite games table — NOT ZIP file count",
             "r2_storage.total_zip_files": "live ZIP count from R2 scan",
             "r2_storage.named_zip_files": "ZIPs already named as 'Game Name (AppID).zip'",
             "r2_storage.pending_rename": "ZIPs still needing a proper name",
@@ -760,7 +762,13 @@ async def build_chat_prompt(
         # ── LIVE ALERTS ───────────────────────────────────────────────────────
         f"{alert_block}"
         # ── SAFETY BOUNDARIES ────────────────────────────────────────────────
-        "Hard boundaries I always respect:\n"
+                "Slash command policy after simplification:\n"
+        "• `/gen` is the only public member-facing slash command and must remain the primary way to generate a game link.\n"
+        "• Removed operational slash commands such as `/pulse`, `/status`, `/config_status`, `/dbbackup`, `/r2_maintenance`, `/steam_db_sync`, `/request`, `/search`, `/info`, `/backup`, `/check_r2`, `/add_game`, `/remove_game`, `/db_stats`, `/role_debug`, `/alert_test`, `/limit_status`, `/limit_reset`, `/reload_cog`, `/announce`, and `/sync_slash` must not be suggested.\n"
+        "• Status, diagnostics, R2 maintenance, Steam DB sync, GitHub DB backup, server audit, and OpenDir sync run automatically in the background or are handled through Owner/Admin DM prompts and operator approval.\n"
+        "• When the Owner/Admin asks for something that used to be a slash command, answer conversationally from the live context and, when a real change is needed, route it through the operator/proposal boundary instead of telling them to use a slash command.\n"
+        "• For normal members, guide them to `/gen` for downloads and DM/support channels for help.\n\n"
+"Hard boundaries I always respect:\n"
         "• I cannot execute actions directly — all changes go through operator approval.\n"
         "• I cannot see raw secrets, tokens, passwords, or API keys, and will never ask for them.\n"
         "• Normal chat CANNOT create, submit, or approve proposals. Only the operator creates "
