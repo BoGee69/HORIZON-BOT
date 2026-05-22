@@ -320,7 +320,16 @@ class OpenDirSync(commands.Cog):
 
         self.source_patterns = _cfg_list(
             "OPENDIR_SOURCE_PATTERNS",
-            "{appid}.{ext},{appid}/{appid}.{ext},{target_filename},{safe_name}.{ext},{safe_name} ({appid}).{ext}",
+            # Try common Open Directory layouts. The depot source normally exposes
+            # files under Database/, while some mirrors expose files at root.
+            "{appid}.{ext},"
+            "{appid}/{appid}.{ext},"
+            "Database/{appid}.{ext},"
+            "Database/{target_filename},"
+            "{target_filename},"
+            "{safe_name}.{ext},"
+            "{safe_name} ({appid}).{ext},"
+            "Database/{safe_name} ({appid}).{ext}",
         )
 
         self.request_timeout = aiohttp.ClientTimeout(
@@ -367,12 +376,57 @@ class OpenDirSync(commands.Cog):
         with suppress(asyncio.CancelledError):
             await self._task
 
+    async def _wait_for_sqlite_ready(self) -> bool:
+        """Wait briefly for /data/games.db to contain game rows before first sync."""
+        import sqlite3 as _sqlite3
+
+        timeout = max(0.0, _cfg_float("OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS", 600.0))
+        poll_interval = 5.0
+        deadline = time.monotonic() + timeout
+
+        while True:
+            games_count = 0
+            db_path = Path(_SQLITE_PATH) if _SQLITE_PATH else Path(
+                getattr(bot_config, "SQLITE_PATH",
+                        Path(getattr(bot_config, "DATA_DIR", Path("data"))) / "games.db")
+            )
+            if not db_path.is_absolute():
+                db_path = Path(getattr(bot_config, "DATA_DIR", Path("data"))) / db_path
+
+            try:
+                with _sqlite3.connect(db_path) as conn:
+                    games_count = int(conn.execute(
+                        """
+                        SELECT COUNT(*)
+                        FROM games
+                        WHERE appid IS NOT NULL
+                          AND TRIM(CAST(appid AS TEXT)) != ''
+                          AND name IS NOT NULL
+                          AND TRIM(name) != ''
+                        """
+                    ).fetchone()[0])
+            except Exception:
+                games_count = 0
+
+            if games_count > 0:
+                log.info("OpenDir: SQLite ready with %d games — starting sync", games_count)
+                return True
+
+            if time.monotonic() >= deadline:
+                log.warning("OpenDir: SQLite was not ready after %.0fs; continuing with normal error handling", timeout)
+                return False
+
+            await asyncio.sleep(poll_interval)
+
     async def _sync_loop(self) -> None:
         await self.bot.wait_until_ready()
         if self.start_delay > 0:
             await asyncio.sleep(self.start_delay)
         if not self.run_on_start:
             await asyncio.sleep(self.interval_seconds)
+
+        if not self._initial_done:
+            await self._wait_for_sqlite_ready()
 
         while not self.bot.is_closed():
             mode = "initial" if not self._initial_done else "monitor"
