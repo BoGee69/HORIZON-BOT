@@ -118,13 +118,16 @@ class R2MaintenanceCommands(commands.Cog):
         fallback_to_appid: bool,
         ignore_blacklist: bool,
     ) -> R2MaintenanceSummary:
+        # Ambil daftar game langsung dari SQLite
+        games_list = self.bot.db.search_games("", limit=999999)
+        
         async with self._lock:
             return await asyncio.to_thread(
                 run_r2_maintenance,
                 apply=apply_changes,
                 prefix=prefix,
                 limit=limit,
-                games=getattr(self.bot.db, "game_db", []),
+                games=games_list,
                 rename_objects=rename_objects,
                 clean_lua_comments=clean_lua,
                 use_steam=use_steam,
@@ -226,66 +229,6 @@ class R2MaintenanceCommands(commands.Cog):
             fields=fields,
             key="r2-maintenance-errors" if summary.errors else "r2-maintenance-applied",
         )
-
-    @app_commands.command(name="r2_maintenance", description="[Admin] Normalize R2 ZIP names and clean Lua/manifest comments")
-    @app_commands.describe(
-        apply_changes="True writes changes to R2. False only previews.",
-        limit="Maximum ZIP objects to scan this run. Use a small number first.",
-        prefix="R2 prefix to scan, for example Database/",
-        rename_objects="Rename objects to Game Name (appid).zip",
-        clean_lua="Remove Lua/manifest comments inside ZIP files",
-        use_steam="Fetch missing names from Steam when games.json/cache has no name",
-        max_steam_lookups="Maximum Steam name lookups for this run",
-        use_queue="Continue from the previous R2 scan position",
-        fallback_to_appid="If Steam has no name, normalize to AppID.zip instead of skipping",
-        ignore_blacklist="Retry AppIDs that were blacklisted after repeated Steam failures",
-    )
-    @admin_check()
-    async def r2_maintenance(
-        self,
-        interaction: discord.Interaction,
-        apply_changes: bool = False,
-        limit: int = 25,
-        prefix: Optional[str] = None,
-        rename_objects: bool = True,
-        clean_lua: bool = True,
-        use_steam: bool = False,
-        max_steam_lookups: int = 25,
-        use_queue: bool = True,
-        fallback_to_appid: bool = True,
-        ignore_blacklist: bool = False,
-    ):
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        if self._lock.locked():
-            await interaction.followup.send(
-                embed=discord.Embed(
-                    title="R2 maintenance already running",
-                    description="Wait for the current maintenance run to finish, then try again.",
-                    color=COLOR_WARNING,
-                ),
-                ephemeral=True,
-            )
-            return
-
-        safe_limit = max(1, min(int(limit or 25), 500))
-        safe_max_steam = max(0, min(int(max_steam_lookups or 0), 500))
-        scan_prefix = bot_config.R2_MAINTENANCE_PREFIX if prefix is None else prefix.strip()
-
-        summary = await self._run_threaded(
-            apply_changes=apply_changes,
-            prefix=scan_prefix,
-            limit=safe_limit,
-            rename_objects=rename_objects,
-            clean_lua=clean_lua,
-            use_steam=use_steam,
-            max_steam_lookups=safe_max_steam,
-            use_queue=use_queue,
-            fallback_to_appid=fallback_to_appid,
-            ignore_blacklist=ignore_blacklist,
-        )
-        await self._alert_if_needed(summary, automatic=False)
-        await interaction.followup.send(embed=_summary_embed(summary), ephemeral=True)
 
 
 async def setup(bot):

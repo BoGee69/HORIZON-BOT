@@ -400,7 +400,6 @@ MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHu
 # JSON catalog path is only used as a fallback/source. SQLite is the runtime DB.
 # Keep the packaged data/games.json as the default source so first Railway boot can
 # seed /data/games.db automatically even when /data/games.json does not exist.
-DB_PATH = env_path("DB_PATH", LOCAL_DATA_DIR / "games.json")
 SQLITE_PATH = env_path("SQLITE_PATH", DATA_DIR / "games.db")
 
 # Railway SQLite -> GitHub private repo backup.
