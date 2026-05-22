@@ -1,16 +1,22 @@
 """GitHub backup helper for Railway SQLite database.
 
-This module pushes a safe SQLite snapshot to a private GitHub repository using
-GitHub's Contents API. It does not require git CLI and it does not upload the
-live SQLite file directly.
+This module creates a safe SQLite snapshot, compresses it, splits it into
+GitHub-friendly chunks, and uploads those chunks to a private GitHub repository
+using GitHub's Contents API.
+
+Why chunked backup?
+GitHub's Contents API rejects large files. A Railway SQLite DB can quickly grow
+past that limit, so this helper never tries to PUT games.db directly.
 """
 from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import hashlib
 import json
 import logging
+import math
 import os
 import sqlite3
 import tempfile
@@ -32,6 +38,9 @@ class GitHubBackupResult:
     uploaded: bool = False
     sha256: str = ""
     size_bytes: int = 0
+    compressed_sha256: str = ""
+    compressed_size_bytes: int = 0
+    chunk_count: int = 0
     html_url: str = ""
 
 
@@ -50,7 +59,8 @@ class GitHubDatabaseBackup:
         github_db_path: str,
         metadata_path: str | None = None,
         session: aiohttp.ClientSession | None = None,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = 180,
+        chunk_size_mb: int = 40,
     ) -> None:
         self.token = (token or "").strip()
         self.repo = (repo or "").strip().strip("/")
@@ -58,8 +68,10 @@ class GitHubDatabaseBackup:
         self.db_path = Path(db_path)
         self.github_db_path = self._normalize_repo_path(github_db_path or "games.db")
         self.metadata_path = self._normalize_repo_path(metadata_path or f"{self.github_db_path}.meta.json")
+        self.manifest_path = self._normalize_repo_path(f"{self.github_db_path}.backup_manifest.json")
         self.session = session
         self.timeout_seconds = int(timeout_seconds)
+        self.chunk_size_bytes = max(int(chunk_size_mb), 1) * 1024 * 1024
 
     @staticmethod
     def _normalize_repo_path(path: str) -> str:
@@ -86,16 +98,22 @@ class GitHubDatabaseBackup:
         if not self.db_path.exists():
             return GitHubBackupResult(False, "missing_db", f"SQLite DB not found: {self.db_path}")
 
+        snapshot_path: Path | None = None
+        gz_path: Path | None = None
+
         try:
             snapshot_path = await asyncio.to_thread(self._create_sqlite_snapshot)
+            gz_path = await asyncio.to_thread(self._gzip_file, snapshot_path)
         except Exception as exc:
-            log.exception("Failed to create SQLite snapshot for GitHub backup")
+            log.exception("Failed to create/compress SQLite snapshot for GitHub backup")
             return GitHubBackupResult(False, "snapshot_failed", str(exc))
 
         try:
-            file_bytes = await asyncio.to_thread(snapshot_path.read_bytes)
-            sha256 = hashlib.sha256(file_bytes).hexdigest()
-            size_bytes = len(file_bytes)
+            sha256 = await asyncio.to_thread(self._sha256_file, snapshot_path)
+            compressed_sha256 = await asyncio.to_thread(self._sha256_file, gz_path)
+            size_bytes = snapshot_path.stat().st_size
+            compressed_size_bytes = gz_path.stat().st_size
+            chunk_count = max(1, math.ceil(compressed_size_bytes / self.chunk_size_bytes))
 
             old_meta = await self._get_json_file(self.metadata_path)
             if not force and isinstance(old_meta, dict) and old_meta.get("sha256") == sha256:
@@ -106,27 +124,56 @@ class GitHubDatabaseBackup:
                     uploaded=False,
                     sha256=sha256,
                     size_bytes=size_bytes,
+                    compressed_sha256=compressed_sha256,
+                    compressed_size_bytes=compressed_size_bytes,
+                    chunk_count=int(old_meta.get("chunk_count") or chunk_count),
                 )
 
-            db_response = await self._put_file(
-                self.github_db_path,
-                file_bytes,
-                message=f"backup: update SQLite database ({reason})",
+            chunk_paths = await self._upload_gzip_chunks(
+                gz_path,
+                chunk_count=chunk_count,
+                reason=reason,
             )
 
-            html_url = ""
-            if isinstance(db_response, dict):
-                html_url = ((db_response.get("content") or {}).get("html_url") or "")
+            previous_chunk_count = 0
+            if isinstance(old_meta, dict):
+                try:
+                    previous_chunk_count = int(old_meta.get("chunk_count") or 0)
+                except Exception:
+                    previous_chunk_count = 0
+            await self._delete_stale_chunks(previous_chunk_count, chunk_count, reason=reason)
 
-            metadata = {
+            manifest = {
+                "format": "sqlite-gzip-split-v1",
                 "repo": self.repo,
                 "branch": self.branch,
-                "db_path": str(self.db_path),
+                "source_db_path": str(self.db_path),
                 "github_db_path": self.github_db_path,
                 "sha256": sha256,
                 "size_bytes": size_bytes,
+                "compressed_sha256": compressed_sha256,
+                "compressed_size_bytes": compressed_size_bytes,
+                "chunk_size_bytes": self.chunk_size_bytes,
+                "chunk_count": chunk_count,
+                "chunks": chunk_paths,
+                "restore_hint": "Download parts in order, concatenate them, gzip-decompress, then save as games.db.",
                 "reason": reason,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            manifest_response = await self._put_file(
+                self.manifest_path,
+                json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8"),
+                message=f"backup: update SQLite backup manifest ({reason})",
+            )
+
+            html_url = ""
+            if isinstance(manifest_response, dict):
+                html_url = ((manifest_response.get("content") or {}).get("html_url") or "")
+
+            metadata = {
+                **manifest,
+                "metadata_path": self.metadata_path,
+                "manifest_path": self.manifest_path,
             }
             await self._put_file(
                 self.metadata_path,
@@ -136,21 +183,26 @@ class GitHubDatabaseBackup:
 
             return GitHubBackupResult(
                 True,
-                "uploaded",
-                "SQLite database backed up to GitHub.",
+                "uploaded_chunked",
+                f"SQLite database backed up to GitHub as gzip split into {chunk_count} chunk(s).",
                 uploaded=True,
                 sha256=sha256,
                 size_bytes=size_bytes,
+                compressed_sha256=compressed_sha256,
+                compressed_size_bytes=compressed_size_bytes,
+                chunk_count=chunk_count,
                 html_url=html_url,
             )
         except Exception as exc:
             log.exception("GitHub SQLite backup failed")
             return GitHubBackupResult(False, "upload_failed", str(exc))
         finally:
-            try:
-                snapshot_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            for path in (snapshot_path, gz_path):
+                try:
+                    if path:
+                        path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     def _create_sqlite_snapshot(self) -> Path:
         """Create a consistent SQLite snapshot using sqlite backup API."""
@@ -160,8 +212,6 @@ class GitHubDatabaseBackup:
 
         source = sqlite3.connect(str(self.db_path), timeout=60)
         try:
-            # Flush WAL frames when possible. If another writer is active, backup() still
-            # gives a consistent snapshot, so checkpoint failure is not fatal.
             try:
                 source.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except sqlite3.Error:
@@ -177,6 +227,54 @@ class GitHubDatabaseBackup:
             source.close()
 
         return snapshot_path
+
+    def _gzip_file(self, source_path: Path) -> Path:
+        gz_path = source_path.with_suffix(source_path.suffix + ".gz")
+        gz_path.unlink(missing_ok=True)
+        with source_path.open("rb") as src, gzip.open(gz_path, "wb", compresslevel=6) as dst:
+            while True:
+                chunk = src.read(1024 * 1024)
+                if not chunk:
+                    break
+                dst.write(chunk)
+        return gz_path
+
+    @staticmethod
+    def _sha256_file(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as fh:
+            for block in iter(lambda: fh.read(1024 * 1024), b""):
+                digest.update(block)
+        return digest.hexdigest()
+
+    def _chunk_path(self, index: int) -> str:
+        return f"{self.github_db_path}.gz.part{index:03d}"
+
+    async def _upload_gzip_chunks(self, gz_path: Path, *, chunk_count: int, reason: str) -> list[str]:
+        paths: list[str] = []
+        with gz_path.open("rb") as fh:
+            for index in range(chunk_count):
+                chunk_bytes = fh.read(self.chunk_size_bytes)
+                if not chunk_bytes:
+                    break
+                path = self._chunk_path(index)
+                paths.append(path)
+                await self._put_file(
+                    path,
+                    chunk_bytes,
+                    message=f"backup: update SQLite chunk {index + 1}/{chunk_count} ({reason})",
+                )
+        return paths
+
+    async def _delete_stale_chunks(self, previous_count: int, current_count: int, *, reason: str) -> None:
+        if previous_count <= current_count:
+            return
+        for index in range(current_count, previous_count):
+            path = self._chunk_path(index)
+            try:
+                await self._delete_file(path, message=f"backup: remove stale SQLite chunk ({reason})")
+            except Exception:
+                log.warning("Failed to delete stale GitHub backup chunk %s", path, exc_info=True)
 
     async def _session(self) -> tuple[aiohttp.ClientSession, bool]:
         if self.session and not self.session.closed:
@@ -245,4 +343,18 @@ class GitHubDatabaseBackup:
         status, payload = await self._request_json("PUT", self._contents_url(path), json=body)
         if status not in (200, 201):
             raise RuntimeError(f"GitHub PUT {path} failed: HTTP {status}: {payload}")
+        return payload
+
+    async def _delete_file(self, path: str, *, message: str) -> Any:
+        existing_sha = await self._get_file_sha(path)
+        if not existing_sha:
+            return None
+        body: dict[str, Any] = {
+            "message": message,
+            "sha": existing_sha,
+            "branch": self.branch,
+        }
+        status, payload = await self._request_json("DELETE", self._contents_url(path), json=body)
+        if status not in (200, 204):
+            raise RuntimeError(f"GitHub DELETE {path} failed: HTTP {status}: {payload}")
         return payload

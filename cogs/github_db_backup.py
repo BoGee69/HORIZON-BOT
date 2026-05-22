@@ -20,6 +20,7 @@ from config import (
     GITHUB_BACKUP_START_DELAY_SECONDS,
     GITHUB_BACKUP_NOTIFY_ON_SUCCESS,
     GITHUB_BACKUP_TIMEOUT_SECONDS,
+    GITHUB_BACKUP_CHUNK_SIZE_MB,
     ADMIN_IDS,
     SQLITE_PATH,
 )
@@ -46,6 +47,7 @@ class GitHubDBBackupCog(commands.Cog):
             metadata_path=GITHUB_DB_METADATA_PATH,
             session=getattr(bot, "session", None),
             timeout_seconds=GITHUB_BACKUP_TIMEOUT_SECONDS,
+            chunk_size_mb=GITHUB_BACKUP_CHUNK_SIZE_MB,
         )
 
         hours = max(float(GITHUB_BACKUP_INTERVAL_HOURS), 0.25)
@@ -96,7 +98,7 @@ class GitHubDBBackupCog(commands.Cog):
                 if GITHUB_BACKUP_NOTIFY_ON_SUCCESS:
                     await self._notify_admins(
                         "✅ GitHub DB backup uploaded",
-                        f"Repo: `{GITHUB_REPO}`\nPath: `{GITHUB_DB_PATH}`\nSize: `{result.size_bytes:,}` bytes\nSHA256: `{result.sha256[:16]}...`",
+                        f"Repo: `{GITHUB_REPO}`\nPath: `{GITHUB_DB_PATH}.gz.partXXX`\nChunks: `{result.chunk_count}`\nRaw size: `{result.size_bytes:,}` bytes\nCompressed: `{result.compressed_size_bytes:,}` bytes\nSHA256: `{result.sha256[:16]}...`",
                     )
             else:
                 log.info("GitHub DB backup skipped: %s", result.message)
@@ -152,7 +154,7 @@ class GitHubDBBackupCog(commands.Cog):
         result = await self.run_backup(force=True, reason="manual")
         if result.ok:
             await ctx.reply(
-                f"✅ `{result.status}` — {result.message}\nSize: `{result.size_bytes:,}` bytes\nSHA256: `{result.sha256[:16]}...`",
+                f"✅ `{result.status}` — {result.message}\nChunks: `{result.chunk_count}`\nRaw size: `{result.size_bytes:,}` bytes\nCompressed: `{result.compressed_size_bytes:,}` bytes\nSHA256: `{result.sha256[:16]}...`",
                 mention_author=False,
             )
         else:
