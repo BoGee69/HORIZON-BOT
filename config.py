@@ -185,6 +185,10 @@ OPENDIR_SOURCE_PATTERNS = parse_str_list(os.getenv(
     "OPENDIR_SOURCE_PATTERNS",
     "{appid}.{ext},{appid}/{appid}.{ext},{target_filename},{safe_name}.{ext},{safe_name} ({appid}).{ext}",
 ))
+# How long (seconds) to wait for a SQLite write lock before giving up.
+OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS = int(os.getenv("OPENDIR_SQLITE_WAIT_TIMEOUT_SECONDS", "600"))
+# How old (hours) the R2 SQLite inventory cache may be before a full rebuild is triggered.
+OPENDIR_R2_CACHE_TTL_HOURS = float(os.getenv("OPENDIR_R2_CACHE_TTL_HOURS", "12"))
 
 # Backwards compatibility for the earlier cogs/opendir_sync.py variable names.
 OPEN_DIRECTORY_URL = OPENDIR_BASE_URL
@@ -398,6 +402,23 @@ MANIFESTHUB_PATH     = os.getenv("MANIFESTHUB_PATH", "SteamAutoCracks/ManifestHu
 # seed /data/games.db automatically even when /data/games.json does not exist.
 DB_PATH = env_path("DB_PATH", LOCAL_DATA_DIR / "games.json")
 SQLITE_PATH = env_path("SQLITE_PATH", DATA_DIR / "games.db")
+
+# Railway SQLite -> GitHub private repo backup.
+# Use a fine-grained GitHub token with repository Contents: Read and write.
+GITHUB_BACKUP_ENABLED = parse_bool(os.getenv("GITHUB_BACKUP_ENABLED", "true"), True)
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "").strip().strip("/")
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main").strip() or "main"
+GITHUB_DB_PATH = os.getenv("GITHUB_DB_PATH", "games.db").strip().strip("/") or "games.db"
+GITHUB_DB_METADATA_PATH = os.getenv(
+    "GITHUB_DB_METADATA_PATH",
+    f"{GITHUB_DB_PATH}.meta.json",
+).strip().strip("/")
+GITHUB_BACKUP_INTERVAL_HOURS = float(os.getenv("GITHUB_BACKUP_INTERVAL_HOURS", "12"))
+GITHUB_BACKUP_START_DELAY_SECONDS = float(os.getenv("GITHUB_BACKUP_START_DELAY_SECONDS", "90"))
+GITHUB_BACKUP_NOTIFY_ON_SUCCESS = parse_bool(os.getenv("GITHUB_BACKUP_NOTIFY_ON_SUCCESS", "false"), False)
+GITHUB_BACKUP_TIMEOUT_SECONDS = int(os.getenv("GITHUB_BACKUP_TIMEOUT_SECONDS", "180"))
+
 GEN_USAGE_PATH = env_path("GEN_USAGE_PATH", DATA_DIR / "gen_usage.json")
 BACKFILL_STATE = env_path("BACKFILL_STATE", DATA_DIR / "backfill_state.json")
 CRAWLER_STATE = env_path("CRAWLER_STATE", DATA_DIR / "crawler_state.json")

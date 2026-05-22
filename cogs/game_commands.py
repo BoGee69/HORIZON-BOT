@@ -205,6 +205,9 @@ class GameCommands(commands.Cog):
             except Exception as e:
                 log.error(f"/gen followup error: {e}")
         else:
+            # File not in R2 — trigger a background priority sync so the next
+            # /gen attempt for this game is more likely to succeed.
+            self._trigger_priority_sync(target_id, game_info["name"])
             try:
                 await interaction.followup.send(
                     embed=self._embed_unavailable(game_info["name"]),
@@ -481,6 +484,24 @@ class GameCommands(commands.Cog):
 
         log.warning(f"❌ File AppID {appid} tidak ditemukan di R2")
         return self._dl_empty(appid)
+
+    def _trigger_priority_sync(self, appid: str, game_name: str) -> None:
+        """
+        Fire-and-forget: ask OpenDirSync to do a targeted fetch for *appid*.
+
+        Runs as a background task so it never blocks the /gen response.
+        Safe to call even when OpenDirSync is disabled or not loaded.
+        """
+        opendir_cog = self.bot.get_cog("OpenDirSync")
+        if opendir_cog is None:
+            return
+        # Make sure game is in DB so targeted sync can look it up
+        self.db.add_game(appid, game_name)
+        log.info("⚡ /gen triggered background priority sync for %s (%s)", game_name, appid)
+        asyncio.create_task(
+            opendir_cog.run_sync_once(priority_appid=appid),
+            name=f"opendir-priority-{appid}",
+        )
 
     @staticmethod
     def _dl_empty(appid: str) -> Dict:

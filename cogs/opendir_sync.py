@@ -37,19 +37,19 @@ import config as bot_config
 
 try:
     from utils.rename_database_files import sanitize_game_name as _sanitize_game_name
-except Exception:  # pragma: no cover - fallback if utility is not importable
+except Exception:
     _sanitize_game_name = None
 
 try:
     from utils.r2_inventory import invalidate_r2_inventory_cache
-except Exception:  # pragma: no cover - optional helper
+except Exception:
     def invalidate_r2_inventory_cache() -> None:
         return None
 
 try:
     from utils.database import R2InventoryDB, SQLITE_PATH as _SQLITE_PATH
     _r2_inventory_db: R2InventoryDB | None = R2InventoryDB()
-except Exception:  # pragma: no cover
+except Exception:
     _r2_inventory_db = None
     _SQLITE_PATH = None
 
@@ -284,10 +284,6 @@ class OpenDirSync(commands.Cog):
         self.base_url = self._normalize_base_url(_cfg_str("OPENDIR_BASE_URL", ""))
         self.r2_prefix = self._normalize_r2_prefix(_cfg_str("OPENDIR_R2_PREFIX", "Database/"))
 
-        self.games_json_path = _cfg_path(
-            "OPENDIR_GAMES_JSON_PATH",
-            Path(getattr(bot_config, "DB_PATH", Path(getattr(bot_config, "DATA_DIR", ".")) / "games.json")),
-        )
         self.state_path = _cfg_path(
             "OPENDIR_STATE_PATH",
             Path(getattr(bot_config, "DATA_DIR", Path("data"))) / "opendir_sync_state.json",
@@ -360,9 +356,8 @@ class OpenDirSync(commands.Cog):
         self.s3 = self._make_r2_client()
         self._task = asyncio.create_task(self._sync_loop(), name="opendir-sqlite-sync-loop")
         log.info(
-            "OpenDir SQLite sync task enabled for %s using %s",
+            "OpenDir SQLite sync task enabled for %s",
             self._redact_url(self.base_url),
-            self.games_json_path,
         )
 
     async def cog_unload(self) -> None:
@@ -384,7 +379,6 @@ class OpenDirSync(commands.Cog):
             try:
                 summary = await self.run_sync_once(mode=mode)
                 self._initial_done = True
-                await self._report_summary(summary)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -395,58 +389,105 @@ class OpenDirSync(commands.Cog):
 
             await asyncio.sleep(self.interval_seconds)
 
-    async def run_sync_once(self, *, mode: str = "manual", priority_appid: str = None) -> SyncSummary:
+    async def run_sync_once(
+        self,
+        *,
+        mode: str = "manual",
+        priority_appid: str | None = None,
+    ) -> SyncSummary:
+        """
+        Run one sync pass.
+
+        If *priority_appid* is set the cog does a fast targeted lookup for that
+        single game only and returns immediately after — the regular cursor-based
+        window is skipped entirely.  The caller is responsible for reporting the
+        summary if needed; this method never calls _report_summary internally so
+        the loop can handle reporting consistently.
+        """
         async with self._lock:
             summary = SyncSummary(mode="targeted" if priority_appid else mode)
             state = self._load_state()
-            games = self._load_games()
-            summary.games_total = len(games)
-            summary.cursor_start = min(max(0, state.cursor), max(0, len(games) - 1)) if games else 0
 
-            if not games:
-                summary.add_error(f"SQLite games table has no valid appid/name records")
-                return summary
+            # ── Ensure R2 SQLite cache is fresh before any key lookups ──
+            await self._ensure_r2_cache()
 
             existing_keys = await self._list_r2_keys()
-            connector = aiohttp.TCPConnector(limit=max(4, self.concurrency * 2), ttl_dns_cache=300)
-            
+
+            connector = aiohttp.TCPConnector(
+                limit=max(4, self.concurrency * 2),
+                ttl_dns_cache=300,
+            )
             async with aiohttp.ClientSession(
                 timeout=self.request_timeout,
                 connector=connector,
                 headers={"User-Agent": self.user_agent},
                 raise_for_status=False,
             ) as session:
-                indexed_files = []
+
+                # ── Index scan (shared for both modes) ──────────────────
+                indexed_files: list[RemoteFile] = []
                 if self.index_scan_enabled:
                     try:
                         indexed_files = await self._scan_index(session, summary)
-                    except: pass
-                
+                    except Exception as exc:
+                        summary.add_error(f"index scan error: {exc!r}")
                 summary.indexed_files = len(indexed_files)
                 indexed_by_name = self._build_remote_index(indexed_files)
 
-                # --- TARGETED PRIORITY SYNC ---
+                # ── TARGETED PRIORITY SYNC ──────────────────────────────
                 if priority_appid:
-                    game_record = self.bot.db.get_game(priority_appid)
-                    if game_record:
-                        rec = GameRecord(
-                            appid=str(game_record.get("appid") or game_record.get("id") or "").strip(),
-                            name=str(game_record.get("name") or game_record.get("title") or "").strip(),
-                        )
-                        log.info(f"⚡ INSTANT TARGETED SYNC: {rec.name} ({rec.appid})")
-                        await self._sync_one_game(session, rec, indexed_by_name, existing_keys, summary)
-                        # We return early for targeted sync
-                        await self._report_summary(summary)
-                        return summary
+                    game_record = None
+                    try:
+                        raw = self.bot.db.get_game(priority_appid)
+                        if raw:
+                            appid = str(raw.get("appid") or raw.get("id") or "").strip()
+                            name = str(raw.get("name") or raw.get("title") or "").strip()
+                            if appid and name:
+                                game_record = GameRecord(appid=appid, name=name)
+                    except Exception as exc:
+                        summary.add_error(f"db lookup failed for {priority_appid}: {exc!r}")
 
-                # --- NORMAL SYNC ---
-                await self._sync_games_window(session, games, indexed_by_name, existing_keys, state, summary)
+                    if game_record:
+                        log.info("⚡ TARGETED SYNC: %s (%s)", game_record.name, game_record.appid)
+                        summary.games_total = 1
+                        summary.games_checked = 1
+                        await self._sync_one_game(
+                            session, game_record, indexed_by_name, existing_keys, summary
+                        )
+                    else:
+                        summary.add_error(f"targeted appid {priority_appid!r} not found in DB")
+
+                    # Invalidate cache if we uploaded anything
+                    if summary.files_uploaded:
+                        try:
+                            invalidate_r2_inventory_cache()
+                        except Exception:
+                            pass
+
+                    await self._report_summary(summary)
+                    return summary
+
+                # ── NORMAL CURSOR-BASED SYNC ────────────────────────────
+                games = self._load_games()
+                summary.games_total = len(games)
+                summary.cursor_start = (
+                    min(max(0, state.cursor), max(0, len(games) - 1)) if games else 0
+                )
+
+                if not games:
+                    summary.add_error("SQLite games table has no valid appid/name records")
+                    await self._report_summary(summary)
+                    return summary
+
+                await self._sync_games_window(
+                    session, games, indexed_by_name, existing_keys, state, summary
+                )
 
             if summary.files_uploaded:
                 try:
-                    from utils.r2_inventory import invalidate_r2_inventory_cache
                     invalidate_r2_inventory_cache()
-                except: pass
+                except Exception:
+                    pass
 
             state.last_run_at = time.time()
             self._save_state(state)
@@ -474,19 +515,30 @@ class OpenDirSync(commands.Cog):
             checked += 1
 
             if checked % 100 == 0:
-                log.info("🔍 OpenDir Progress: Checked %d/%d games in this run (AppID: %s)", checked, max_games, game.appid)
+                log.info(
+                    "🔍 OpenDir progress: checked %d/%d games (AppID: %s)",
+                    checked, max_games, game.appid,
+                )
 
             await self._sync_one_game(session, game, indexed_by_name, existing_keys, summary)
 
             current = (current + 1) % total
+
             if self.max_files_per_run and summary.files_uploaded >= self.max_files_per_run:
+                log.info(
+                    "OpenDir: reached max_files_per_run=%d — stopping window early",
+                    self.max_files_per_run,
+                )
                 break
             if current == start:
+                # Wrapped around — full cycle done
                 break
 
         state.cursor = current
-        summary.cursor_next = state.cursor
-        if current <= start and checked > 0 or checked >= total:
+        summary.cursor_next = current
+
+        # Full cycle completed if we wrapped around or covered every game
+        if checked >= total or current == start:
             state.completed_cycles += 1
             summary.full_cycle_completed = True
 
@@ -512,10 +564,13 @@ class OpenDirSync(commands.Cog):
                 summary.no_match += 1
                 continue
 
-            remote.target_key = target_key
-            remote.appid = game.appid
-            remote.game_name = game.name
-            remote.extension = ext
+            remote = replace(
+                remote,
+                target_key=target_key,
+                appid=game.appid,
+                game_name=game.name,
+                extension=ext,
+            )
             summary.remote_matches += 1
             await self._upload_if_needed(session, remote, existing_keys, summary)
 
@@ -523,14 +578,14 @@ class OpenDirSync(commands.Cog):
         """
         Load the OpenDir candidate list from the persistent SQLite database.
 
-        games.json is intentionally not used here anymore. SQLite is the
-        single runtime source of truth, so deleting /data/games.json will not
-        break OpenDir sync as long as /data/games.db already exists.
+        SQLite is the single runtime source of truth.  games.json is only used
+        for the initial bootstrap when the database is empty.
         """
         import sqlite3 as _sqlite3
 
         db_path = Path(_SQLITE_PATH) if _SQLITE_PATH else Path(
-            getattr(bot_config, "SQLITE_PATH", Path(getattr(bot_config, "DATA_DIR", Path("data"))) / "games.db")
+            getattr(bot_config, "SQLITE_PATH",
+                    Path(getattr(bot_config, "DATA_DIR", Path("data"))) / "games.db")
         )
         if not db_path.is_absolute():
             db_path = Path(getattr(bot_config, "DATA_DIR", Path("data"))) / db_path
@@ -663,7 +718,9 @@ class OpenDirSync(commands.Cog):
         if child_dirs:
             nested = await asyncio.gather(
                 *(
-                    self._scan_directory(session, url, depth=depth + 1, summary=summary, visited_dirs=visited_dirs)
+                    self._scan_directory(
+                        session, url, depth=depth + 1, summary=summary, visited_dirs=visited_dirs
+                    )
                     for url in child_dirs
                 ),
                 return_exceptions=True,
@@ -770,7 +827,6 @@ class OpenDirSync(commands.Cog):
         target_key: str,
     ) -> RemoteFile | None:
         size: int | None = None
-        content_type = ""
 
         if self.use_head:
             try:
@@ -859,19 +915,25 @@ class OpenDirSync(commands.Cog):
                 remote_file.size = await self._remote_size(session, remote_file.url)
             if remote_file.size is not None and remote_file.size > self.max_file_bytes:
                 summary.files_skipped += 1
-                summary.add_error(f"skip too large: {remote_file.relative_path} ({remote_file.size} bytes)")
+                summary.add_error(
+                    f"skip too large: {remote_file.relative_path} ({remote_file.size} bytes)"
+                )
                 return
 
             uploaded_bytes = await self._stream_url_to_r2(session, remote_file.url, r2_key, remote_file)
             existing_keys.add(r2_key)
-            # Keep the SQLite R2 cache in sync so subsequent checks in the same
-            # run (and future runs before the next rebuild) know this key exists.
+
+            # Keep SQLite R2 cache in sync immediately after upload
             if _r2_inventory_db is not None:
                 _r2_inventory_db.mark_uploaded(r2_key, uploaded_bytes)
+
             summary.files_uploaded += 1
             summary.bytes_uploaded += uploaded_bytes
             summary.add_sample(f"uploaded {remote_file.filename} -> {r2_key}")
-            log.info("OpenDir uploaded %s -> %s (%s bytes)", remote_file.url, r2_key, uploaded_bytes)
+            log.info(
+                "OpenDir uploaded %s -> %s (%d bytes)",
+                remote_file.url, r2_key, uploaded_bytes,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -919,7 +981,9 @@ class OpenDirSync(commands.Cog):
 
         q: "queue.Queue[bytes | object | BaseException]" = queue.Queue(maxsize=self.queue_chunks)
         stream = QueueReadStream(q)
-        upload_task = asyncio.create_task(asyncio.to_thread(self._upload_stream_sync, stream, r2_key, remote_file))
+        upload_task = asyncio.create_task(
+            asyncio.to_thread(self._upload_stream_sync, stream, r2_key, remote_file)
+        )
         total = 0
 
         try:
@@ -928,14 +992,18 @@ class OpenDirSync(commands.Cog):
                     raise OpenDirSyncError(f"GET file failed with HTTP {response.status}")
                 content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
                 if self._looks_like_html(content_type):
-                    raise OpenDirSyncError(f"source returned HTML instead of .{remote_file.extension} file")
+                    raise OpenDirSyncError(
+                        f"source returned HTML instead of .{remote_file.extension} file"
+                    )
 
                 async for chunk in response.content.iter_chunked(self.chunk_size):
                     if not chunk:
                         continue
                     total += len(chunk)
                     if total > self.max_file_bytes:
-                        raise OpenDirSyncError(f"file exceeds OPENDIR_MAX_FILE_MB={_cfg_int('OPENDIR_MAX_FILE_MB', 1024)}")
+                        raise OpenDirSyncError(
+                            f"file exceeds OPENDIR_MAX_FILE_MB={_cfg_int('OPENDIR_MAX_FILE_MB', 1024)}"
+                        )
                     await self._queue_put_abortable(q, chunk, upload_task)
         except BaseException as exc:
             with suppress(Exception):
@@ -952,7 +1020,7 @@ class OpenDirSync(commands.Cog):
         assert self.s3 is not None
         extra_args = {
             "Metadata": {
-                "source": "opendir-games-json-sync",
+                "source": "opendir-sqlite-sync",
                 "synced-by": "triadbot",
                 "appid": str(remote_file.appid),
                 "game-name": str(remote_file.game_name)[:180],
@@ -966,17 +1034,15 @@ class OpenDirSync(commands.Cog):
             Config=self.transfer_config,
         )
 
-    # ── R2 key cache (SQLite-backed) ──────────────────────────────────
+    # ── R2 key cache (SQLite-backed) ──────────────────────────────────────────
 
-    # How old (seconds) the R2 SQLite cache may be before we trigger a
-    # background rebuild.  Default 12 h — change via OPENDIR_R2_CACHE_TTL_HOURS.
     _R2_CACHE_TTL = max(3600.0, _cfg_float("OPENDIR_R2_CACHE_TTL_HOURS", 12.0) * 3600)
 
     async def _ensure_r2_cache(self) -> None:
         """
         Rebuild the R2 → SQLite inventory if it is stale or empty.
-        This is called once per sync run, so subsequent ``contains()``
-        checks are pure SQLite — no network round-trips.
+        Called once at the start of every sync run so all subsequent
+        ``contains()`` / ``get_all_keys()`` calls are pure SQLite.
         """
         if _r2_inventory_db is None or self.s3 is None:
             return
@@ -1004,16 +1070,14 @@ class OpenDirSync(commands.Cog):
         """
         Return the set of existing R2 keys.
 
-        Prefer the SQLite-backed cache (R2InventoryDB) so we avoid listing
-        R2 on every sync run.  Falls back to a live R2 list when the cache
-        is unavailable.
+        Uses the SQLite-backed cache (R2InventoryDB) so we avoid listing R2 on
+        every sync run.  Falls back to a live R2 list only when the cache is
+        unavailable.
         """
         if _r2_inventory_db is not None:
-            await self._ensure_r2_cache()
             keys = _r2_inventory_db.get_all_keys(self.r2_prefix)
             log.debug("OpenDir: loaded %d existing keys from SQLite cache", len(keys))
             return keys
-        # Fallback: live R2 list (original behaviour)
         log.warning("OpenDir: R2InventoryDB not available — falling back to live R2 list")
         return await asyncio.to_thread(self._list_r2_keys_sync)
 
@@ -1037,7 +1101,7 @@ class OpenDirSync(commands.Cog):
             self.bot.record_ai_event(
                 "error" if summary.has_errors else "info",
                 "opendir_sync",
-                "OpenDir games.json sync finished.",
+                "OpenDir SQLite sync finished.",
                 {
                     "fields": summary.to_fields(),
                     "errors": summary.errors[:10],
@@ -1068,15 +1132,18 @@ class OpenDirSync(commands.Cog):
         if summary.samples:
             fields["Samples"] = "\n".join(summary.samples[:8])
         if summary.errors:
-            fields["Errors"] = "\n".join(summary.errors[:8])
+            fields["Error detail"] = "\n".join(summary.errors[:8])
 
-        title = "OpenDir games.json sync needs attention" if summary.has_errors else "OpenDir games.json sync completed"
-        if summary.full_cycle_completed and not summary.has_errors:
-            title = "OpenDir games.json full cycle completed"
+        if summary.has_errors:
+            title = "OpenDir SQLite sync needs attention"
+        elif summary.full_cycle_completed:
+            title = "OpenDir SQLite sync full cycle completed"
+        else:
+            title = "OpenDir SQLite sync completed"
 
         result = notifier(
             title,
-            "The games.json-driven Open Directory to R2 sync task finished.",
+            "The SQLite-driven Open Directory to R2 sync task finished.",
             level="error" if summary.has_errors else "info",
             fields=fields,
             key="opendir-sync-error" if summary.has_errors else "opendir-sync-ok",
@@ -1102,7 +1169,11 @@ class OpenDirSync(commands.Cog):
 
     def _resolve_in_scope(self, current_url: str, href_or_url: str) -> str | None:
         clean_href, _fragment = urldefrag(href_or_url)
-        resolved = clean_href if clean_href.startswith(("http://", "https://")) else urljoin(current_url, clean_href)
+        resolved = (
+            clean_href
+            if clean_href.startswith(("http://", "https://"))
+            else urljoin(current_url, clean_href)
+        )
         parsed = urlparse(resolved)
         base = urlparse(self.base_url)
 
@@ -1139,7 +1210,6 @@ class OpenDirSync(commands.Cog):
         if not raw:
             return None
         raw = raw.strip()
-        # Content-Range: bytes 0-0/12345
         if "/" in raw:
             tail = raw.rsplit("/", 1)[-1]
             return int(tail) if tail.isdigit() else None
