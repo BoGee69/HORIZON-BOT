@@ -11,6 +11,23 @@ from config import ADMIN_ALERT_COOLDOWN_SECONDS, ADMIN_ALERT_IDS, COLOR_ERROR, C
 
 log = logging.getLogger(__name__)
 
+LEGACY_OPENDIR_MARKERS = (
+    "opendir games.json",
+    "games.json-driven",
+    "games.json has no valid",
+)
+
+
+def _has_legacy_opendir_marker(title: str, description: str, fields: Optional[dict[str, str]]) -> bool:
+    haystack = "\n".join(
+        [
+            str(title or ""),
+            str(description or ""),
+            "\n".join(f"{name}: {value}" for name, value in (fields or {}).items()),
+        ]
+    ).lower()
+    return any(marker in haystack for marker in LEGACY_OPENDIR_MARKERS)
+
 
 class AdminNotifier:
     def __init__(
@@ -35,6 +52,10 @@ class AdminNotifier:
         force: bool = False,
     ) -> int:
         if not self.admin_ids:
+            return 0
+
+        if _has_legacy_opendir_marker(title, description, fields):
+            log.warning("Suppressed legacy games.json OpenDir admin alert: %s", title)
             return 0
 
         key = key or title

@@ -24,7 +24,7 @@ from config import (
 from utils.alerts import AdminNotifier
 from utils.ai_caretaker import CaretakerLogHandler, SafeEventRingBuffer, sanitize_data
 from utils.database import DatabaseManager
-from utils.diagnostics import collect_health
+from utils.diagnostics import collect_health, _deployment_info
 from utils.legal_pages import PRIVACY_HTML, TERMS_HTML
 from utils.r2_keys import build_r2_key_candidates
 from utils.r2_presign import generate_presigned_url
@@ -81,6 +81,14 @@ class SteamBot(commands.Bot):
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
         log.info("✅ HTTP session created")
+        deploy_info = _deployment_info()
+        log.info(
+            "Runtime deployment marker: version=%s commit=%s service=%s deployment=%s",
+            self.version,
+            deploy_info.get("commit_short") or "-",
+            deploy_info.get("railway_service") or "-",
+            deploy_info.get("railway_deployment_id") or "-",
+        )
         self.db.load()
         await self.load_cogs()
         self.tree.on_error = self.on_app_command_error
@@ -176,6 +184,10 @@ class SteamBot(commands.Bot):
         try:
             title = str(args[0] if args else kwargs.get("title", "admin alert"))
             description = str(args[1] if len(args) > 1 else kwargs.get("description", ""))
+            legacy_text = f"{title}\n{description}".lower()
+            if "opendir" in legacy_text and "games.json" in legacy_text:
+                log.warning("Suppressed legacy games.json OpenDir notification before recording event: %s", title)
+                return 0
             self.record_ai_event(
                 kwargs.get("level", "warning"),
                 "admin_alert",
@@ -269,12 +281,16 @@ class SteamBot(commands.Bot):
 
         if not self._ready_notified:
             self._ready_notified = True
+            deploy_info = _deployment_info()
             await self.notify_admins(
                 "triadbot is online",
                 "Bot started successfully and is ready to receive commands.",
                 level="info",
                 fields={
                     "Version": self.version,
+                    "Commit": deploy_info.get("commit_short") or "-",
+                    "Railway service": deploy_info.get("railway_service") or "-",
+                    "Railway deployment": deploy_info.get("railway_deployment_id") or "-",
                     "Guilds": str(len(self.guilds)),
                     "Health endpoint": "/health",
                 },

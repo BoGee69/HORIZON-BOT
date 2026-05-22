@@ -1,6 +1,8 @@
 """
 Runtime diagnostics for health checks and admin status commands.
 """
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +38,35 @@ def _ai_provider_key_configured(provider: str) -> bool:
     return False
 
 
+def _git_commit() -> str:
+    for env_name in ("RAILWAY_GIT_COMMIT_SHA", "GIT_COMMIT_SHA", "SOURCE_COMMIT"):
+        value = os.getenv(env_name, "").strip()
+        if value:
+            return value
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[1],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+    except Exception:
+        return ""
+
+
+def _deployment_info() -> dict[str, Any]:
+    commit = _git_commit()
+    return {
+        "commit": commit,
+        "commit_short": commit[:8] if commit else "",
+        "railway_service": os.getenv("RAILWAY_SERVICE_NAME", ""),
+        "railway_environment": os.getenv("RAILWAY_ENVIRONMENT_NAME", ""),
+        "railway_deployment_id": os.getenv("RAILWAY_DEPLOYMENT_ID", ""),
+        "railway_project_id": os.getenv("RAILWAY_PROJECT_ID", ""),
+    }
+
+
 async def collect_health(bot) -> dict[str, Any]:
     usage_parent = bot_config.GEN_USAGE_PATH.parent
     usage_writable, usage_message = _writable(usage_parent)
@@ -57,6 +88,7 @@ async def collect_health(bot) -> dict[str, Any]:
     return {
         "ok": all(checks.values()),
         "version": getattr(bot, "version", None),
+        "deployment": _deployment_info(),
         "uptime_seconds": int((discord.utils.utcnow() - bot.start_time).total_seconds())
         if getattr(bot, "start_time", None)
         else None,
