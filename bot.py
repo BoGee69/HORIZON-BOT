@@ -359,6 +359,9 @@ async def main():
         await bot.start(DISCORD_TOKEN)
     except KeyboardInterrupt:
         pass
+    except Exception:
+        log.exception("Bot crashed during startup/runtime")
+        raise
     finally:
         if not bot.is_closed():
             await bot.close()
@@ -374,9 +377,11 @@ if __name__ == "__main__":
         except ImportError:
             pass
 
+    exit_code = 0
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         pass
-    finally:
-        sys.exit(0)
+    except Exception:
+        exit_code = 1
+    sys.exit(exit_code)
