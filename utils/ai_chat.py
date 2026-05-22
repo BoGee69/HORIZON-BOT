@@ -234,6 +234,43 @@ def _format_uptime(seconds: int | None) -> str:
     return f"{m}m"
 
 
+def _read_int_file(path: str) -> int | None:
+    try:
+        raw = open(path, "r", encoding="utf-8").read().strip()
+        if not raw or raw == "max":
+            return None
+        return int(raw)
+    except Exception:
+        return None
+
+
+def _container_memory() -> dict[str, Any]:
+    current = _read_int_file("/sys/fs/cgroup/memory.current")
+    limit = _read_int_file("/sys/fs/cgroup/memory.max")
+    if current is None:
+        current = _read_int_file("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+    if limit is None:
+        limit = _read_int_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+    if limit is not None and limit >= 1 << 60:
+        limit = None
+
+    used_mb = current // 1024 // 1024 if current is not None else None
+    limit_mb = limit // 1024 // 1024 if limit else None
+    percent = round(current / limit * 100, 1) if current is not None and limit else None
+    return {
+        "ram_used_mb": used_mb,
+        "ram_limit_mb": limit_mb,
+        "ram_usage_percent": percent,
+    }
+
+
+def _process_memory_mb() -> int:
+    try:
+        return psutil.Process(os.getpid()).memory_info().rss // 1024 // 1024
+    except Exception:
+        return 0
+
+
 def _build_r2_operational_narrative(r2_inv: dict[str, Any] | None) -> dict[str, Any]:
     if not r2_inv or not r2_inv.get("enabled"):
         return {
@@ -604,10 +641,13 @@ def _build_operational_pulse(
     try:
         cpu_usage = psutil.cpu_percent()
         ram = psutil.virtual_memory()
-        ram_percent = ram.percent
-        ram_used_mb = ram.used // 1024 // 1024
+        host_ram_percent = ram.percent
+        host_ram_used_mb = ram.used // 1024 // 1024
     except:
-        cpu_usage, ram_percent, ram_used_mb = 0, 0, 0
+        cpu_usage, host_ram_percent, host_ram_used_mb = 0, 0, 0
+
+    container_ram = _container_memory()
+    process_ram_mb = _process_memory_mb()
 
     return {
         "overall_health": "OK" if health.get("ok") else "DEGRADED",
@@ -624,8 +664,13 @@ def _build_operational_pulse(
         "system_resources": {
             "cpu_temp_celsius": temp,
             "cpu_usage_percent": cpu_usage,
-            "ram_usage_percent": ram_percent,
-            "ram_used_mb": ram_used_mb
+            "process_ram_mb": process_ram_mb,
+            "container_ram_usage_percent": container_ram.get("ram_usage_percent"),
+            "container_ram_used_mb": container_ram.get("ram_used_mb"),
+            "container_ram_limit_mb": container_ram.get("ram_limit_mb"),
+            "host_ram_usage_percent": host_ram_percent,
+            "host_ram_used_mb": host_ram_used_mb,
+            "memory_note": "host_ram_* is Railway host/node memory visible from the container, not bot process memory. Use process_ram_mb and container_ram_* for bot/container usage."
         }
     }
 
@@ -823,7 +868,8 @@ async def build_chat_prompt(
         "• Changes to my behavior, code, or configuration require a code update and redeploy.\n\n"
         "Intent: 'Lock #channel for admin only' = channel access config, not new channel creation. "
         "If ambiguous, ask one short clarifying question.\n\n"
-        "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources to report the hardware status.\n\n"
+        "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources. "
+        "For RAM, report process_ram_mb and container_ram_* as the bot/container usage. Do not treat host_ram_* as bot memory; it is Railway host/node memory visible from the container.\n\n"
         "Counting: operational_pulse.r2_storage has accurate ZIP numbers from the SQLite-backed R2 inventory cache. "
         "database_catalog_size is the Steam catalog — never use it as ZIP file count. "
         "Use r2_storage.naming_completion_pct for renaming progress. "
