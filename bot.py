@@ -47,6 +47,11 @@ logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
+# Only these slash commands should be visible in Discord.
+# All admin/maintenance work is automatic or handled through the AI/operator DM flow.
+PUBLIC_SLASH_COMMAND_ALLOWLIST = {"gen"}
+
+
 class SteamBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
@@ -72,59 +77,31 @@ class SteamBot(commands.Bot):
         )
         logging.getLogger().addHandler(self._ai_log_handler)
         self._ready_notified = False
-        self._guild_commands_cleaned = False
 
     async def setup_hook(self):
         self.session = aiohttp.ClientSession()
         log.info("✅ HTTP session created")
         self.db.load()
         await self.load_cogs()
-        self._prune_public_slash_commands()
         self.tree.on_error = self.on_app_command_error
+
+        # Keep Discord slash UI clean: only /gen is public.
+        # Other operational features keep running automatically in their cogs
+        # and can be controlled through AI/operator DM prompts.
+        self._prune_slash_commands()
 
         # FIX: asyncio.create_task() — self.loop deprecated di discord.py 2.x
         asyncio.create_task(self.start_web_server())
 
         try:
-            # 1. Sync Global (butuh 1-2 jam untuk muncul di DM)
             synced = await self.tree.sync()
-            log.info(f"✅ Synced {len(synced)} global slash commands")
-            
-            # 2. Sync ke setiap server (INSTAN muncul di server tersebut).
-            # Clear guild command cache first so old operational commands (/pulse, /status,
-            # /dbbackup, /r2_maintenance, etc.) disappear from the Discord UI.
-            for guild in self.guilds:
-                self.tree.clear_commands(guild=guild)
-                self.tree.copy_global_to(guild=guild)
-                guild_synced = await self.tree.sync(guild=guild)
-                log.info(f"⚡ Guild sync successful for server: {guild.name} ({len(guild_synced)} commands)")
+            log.info(
+                "✅ Synced %d global slash command(s): %s",
+                len(synced),
+                ", ".join(cmd.name for cmd in synced) or "none",
+            )
         except Exception as e:
             log.error(f"Failed to sync commands: {e}")
-
-
-    def _prune_public_slash_commands(self) -> None:
-        """
-        Keep only the user-facing slash commands that should be visible in Discord.
-
-        Most operational/admin features now run automatically or are controlled through
-        owner/admin DM prompts handled by the AI/operator layer. /gen remains the main
-        public command because it is the core member-facing download flow.
-        """
-        allowed = {"gen"}
-        removed: list[str] = []
-
-        try:
-            for command in list(self.tree.get_commands()):
-                name = getattr(command, "name", "")
-                if name not in allowed:
-                    self.tree.remove_command(name, type=getattr(command, "type", discord.AppCommandType.chat_input))
-                    removed.append(name)
-        except Exception as exc:
-            log.warning("Failed to prune slash command tree: %s", exc)
-
-        if removed:
-            log.info("🧹 Hidden non-core slash commands from Discord UI: %s", ", ".join(sorted(set(removed))))
-        log.info("✅ Public slash command allowlist active: /gen only")
 
     async def start_web_server(self):
         app = web.Application()
@@ -219,6 +196,39 @@ class SteamBot(commands.Bot):
             return
         asyncio.create_task(caretaker.trigger(reason, context=sanitize_data(context or {}), force=force))
 
+    def _prune_slash_commands(self) -> None:
+        """Remove every app command except the public allowlist.
+
+        Decorated admin commands may still exist inside cogs so their background
+        jobs can run, but they must not be published to Discord's slash command UI.
+        """
+        for command in list(self.tree.get_commands()):
+            if command.name not in PUBLIC_SLASH_COMMAND_ALLOWLIST:
+                removed = self.tree.remove_command(command.name, type=command.type)
+                if removed:
+                    log.info("🧹 Hidden slash command: /%s", command.name)
+
+    async def sync_minimal_commands_for_guilds(self) -> None:
+        """Force each guild command list to mirror the global allowlist.
+
+        Global slash command changes can take time to disappear in DMs, but guild
+        commands update quickly. This prevents old admin commands from staying
+        visible in server command pickers after a deploy.
+        """
+        self._prune_slash_commands()
+        for guild in list(self.guilds):
+            try:
+                self.tree.clear_commands(guild=guild)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                log.info(
+                    "🧹 Guild slash commands reset for %s: %s",
+                    guild.name,
+                    ", ".join(cmd.name for cmd in synced) or "none",
+                )
+            except Exception as exc:
+                log.warning("Failed to reset slash commands for guild %s: %r", guild, exc)
+
     async def load_cogs(self):
         cogs_dir = Path(__file__).parent / "cogs"
         if not cogs_dir.exists():
@@ -233,26 +243,6 @@ class SteamBot(commands.Bot):
                 log.info(f"✅ Loaded cog: {cog_name}")
             except Exception as e:
                 log.error(f"Failed to load cog {cog_name}: {e}")
-
-
-    async def _sync_minimal_commands_to_guilds(self) -> None:
-        """
-        Remove stale guild-scoped slash commands immediately and leave only /gen.
-        Global command deletion can take time on Discord, so this makes the visible
-        command list clean as soon as the bot is ready in each server.
-        """
-        if self._guild_commands_cleaned:
-            return
-        self._guild_commands_cleaned = True
-
-        for guild in self.guilds:
-            try:
-                self.tree.clear_commands(guild=guild)
-                self.tree.copy_global_to(guild=guild)
-                guild_synced = await self.tree.sync(guild=guild)
-                log.info("🧹 Guild slash commands cleaned for %s: %d command(s)", guild.name, len(guild_synced))
-            except Exception as exc:
-                log.warning("Failed to clean guild slash commands for %s: %s", getattr(guild, "name", guild), exc)
 
     async def close(self):
         log.info("🛑 Shutting down...")
@@ -271,7 +261,10 @@ class SteamBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(type=discord.ActivityType.playing, name="/gen to generate game")
         )
-        await self._sync_minimal_commands_to_guilds()
+
+        # setup_hook may run before guild cache is populated. Do the cleanup again
+        # once Discord has provided the guild list.
+        asyncio.create_task(self.sync_minimal_commands_for_guilds())
 
         if not self._ready_notified:
             self._ready_notified = True
