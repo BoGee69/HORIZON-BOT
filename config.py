@@ -255,7 +255,7 @@ AI_MAINTENANCE_DM_ON_WARNING = parse_bool(os.getenv("AI_MAINTENANCE_DM_ON_WARNIN
 AI_MAINTENANCE_DM_ON_CRITICAL = parse_bool(os.getenv("AI_MAINTENANCE_DM_ON_CRITICAL", "true"), True)
 AI_MAINTENANCE_COOLDOWN_SECONDS = int(os.getenv("AI_MAINTENANCE_COOLDOWN_SECONDS", "900"))
 AI_MAINTENANCE_START_DELAY_SECONDS = float(os.getenv("AI_MAINTENANCE_START_DELAY_SECONDS", "20"))
-AI_CHAT_ENABLED = parse_bool(os.getenv("AI_CHAT_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "false")), False)
+AI_CHAT_ENABLED = parse_bool(os.getenv("AI_CHAT_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "true")), True)
 AI_CHAT_ALLOWED_IDS = parse_id_list(os.getenv("AI_CHAT_ALLOWED_IDS", "")) or AI_MAINTENANCE_ALERT_IDS
 AI_CHAT_ALLOW_DISCORD_ADMINS = parse_bool(os.getenv("AI_CHAT_ALLOW_DISCORD_ADMINS", "true"), True)
 AI_CHAT_PROVIDER = os.getenv("AI_CHAT_PROVIDER", AI_PROVIDER).strip().lower() or AI_PROVIDER
@@ -299,7 +299,7 @@ AI_ATTACHMENT_VISION_MODEL = os.getenv(
     "AI_ATTACHMENT_VISION_MODEL",
     "gemini-2.5-flash-lite" if AI_ATTACHMENT_VISION_PROVIDER == "gemini" else AI_CHAT_MODEL,
 ).strip() or ("gemini-2.5-flash-lite" if AI_ATTACHMENT_VISION_PROVIDER == "gemini" else AI_CHAT_MODEL)
-AI_OPERATOR_ENABLED = parse_bool(os.getenv("AI_OPERATOR_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "false")), False)
+AI_OPERATOR_ENABLED = parse_bool(os.getenv("AI_OPERATOR_ENABLED", os.getenv("AI_MAINTENANCE_ENABLED", "true")), True)
 AI_OPERATOR_ALLOWED_IDS = parse_id_list(os.getenv("AI_OPERATOR_ALLOWED_IDS", "")) or AI_MAINTENANCE_ALERT_IDS
 AI_OPERATOR_ALLOW_DISCORD_ADMINS = parse_bool(os.getenv("AI_OPERATOR_ALLOW_DISCORD_ADMINS", "true"), True)
 AI_OPERATOR_DM_ONLY = parse_bool(os.getenv("AI_OPERATOR_DM_ONLY", "true"), True)

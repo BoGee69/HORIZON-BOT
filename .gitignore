@@ -67,3 +67,6 @@ desktop.ini
 # Backups
 *_backup_*.json
 *.bak
+
+.sudo_pass.sh
+*.pyc

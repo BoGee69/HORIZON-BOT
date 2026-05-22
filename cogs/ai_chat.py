@@ -208,13 +208,27 @@ class AIChat(commands.Cog):
     async def on_message(self, message: discord.Message):
         if message.author.bot:
             return
-        if not bot_config.AI_CHAT_ENABLED:
-            return
+
         is_dm = isinstance(message.channel, discord.DMChannel)
+
+        if not bot_config.AI_CHAT_ENABLED:
+            if is_dm:
+                await message.channel.send(
+                    "AI chat belum aktif. Set Railway variable `AI_CHAT_ENABLED=true`, lalu restart bot.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+            return
+
         access_allowed, access_level, access_reason = await self._access_for(message.author.id)
         is_owner = access_level == "owner"
+
         if is_dm:
             if not access_allowed:
+                await message.channel.send(
+                    "AI chat belum mengizinkan akun Discord ini. Tambahkan user ID kamu ke Railway variable "
+                    f"`AI_CHAT_ALLOWED_IDS`. User ID yang terdeteksi: `{message.author.id}`.",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 return
             operator = getattr(self.bot, "ai_operator", None)
             if operator:
