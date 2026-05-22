@@ -48,6 +48,7 @@ class GitHubDatabaseBackup:
     """Backup SQLite DB to GitHub through the REST API."""
 
     API_BASE = "https://api.github.com"
+    MAX_CONTENTS_API_CHUNK_SIZE_MB = 8
 
     def __init__(
         self,
@@ -71,7 +72,15 @@ class GitHubDatabaseBackup:
         self.manifest_path = self._normalize_repo_path(f"{self.github_db_path}.backup_manifest.json")
         self.session = session
         self.timeout_seconds = int(timeout_seconds)
-        self.chunk_size_bytes = max(int(chunk_size_mb), 1) * 1024 * 1024
+        requested_chunk_size_mb = max(int(chunk_size_mb or self.MAX_CONTENTS_API_CHUNK_SIZE_MB), 1)
+        effective_chunk_size_mb = min(requested_chunk_size_mb, self.MAX_CONTENTS_API_CHUNK_SIZE_MB)
+        if requested_chunk_size_mb != effective_chunk_size_mb:
+            log.info(
+                "GitHub DB backup chunk size capped from %dMB to %dMB for reliable Contents API uploads",
+                requested_chunk_size_mb,
+                effective_chunk_size_mb,
+            )
+        self.chunk_size_bytes = effective_chunk_size_mb * 1024 * 1024
 
     @staticmethod
     def _normalize_repo_path(path: str) -> str:
@@ -340,10 +349,31 @@ class GitHubDatabaseBackup:
         if existing_sha:
             body["sha"] = existing_sha
 
-        status, payload = await self._request_json("PUT", self._contents_url(path), json=body)
-        if status not in (200, 201):
-            raise RuntimeError(f"GitHub PUT {path} failed: HTTP {status}: {payload}")
-        return payload
+        last_status: int | None = None
+        last_payload: Any = None
+        for attempt in range(3):
+            status, payload = await self._request_json("PUT", self._contents_url(path), json=body)
+            if status in (200, 201):
+                return payload
+            last_status, last_payload = status, payload
+            if attempt < 2 and self._is_retryable_put_error(status, payload):
+                await asyncio.sleep(2 * (attempt + 1))
+                continue
+            break
+        raise RuntimeError(f"GitHub PUT {path} failed: HTTP {last_status}: {last_payload}")
+
+    @staticmethod
+    def _is_retryable_put_error(status: int, payload: Any) -> bool:
+        if status in (502, 503, 504):
+            return True
+        if status == 403:
+            message = ""
+            if isinstance(payload, dict):
+                message = str(payload.get("message") or "")
+            else:
+                message = str(payload or "")
+            return "Rule was unable to be completed" in message or "Unable to validate" in message
+        return False
 
     async def _delete_file(self, path: str, *, message: str) -> Any:
         existing_sha = await self._get_file_sha(path)
