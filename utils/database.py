@@ -175,6 +175,50 @@ class DatabaseManager:
         except Exception as e:
             log.error(f"Search failed: {e}")
         return results
+
+    def autocomplete_titles(self, query: str, limit: int = 25) -> List[Dict]:
+        """Autocomplete game titles from SQLite only."""
+        results = []
+        limit = max(1, min(int(limit or 25), 25))
+        query = " ".join(str(query or "").strip().split())
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            if query:
+                cursor.execute(
+                    """SELECT appid, name, has_file, raw_data FROM games
+                       WHERE name IS NOT NULL
+                         AND name != ''
+                         AND name LIKE ?
+                       ORDER BY
+                         CASE WHEN name LIKE ? THEN 0 ELSE 1 END,
+                         has_file DESC,
+                         name COLLATE NOCASE ASC
+                       LIMIT ?""",
+                    (f"%{query}%", f"{query}%", limit),
+                )
+            else:
+                cursor.execute(
+                    """SELECT appid, name, has_file, raw_data FROM games
+                       WHERE name IS NOT NULL AND name != ''
+                       ORDER BY has_file DESC, name COLLATE NOCASE ASC
+                       LIMIT ?""",
+                    (limit,),
+                )
+            rows = cursor.fetchall()
+            conn.close()
+            for appid, name, has_file, raw_data in rows:
+                try:
+                    item = json.loads(raw_data) if raw_data else {}
+                except Exception:
+                    item = {}
+                item["appid"] = str(item.get("appid") or item.get("id") or appid)
+                item["name"] = item.get("name") or name
+                item["file"] = bool(item.get("file") or has_file)
+                results.append(item)
+        except Exception as e:
+            log.error(f"SQLite title autocomplete failed: {e}")
+        return results
     
     def get_stats(self) -> Dict:
         """Get database statistics using SQL"""

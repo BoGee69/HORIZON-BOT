@@ -57,10 +57,12 @@ async def autocomplete_games(
 
     starred, normal = [], []
 
-    # SQLite-backed DB: use search_games() — db.game_db does not exist anymore.
-    # search_games returns dicts with "appid" key (not "id").
+    # SQLite-backed title autocomplete only. Keep suggestions fast and local.
     try:
-        all_results = db.search_games(q_raw or "", limit=50) if q_raw else db.search_games("", limit=50)
+        if hasattr(db, "autocomplete_titles"):
+            all_results = db.autocomplete_titles(q_raw, limit=25)
+        else:
+            all_results = db.search_games(q_raw or "", limit=25)
     except Exception:
         all_results = []
 
@@ -87,20 +89,6 @@ async def autocomplete_games(
         if appid and appid not in found_ids:
             results.append(app_commands.Choice(name=name, value=appid))
             found_ids.add(appid)
-
-    if q_raw and len(results) < 25:
-        try:
-            steam_api   = SteamAPI(bot.session)
-            steam_items = await steam_api.search_games(urllib.parse.quote(q_raw), limit=25 - len(results))
-            for item in steam_items:
-                aid = str(item.get("id") or item.get("appid") or "")
-                if aid and aid not in found_ids:
-                    results.append(app_commands.Choice(name=item["name"][:100], value=aid))
-                    found_ids.add(aid)
-                if len(results) >= 25:
-                    break
-        except Exception as e:
-            log.error(f"Steam autocomplete error: {e}")
 
     return results
 

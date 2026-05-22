@@ -204,7 +204,8 @@ class SteamBot(commands.Bot):
         """
         for command in list(self.tree.get_commands()):
             if command.name not in PUBLIC_SLASH_COMMAND_ALLOWLIST:
-                removed = self.tree.remove_command(command.name, type=command.type)
+                command_type = getattr(command, "type", discord.AppCommandType.chat_input)
+                removed = self.tree.remove_command(command.name, type=command_type)
                 if removed:
                     log.info("🧹 Hidden slash command: /%s", command.name)
 
