@@ -3,6 +3,7 @@ from pathlib import Path
 Game Commands Cog  —  /gen  /search  /info
 """
 import asyncio
+import json
 import logging
 import time
 import urllib.parse
@@ -18,7 +19,8 @@ from config import (
     ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES, ALERT_ON_LIMIT_HIT,
     COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING,
     BOOSTER_ROLE_IDS, BOOSTER_ROLE_NAMES, DEFAULT_CC, DONOR_ROLE_IDS, DONOR_ROLE_NAMES, GEN_DAILY_LIMIT,
-    LINK_EXPIRE_SECONDS, R2_BASE_URL, WEB_URL, JWT_SECRET,
+    GAME_REQUESTS_PATH, LINK_EXPIRE_SECONDS, R2_BASE_URL, REQUEST_CHANNEL_IDS, REQUEST_CHANNEL_NAMES,
+    REQUEST_PING_ADMINS, WEB_URL, JWT_SECRET,
 )
 from utils.helpers import (
     clean_search_string, extract_protection_type, format_size, has_any_role,
@@ -207,60 +209,58 @@ class GameCommands(commands.Cog):
     
     # ── /request ─────────────────────────────────────────────────────────────
 
-    @app_commands.command(name="request", description="Request a game to be prioritized for Cloudflare R2 mirroring")
+    @app_commands.command(name="request", description="Request a game for admins to review")
     @app_commands.describe(query="Game title or App ID")
     @app_commands.autocomplete(query=autocomplete_games)
     async def request(self, interaction: discord.Interaction, query: str):
-        from pathlib import Path
-        import json
-        import time
-        
-        try:
-            await interaction.response.send_message("🔍 Processing your request...", ephemeral=True)
-        except:
-            pass
-        
-        target_id = query.strip()
-        game_name = query
-        
-        try:
-            if not target_id.isdigit():
-                results = await self.steam_api.search_games(query, limit=1)
-                if not results:
-                    await interaction.edit_original_response(content="❌ Game not found on Steam.")
-                    return
-                target_id = results[0]["id"]
-                game_name = results[0]["name"]
+        await interaction.response.defer(ephemeral=True)
 
-            self.db.add_game(target_id, game_name)
-            
-            from config import DATA_DIR
-            priority_file = DATA_DIR / "priority_requests.json"
-            priority_data = {}
-            if priority_file.exists():
-                try: priority_data = json.loads(priority_file.read_text())
-                except: pass
-            
-            priority_data[target_id] = {"name": game_name, "requested_by": interaction.user.id, "time": time.time()}
-            priority_file.parent.mkdir(parents=True, exist_ok=True)
-            priority_file.write_text(json.dumps(priority_data, indent=2))
-            # Trigger instant sync for this game
-            opendir_cog = self.bot.get_cog("OpenDirSync")  # class name in cogs/opendir_sync.py
-            if opendir_cog:
-                # Run sync in background so it doesn't block the response
-                asyncio.create_task(opendir_cog.run_sync_once(priority_appid=target_id))
-                log.info(f"⚡ Instant Priority Sync triggered for {game_name} ({target_id})")
+        try:
+            target_id, game_name = await self._resolve_game_query(query)
+            if not target_id:
+                await interaction.followup.send(
+                    embed=discord.Embed(
+                        title="Game not found",
+                        description=f"I could not find a Steam game for `{truncate_text(query, 180)}`.",
+                        color=COLOR_ERROR,
+                    ),
+                    ephemeral=True,
+                )
+                return
 
+            self._record_game_request(interaction, target_id, game_name, query)
+
+            notice_channel = await self._send_game_request_notice(
+                interaction, target_id, game_name, query
+            )
+            await self._notify_admins_game_request(interaction, target_id, game_name, query)
 
             embed = discord.Embed(
-                title="✅ Request Received",
-                description=f"**{game_name} ({target_id})** has been added to the priority sync queue and an instant sync has been triggered! ⚡",
-                color=0x00ff00
+                title="Request received",
+                description=(
+                    f"**{game_name}** (`{target_id}`) has been sent to the admins.\n"
+                    "Admins can use `/add_game` to push it into the priority OpenDir lane."
+                ),
+                color=COLOR_SUCCESS,
             )
-            await interaction.edit_original_response(content=None, embed=embed)
+            if notice_channel:
+                embed.add_field(name="Request channel", value=notice_channel.mention, inline=True)
+            embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
+            embed.add_field(name="SteamDB", value=f"https://steamdb.info/app/{target_id}/", inline=False)
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
         except Exception as e:
-            try: await interaction.edit_original_response(content=f"❌ An error occurred: {e}")
-            except: pass
+            log.exception("/request failed")
+            await interaction.followup.send(
+                embed=discord.Embed(
+                    title="Request failed",
+                    description=f"Something went wrong: `{truncate_text(repr(e), 900)}`",
+                    color=COLOR_ERROR,
+                ),
+                ephemeral=True,
+            )
+            return
+
 
     # ── /search ───────────────────────────────────────────────────────────────
 
@@ -407,6 +407,144 @@ class GameCommands(commands.Cog):
 
     # ── Internal helpers ──────────────────────────────────────────────────────
 
+    async def _resolve_game_query(self, query: str) -> tuple[str | None, str]:
+        target = str(query or "").strip()
+        if not target:
+            return None, ""
+
+        if target.isdigit():
+            db_entry = self.db.get_game(target)
+            db_name = str((db_entry or {}).get("name") or "").strip()
+            if db_name:
+                return target, db_name
+            if self.steam_api:
+                steam_data = await self.steam_api.get_app_details(target, cc=DEFAULT_CC)
+                if steam_data:
+                    info = self.steam_api.extract_game_info(steam_data)
+                    return target, str(info.get("name") or f"App {target}")
+            return target, f"App {target}"
+
+        results = await self.steam_api.search_games(urllib.parse.quote(target), limit=1) if self.steam_api else []
+        if not results:
+            return None, ""
+        return str(results[0]["id"]), str(results[0]["name"] or target)
+
+    def _record_game_request(
+        self,
+        interaction: discord.Interaction,
+        appid: str,
+        game_name: str,
+        query: str,
+    ) -> None:
+        try:
+            GAME_REQUESTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+            existing = []
+            if GAME_REQUESTS_PATH.exists():
+                raw = json.loads(GAME_REQUESTS_PATH.read_text(encoding="utf-8") or "[]")
+                existing = raw if isinstance(raw, list) else list(raw.values())
+            existing.append(
+                {
+                    "appid": str(appid),
+                    "name": game_name,
+                    "query": query,
+                    "requested_by": interaction.user.id,
+                    "requested_by_name": str(interaction.user),
+                    "guild_id": interaction.guild_id,
+                    "channel_id": getattr(interaction.channel, "id", None),
+                    "time": time.time(),
+                }
+            )
+            GAME_REQUESTS_PATH.write_text(
+                json.dumps(existing[-500:], indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception:
+            log.exception("Failed to record game request")
+
+    async def _send_game_request_notice(
+        self,
+        interaction: discord.Interaction,
+        appid: str,
+        game_name: str,
+        query: str,
+    ):
+        channel = self._find_request_channel(interaction)
+        if channel is None:
+            return None
+
+        embed = discord.Embed(
+            title="Game request",
+            description=f"**{game_name}** (`{appid}`)",
+            color=COLOR_INFO,
+            timestamp=discord.utils.utcnow(),
+        )
+        embed.add_field(name="Requested by", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=True)
+        embed.add_field(name="Original query", value=f"`{truncate_text(query, 180)}`", inline=True)
+        embed.add_field(name="SteamDB", value=f"https://steamdb.info/app/{appid}/", inline=False)
+        embed.add_field(name="Admin action", value=f"Use `/add_game appid:{appid}` to priority-process it.", inline=False)
+
+        content = self._request_admin_mentions(interaction) if REQUEST_PING_ADMINS else None
+        try:
+            await channel.send(
+                content=content or None,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True, roles=True, everyone=False),
+            )
+            return channel
+        except Exception:
+            log.exception("Failed to post game request notice")
+            return None
+
+    def _find_request_channel(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild:
+            for channel_id in REQUEST_CHANNEL_IDS:
+                channel = guild.get_channel(channel_id) or self.bot.get_channel(channel_id)
+                if channel and hasattr(channel, "send"):
+                    return channel
+            for channel in getattr(guild, "text_channels", []):
+                if channel.name.lower() in REQUEST_CHANNEL_NAMES:
+                    return channel
+        channel = interaction.channel
+        return channel if channel and hasattr(channel, "send") else None
+
+    @staticmethod
+    def _request_admin_mentions(interaction: discord.Interaction) -> str:
+        guild = interaction.guild
+        if not guild:
+            return ""
+        mentions = []
+        for role_id in ADMIN_ROLE_IDS:
+            role = guild.get_role(role_id)
+            if role:
+                mentions.append(role.mention)
+        return " ".join(mentions)
+
+    async def _notify_admins_game_request(
+        self,
+        interaction: discord.Interaction,
+        appid: str,
+        game_name: str,
+        query: str,
+    ) -> None:
+        notifier = getattr(self.bot, "notify_admins", None)
+        if not notifier:
+            return
+        await notifier(
+            "New game request",
+            f"A user requested **{game_name}** (`{appid}`).",
+            level="info",
+            fields={
+                "Requested by": f"{interaction.user} ({interaction.user.id})",
+                "Guild": str(interaction.guild or "DM"),
+                "Channel": str(interaction.channel or "-"),
+                "Original query": query,
+                "Admin action": f"/add_game appid:{appid}",
+            },
+            key=f"game-request-{appid}-{interaction.user.id}",
+            force=True,
+        )
+
     async def _find_download(self, appid: str, game_name: Optional[str] = None) -> Dict:
         """
         Coba semua pola key R2 secara berurutan.
@@ -486,10 +624,10 @@ class GameCommands(commands.Cog):
         # Make sure game is in DB so targeted sync can look it up
         self.db.add_game(appid, game_name)
         log.info("⚡ /gen triggered background priority sync for %s (%s)", game_name, appid)
-        asyncio.create_task(
-            opendir_cog.run_sync_once(priority_appid=appid),
-            name=f"opendir-priority-{appid}",
-        )
+        if hasattr(opendir_cog, "schedule_priority_sync"):
+            opendir_cog.schedule_priority_sync(appid, source="gen")
+            return
+        asyncio.create_task(opendir_cog.run_sync_once(priority_appid=appid), name=f"opendir-priority-{appid}")
 
     @staticmethod
     def _dl_empty(appid: str) -> Dict:

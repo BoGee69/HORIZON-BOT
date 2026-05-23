@@ -138,6 +138,21 @@ BOOSTER_ROLE_NAMES = {
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
+# Public /request routing. If REQUEST_CHANNEL_IDS is set, requests are posted
+# there. Otherwise TriadBot looks for these channel names, then falls back to
+# the channel where the command was used.
+REQUEST_CHANNEL_IDS = parse_id_set(os.getenv("REQUEST_CHANNEL_IDS", ""))
+REQUEST_CHANNEL_NAMES = {
+    x.strip().lower()
+    for x in os.getenv(
+        "REQUEST_CHANNEL_NAMES",
+        "request,requests,game-request,game-requests,request-game,request-games",
+    ).split(",")
+    if x.strip()
+}
+REQUEST_PING_ADMINS = parse_bool(os.getenv("REQUEST_PING_ADMINS", "true"), True)
+GAME_REQUESTS_PATH = env_path("GAME_REQUESTS_PATH", DATA_DIR / "game_requests.json")
+
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 
 # FIX 3: WEB_URL — WAJIB di-set di your .env file env agar JWT link tidak nunjuk ke localhost.
@@ -448,7 +463,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.14"
+BOT_VERSION     = "9.2.15"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))

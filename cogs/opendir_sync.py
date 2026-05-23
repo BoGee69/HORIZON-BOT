@@ -302,6 +302,8 @@ class OpenDirSync(commands.Cog):
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._initial_done = False
+        self._priority_pending: set[str] = set()
+        self._priority_tasks: set[asyncio.Task] = set()
 
         self.enabled = _cfg_bool("OPENDIR_SYNC_ENABLED", False)
         self.base_url = self._normalize_base_url(_cfg_str("OPENDIR_BASE_URL", ""))
@@ -405,6 +407,31 @@ class OpenDirSync(commands.Cog):
             max_concurrency=1,
             use_threads=False,
         )
+
+    def schedule_priority_sync(self, appid: str, *, source: str = "manual") -> bool:
+        appid = str(appid or "").strip()
+        if not appid.isdigit():
+            return False
+
+        self._priority_pending.add(appid)
+        task = asyncio.create_task(
+            self._run_scheduled_priority_sync(appid, source=source),
+            name=f"opendir-priority-{appid}",
+        )
+        self._priority_tasks.add(task)
+        task.add_done_callback(self._priority_tasks.discard)
+        log.info("OpenDir priority sync scheduled for %s (source=%s)", appid, source)
+        return True
+
+    async def _run_scheduled_priority_sync(self, appid: str, *, source: str) -> None:
+        try:
+            await self.run_sync_once(mode=source, priority_appid=appid)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("OpenDir priority sync failed for %s", appid)
+        finally:
+            self._priority_pending.discard(appid)
 
     async def cog_load(self) -> None:
         if not self.enabled:
@@ -649,6 +676,14 @@ class OpenDirSync(commands.Cog):
                     "OpenDir: reached max_files_per_run=%d — stopping window early",
                     self.max_files_per_run,
                 )
+                break
+            if self._priority_pending:
+                pending = ", ".join(sorted(self._priority_pending)[:5])
+                log.info(
+                    "OpenDir: priority sync pending (%s) - pausing normal window",
+                    pending,
+                )
+                summary.add_sample(f"priority pending: {pending}; normal window paused")
                 break
             if current == start:
                 # Wrapped around — full cycle done

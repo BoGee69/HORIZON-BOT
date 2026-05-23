@@ -71,6 +71,62 @@ class AdminCommands(commands.Cog):
             self.gen_limiter = DailyGenLimiter()
             bot.gen_limiter = self.gen_limiter
 
+    async def _resolve_add_game(self, query: str) -> tuple[str | None, str]:
+        raw = str(query or "").strip()
+        if not raw:
+            return None, ""
+
+        if raw.isdigit():
+            entry = self.db.get_game(raw)
+            db_name = str((entry or {}).get("name") or "").strip()
+            if db_name:
+                return raw, db_name
+            steam_name = await self._fetch_steam_title(raw)
+            return raw, steam_name or f"App {raw}"
+
+        matches = self.db.search_games(raw, limit=1)
+        for item in matches:
+            appid = str(item.get("appid") or item.get("id") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if appid and name:
+                return appid, name
+
+        try:
+            async with self.bot.session.get(
+                bot_config.STEAM_SEARCH_API,
+                params={"term": raw, "l": "english", "cc": "US"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    for item in data.get("items", []):
+                        appid = str(item.get("id") or "").strip()
+                        name = str(item.get("name") or "").strip()
+                        if appid and name:
+                            return appid, name
+        except Exception:
+            log.exception("Steam search failed for /add_game query %r", raw)
+
+        return None, ""
+
+    async def _fetch_steam_title(self, appid: str) -> str | None:
+        try:
+            async with self.bot.session.get(
+                bot_config.STEAM_STORE_API,
+                params={"appids": appid, "l": "english", "cc": bot_config.DEFAULT_CC},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.json()
+                block = data.get(str(appid), {})
+                if block.get("success") and isinstance(block.get("data"), dict):
+                    name = str(block["data"].get("name") or "").strip()
+                    return name or None
+        except Exception:
+            log.debug("Steam title lookup failed for %s", appid, exc_info=True)
+        return None
+
     @app_commands.command(name="role_debug", description="[Admin] Explain why a member is limited or exempt")
     @app_commands.describe(member="Server member to inspect")
     @admin_check()
@@ -270,23 +326,27 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="⭐ Total Files", value=format_number(self.db.get_stats()["with_files"]), inline=True)
         await interaction.edit_original_response(embed=embed)
 
-    @app_commands.command(name="add_game", description="[Admin] Manually add a game to the database")
-    @app_commands.describe(appid="Steam App ID", name="Game name (optional)", has_file="Mark as having a file immediately")
+    @app_commands.command(name="add_game", description="[Admin] Add a game and priority-process it via OpenDir")
+    @app_commands.describe(appid="Steam App ID or game title", name="Game name override (optional)", has_file="Mark as having a file immediately")
     @admin_check()
     async def add_game(self, interaction: discord.Interaction, appid: str,
                        name: Optional[str] = None, has_file: bool = False):
         await interaction.response.defer(ephemeral=True)
 
-        if not appid.isdigit():
+        resolved_appid, resolved_name = await self._resolve_add_game(appid)
+        if not resolved_appid:
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title="❌ Invalid App ID",
-                    description=f"`{appid}` is not a valid number.",
+                    title="Game not found",
+                    description=f"I could not find a Steam game for `{appid}`.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
             )
             return
+
+        appid = resolved_appid
+        name = (name or resolved_name or f"App {appid}").strip()
 
         existed = self.db.get_game(appid) is not None
         if existed:
@@ -301,6 +361,18 @@ class AdminCommands(commands.Cog):
             self.db.save()
             msg = f"Game `{appid}` successfully added."
 
+        opendir_cog = self.bot.get_cog("OpenDirSync")
+        priority_scheduled = False
+        if opendir_cog:
+            if hasattr(opendir_cog, "schedule_priority_sync"):
+                priority_scheduled = bool(opendir_cog.schedule_priority_sync(appid, source="add_game"))
+            else:
+                asyncio.create_task(
+                    opendir_cog.run_sync_once(priority_appid=appid),
+                    name=f"opendir-priority-{appid}",
+                )
+                priority_scheduled = True
+
         embed = discord.Embed(
             title="✅ Database Updated" if not existed or has_file else "ℹ️ Already Exists",
             description=msg,
@@ -309,6 +381,11 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="App ID", value=appid, inline=True)
         if name:
             embed.add_field(name="Name", value=name, inline=True)
+        embed.add_field(
+            name="OpenDir priority",
+            value="Scheduled now" if priority_scheduled else "OpenDir cog not available",
+            inline=False,
+        )
         embed.add_field(name="File?", value="✅ Yes" if has_file else "❌ No", inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 

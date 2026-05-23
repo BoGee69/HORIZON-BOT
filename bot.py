@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 
 # Only these slash commands should be visible in Discord. r2_recent is admin-gated
 # but intentionally published so the owner can inspect fresh R2 uploads quickly.
-PUBLIC_SLASH_COMMAND_ALLOWLIST = {"gen", "r2_recent"}
+PUBLIC_SLASH_COMMAND_ALLOWLIST = {"gen", "request", "add_game", "r2_recent"}
 
 
 class SteamBot(commands.Bot):
