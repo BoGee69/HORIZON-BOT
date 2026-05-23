@@ -383,7 +383,11 @@ class AdminCommands(commands.Cog):
             embed.add_field(name="Name", value=name, inline=True)
         embed.add_field(
             name="OpenDir priority",
-            value="Scheduled now" if priority_scheduled else "OpenDir cog not available",
+            value=(
+                "Started now in the priority lane. Watch the OpenDir summary for upload result."
+                if priority_scheduled
+                else "OpenDir cog not available"
+            ),
             inline=False,
         )
         embed.add_field(name="File?", value="✅ Yes" if has_file else "❌ No", inline=True)

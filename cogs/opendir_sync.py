@@ -22,7 +22,7 @@ import queue
 import re
 import time
 import unicodedata
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -301,6 +301,7 @@ class OpenDirSync(commands.Cog):
         self.bot = bot
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        self._priority_lock = asyncio.Lock()
         self._initial_done = False
         self._priority_pending: set[str] = set()
         self._priority_tasks: set[asyncio.Task] = set()
@@ -433,6 +434,15 @@ class OpenDirSync(commands.Cog):
         finally:
             self._priority_pending.discard(appid)
 
+    @asynccontextmanager
+    async def _run_lock(self, *, priority: bool):
+        if priority:
+            async with self._priority_lock:
+                yield
+            return
+        async with self._lock:
+            yield
+
     async def cog_load(self) -> None:
         if not self.enabled:
             log.info("OpenDir SQLite sync disabled. Set OPENDIR_SYNC_ENABLED=true to enable.")
@@ -551,7 +561,7 @@ class OpenDirSync(commands.Cog):
         summary if needed; this method never calls _report_summary internally so
         the loop can handle reporting consistently.
         """
-        async with self._lock:
+        async with self._run_lock(priority=priority_appid is not None):
             summary = SyncSummary(mode="targeted" if priority_appid else mode)
             state = self._load_state()
 
