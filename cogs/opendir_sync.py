@@ -458,6 +458,7 @@ class OpenDirSync(commands.Cog):
 
         self._priority_pending.add(appid)
         self._priority_counts[appid] = self._priority_counts.get(appid, 0) + 1
+        self._normal_wakeup.set()
         task = asyncio.create_task(
             self._run_scheduled_priority_sync(appid, source=source),
             name=f"opendir-priority-{appid}",
@@ -650,6 +651,10 @@ class OpenDirSync(commands.Cog):
             await self._wait_for_sqlite_ready()
 
         while not self.bot.is_closed():
+            if self._priority_pending:
+                await self._wait_for_priority_drain()
+                log.info("OpenDir: normal queue resuming after priority sync")
+
             mode = "initial" if not self._initial_done else "monitor"
             try:
                 summary = await self.run_sync_once(mode=mode)
@@ -664,6 +669,7 @@ class OpenDirSync(commands.Cog):
 
             if summary.paused_for_priority:
                 await self._wait_for_priority_drain()
+                log.info("OpenDir: normal queue resuming after priority pause")
                 continue
 
             await self._sleep_until_next_run()
