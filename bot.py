@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import (
     DISCORD_TOKEN, BOT_PREFIX, BOT_VERSION, BOT_DESCRIPTION,
     LOG_LEVEL, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT,
-    JWT_SECRET, PORT,
+    JWT_SECRET, PORT, SERVER_ADMIN_GUILD_IDS,
 )
 from utils.alerts import AdminNotifier
 from utils.ai_caretaker import CaretakerLogHandler, SafeEventRingBuffer, sanitize_data
@@ -110,6 +110,8 @@ class SteamBot(commands.Bot):
             )
         except Exception as e:
             log.error(f"Failed to sync commands: {e}")
+
+        await self.sync_minimal_commands_for_guilds()
 
     async def start_web_server(self):
         app = web.Application()
@@ -229,18 +231,24 @@ class SteamBot(commands.Bot):
         visible in server command pickers after a deploy.
         """
         self._prune_slash_commands()
+        targets: dict[int, tuple[object, str]] = {}
         for guild in list(self.guilds):
+            targets[guild.id] = (guild, getattr(guild, "name", str(guild.id)))
+        for guild_id in SERVER_ADMIN_GUILD_IDS:
+            targets.setdefault(guild_id, (discord.Object(id=guild_id), str(guild_id)))
+
+        for guild_id, (guild, guild_label) in targets.items():
             try:
                 self.tree.clear_commands(guild=guild)
                 self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
                 log.info(
                     "🧹 Guild slash commands reset for %s: %s",
-                    guild.name,
+                    guild_label,
                     ", ".join(cmd.name for cmd in synced) or "none",
                 )
             except Exception as exc:
-                log.warning("Failed to reset slash commands for guild %s: %r", guild, exc)
+                log.warning("Failed to reset slash commands for guild %s: %r", guild_id, exc)
 
     async def load_cogs(self):
         cogs_dir = Path(__file__).parent / "cogs"
