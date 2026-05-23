@@ -250,6 +250,7 @@ class SyncSummary:
     bytes_uploaded: int = 0
     cleaned_objects: int = 0
     cleaned_files: int = 0
+    api_transient_failures: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
 
@@ -287,6 +288,7 @@ class SyncSummary:
             "Bytes uploaded": str(self.bytes_uploaded),
             "Cleaned objects": str(self.cleaned_objects),
             "Cleaned files": str(self.cleaned_files),
+            "API transient": str(self.api_transient_failures),
             "Errors": str(len(self.errors)),
             "Elapsed": f"{self.elapsed_seconds:.1f}s",
         }
@@ -325,6 +327,8 @@ class OpenDirSync(commands.Cog):
             "OPENDIR_API_CLEAN_BEFORE_UPLOAD",
             _cfg_bool("R2_MAINTENANCE_CLEAN_COMMENTS", True),
         )
+        self.api_generate_retries = max(1, _cfg_int("OPENDIR_API_GENERATE_RETRIES", 3))
+        self.api_retry_delay = max(0.0, _cfg_float("OPENDIR_API_RETRY_DELAY_SECONDS", 2.0))
 
         self.state_path = _cfg_path(
             "OPENDIR_STATE_PATH",
@@ -386,6 +390,11 @@ class OpenDirSync(commands.Cog):
             total=max(5.0, _cfg_float("OPENDIR_REQUEST_TIMEOUT_SECONDS", 300.0)),
             connect=max(3.0, _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0)),
             sock_read=max(5.0, _cfg_float("OPENDIR_READ_TIMEOUT_SECONDS", 120.0)),
+        )
+        self.api_generate_timeout = aiohttp.ClientTimeout(
+            total=max(30.0, _cfg_float("OPENDIR_API_REQUEST_TIMEOUT_SECONDS", _cfg_float("OPENDIR_REQUEST_TIMEOUT_SECONDS", 900.0))),
+            connect=max(3.0, _cfg_float("OPENDIR_API_CONNECT_TIMEOUT_SECONDS", _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0))),
+            sock_read=max(30.0, _cfg_float("OPENDIR_API_READ_TIMEOUT_SECONDS", 300.0)),
         )
 
         self.s3 = None
@@ -816,12 +825,49 @@ class OpenDirSync(commands.Cog):
         payload: dict[str, Any],
         summary: SyncSummary,
     ) -> bytes | None:
+        appid = str(payload.get("app_id") or "")
+        last_exc: BaseException | None = None
+        for attempt in range(1, self.api_generate_retries + 1):
+            try:
+                return await self._download_api_zip_once(session, payload, summary)
+            except (
+                asyncio.TimeoutError,
+                TimeoutError,
+                aiohttp.ServerTimeoutError,
+                aiohttp.ClientPayloadError,
+                aiohttp.ClientOSError,
+                aiohttp.ClientConnectionError,
+            ) as exc:
+                last_exc = exc
+                if attempt < self.api_generate_retries:
+                    await asyncio.sleep(self.api_retry_delay * attempt)
+                    continue
+
+        summary.api_transient_failures += 1
+        summary.add_sample(
+            f"api timeout {appid}: {type(last_exc).__name__ if last_exc else 'timeout'}; retry next run"
+        )
+        log.info(
+            "OpenDir API transient timeout for appid=%s after %d attempt(s): %r",
+            appid,
+            self.api_generate_retries,
+            last_exc,
+        )
+        return None
+
+    async def _download_api_zip_once(
+        self,
+        session: aiohttp.ClientSession,
+        payload: dict[str, Any],
+        summary: SyncSummary,
+    ) -> bytes | None:
         url = self._api_url(self.api_generate_path)
         async with session.post(
             url,
             json=payload,
             headers={"Accept": "application/zip, application/octet-stream, application/json"},
             allow_redirects=True,
+            timeout=self.api_generate_timeout,
         ) as response:
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if response.status >= 400:
