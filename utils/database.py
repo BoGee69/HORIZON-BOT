@@ -345,6 +345,53 @@ class R2InventoryDB:
         except Exception:
             return False
 
+    def find_zip_by_appid(self, prefix: str = "", appid: str = "") -> Optional[Dict]:
+        """Find any cached ZIP object whose filename points at the given AppID."""
+        appid = str(appid or "").strip()
+        if not appid.isdigit():
+            return None
+        prefix = str(prefix or "").lstrip("/")
+        patterns = []
+        if prefix:
+            patterns.extend([
+                f"{prefix}%({appid}).zip",
+                f"{prefix}{appid}.zip",
+                f"{prefix}[{appid}].zip",
+            ])
+        patterns.extend([
+            f"%({appid}).zip",
+            f"{appid}.zip",
+            f"[{appid}].zip",
+        ])
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                for pattern in patterns:
+                    row = conn.execute(
+                        """
+                        SELECT key, size, last_modified
+                        FROM r2_inventory
+                        WHERE key LIKE ?
+                        ORDER BY
+                            CASE
+                                WHEN key LIKE ? THEN 0
+                                WHEN key LIKE ? THEN 1
+                                ELSE 2
+                            END,
+                            key ASC
+                        LIMIT 1
+                        """,
+                        (pattern, f"{prefix}%({appid}).zip", f"%({appid}).zip"),
+                    ).fetchone()
+                    if row:
+                        return {
+                            "key": row[0],
+                            "size": int(row[1] or 0),
+                            "last_modified": str(row[2] or ""),
+                        }
+        except Exception:
+            return None
+        return None
+
     def get_all_keys(self, prefix: str = "") -> set[str]:
         """Return all cached keys, optionally filtered by prefix."""
         try:

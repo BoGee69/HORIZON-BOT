@@ -20,8 +20,11 @@ from config import (
     COLOR_SUCCESS, COLOR_WARNING, GEN_DAILY_LIMIT, GEN_USAGE_PATH, R2_BASE_URL,
 )
 from utils.diagnostics import collect_health, yes_no
+from utils.database import R2InventoryDB
 from utils.helpers import format_number, format_size, has_any_role_id, has_any_role_name, is_admin_interaction
 from utils.gen_limits import DailyGenLimiter
+from utils.r2_keys import build_r2_key_candidates
+from utils.r2_presign import _BUCKET as R2_BUCKET, _PRESIGN_ENABLED as R2_PRESIGN_ENABLED, _make_client as make_r2_client
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +139,44 @@ class AdminCommands(commands.Cog):
         if samples:
             return str(samples[-1])[:900]
         return "-"
+
+    async def _find_existing_r2_file(self, appid: str, name: str) -> dict | None:
+        prefix = str(getattr(bot_config, "OPENDIR_R2_PREFIX", "Database/") or "Database/").lstrip("/")
+        candidates = build_r2_key_candidates(appid, name)
+
+        try:
+            inventory = R2InventoryDB()
+            for key in candidates:
+                if await asyncio.to_thread(inventory.contains, key):
+                    return {"key": key, "size": 0, "last_modified": "", "source": "r2-inventory-cache"}
+
+            cached = await asyncio.to_thread(inventory.find_zip_by_appid, prefix, appid)
+            if cached:
+                cached["source"] = "r2-inventory-cache"
+                return cached
+        except Exception:
+            log.debug("R2 inventory lookup failed for /add_game %s", appid, exc_info=True)
+
+        if not (R2_PRESIGN_ENABLED and R2_BUCKET):
+            return None
+
+        try:
+            client = await asyncio.to_thread(make_r2_client)
+            for key in candidates:
+                try:
+                    obj = await asyncio.to_thread(client.head_object, Bucket=R2_BUCKET, Key=key)
+                    return {
+                        "key": key,
+                        "size": int(obj.get("ContentLength") or 0),
+                        "last_modified": str(obj.get("LastModified") or ""),
+                        "source": "r2-head-object",
+                    }
+                except Exception:
+                    continue
+        except Exception:
+            log.debug("R2 head-object lookup failed for /add_game %s", appid, exc_info=True)
+
+        return None
 
     async def _send_add_game_priority_result(
         self,
@@ -440,18 +481,30 @@ class AdminCommands(commands.Cog):
         appid = resolved_appid
         name = (name or resolved_name or f"App {appid}").strip()
 
-        existed = self.db.get_game(appid) is not None
+        existing_game = self.db.get_game(appid)
+        existed = existing_game is not None
+        db_has_file = bool((existing_game or {}).get("file") or (existing_game or {}).get("has_file"))
+        r2_existing = None
         if existed:
-            if has_file:
+            if has_file or db_has_file:
                 self.db.mark_as_starred(appid, name)
                 self.db.save()
-                msg = f"Game `{appid}` already existed — status updated → ⭐ has file."
+                db_has_file = True
+                msg = f"Game `{appid}` already existed and is marked as having a file."
             else:
                 msg = f"Game `{appid}` is already in the database."
         else:
             self.db.add_game(appid, name, has_file)
             self.db.save()
             msg = f"Game `{appid}` successfully added."
+
+        if not has_file and not db_has_file:
+            r2_existing = await self._find_existing_r2_file(appid, name)
+            if r2_existing:
+                self.db.mark_as_starred(appid, name)
+                self.db.save()
+                db_has_file = True
+                msg = f"Game `{appid}` is already available in R2."
 
         opendir_cog = self.bot.get_cog("OpenDirSync")
         priority_scheduled = False
@@ -480,7 +533,7 @@ class AdminCommands(commands.Cog):
                 summary.samples = []
             await on_priority_done(summary)
 
-        if opendir_cog:
+        if opendir_cog and not (has_file or db_has_file or r2_existing):
             if hasattr(opendir_cog, "schedule_priority_sync"):
                 priority_scheduled = bool(
                     opendir_cog.schedule_priority_sync(
@@ -512,11 +565,25 @@ class AdminCommands(commands.Cog):
             value=(
                 "Started now in the priority lane. I will send a final confirmation when it uploads, already exists, or fails."
                 if priority_scheduled
-                else "OpenDir cog not available"
+                else (
+                    "Skipped — file already exists in R2."
+                    if r2_existing
+                    else (
+                        "Skipped — database already marks this game as having a file."
+                        if has_file or db_has_file
+                        else "OpenDir cog not available"
+                    )
+                )
             ),
             inline=False,
         )
-        embed.add_field(name="File?", value="✅ Yes" if has_file else "❌ No", inline=True)
+        if r2_existing:
+            size = int(r2_existing.get("size") or 0)
+            detail = str(r2_existing.get("key") or "-")
+            if size:
+                detail = f"{detail}\n{format_size(size)}"
+            embed.add_field(name="R2 file", value=detail[:1024], inline=False)
+        embed.add_field(name="File?", value="✅ Yes" if (has_file or db_has_file or r2_existing) else "❌ No", inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="remove_game", description="[Admin] Remove a game from the database")
