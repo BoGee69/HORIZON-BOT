@@ -222,6 +222,11 @@ class RemoteFile:
     size: int | None = None
 
 
+class ApiNoZipResult:
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
 @dataclass(slots=True)
 class SyncState:
     cursor: int = 0
@@ -850,12 +855,23 @@ class OpenDirSync(commands.Cog):
                     depot_id,
                     target_key,
                 )
-            data = await self._download_api_zip(session, payload, summary, priority=priority)
-            if data is None:
+            data_or_reason = await self._download_api_zip(session, payload, summary, priority=priority)
+            if isinstance(data_or_reason, ApiNoZipResult):
+                if priority:
+                    summary.add_error(f"{game.appid}/api-generate returned no ZIP: {data_or_reason.reason}")
+                    log.warning(
+                        "OpenDir priority %s: API generate returned no ZIP: %s",
+                        game.appid,
+                        data_or_reason.reason,
+                    )
+                summary.no_match += 1
+                return
+            if data_or_reason is None:
                 if priority:
                     log.info("OpenDir priority %s: API generate returned no ZIP", game.appid)
                 summary.no_match += 1
                 return
+            data = data_or_reason
 
             summary.remote_matches += 1
             if priority:
@@ -941,7 +957,7 @@ class OpenDirSync(commands.Cog):
         summary: SyncSummary,
         *,
         priority: bool = False,
-    ) -> bytes | None:
+    ) -> bytes | ApiNoZipResult | None:
         appid = str(payload.get("app_id") or "")
         last_exc: BaseException | None = None
         retries = self.priority_api_generate_retries if priority else self.api_generate_retries
@@ -1001,8 +1017,9 @@ class OpenDirSync(commands.Cog):
         summary: SyncSummary,
         *,
         timeout: aiohttp.ClientTimeout,
-    ) -> bytes | None:
+    ) -> bytes | ApiNoZipResult | None:
         url = self._api_url(self.api_generate_path)
+        appid = str(payload.get("app_id") or "")
         async with session.post(
             url,
             json=payload,
@@ -1013,15 +1030,15 @@ class OpenDirSync(commands.Cog):
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if response.status >= 400:
                 text = await response.text(errors="replace")
+                reason = f"HTTP {response.status} {self._short_error_text(text)}"
                 if response.status >= 500:
                     raise OpenDirSyncError(
-                        f"API generate failed with HTTP {response.status}: {self._short_error_text(text)}"
+                        f"API generate failed with {reason}"
                     )
                 if len(summary.samples) < 3:
-                    summary.add_sample(
-                        f"api no zip {payload.get('app_id')}: HTTP {response.status} {self._short_error_text(text)[:120]}"
-                    )
-                return None
+                    summary.add_sample(f"api no zip {appid}: {reason[:120]}")
+                log.info("OpenDir API generate returned no ZIP for appid=%s: %s", appid, reason)
+                return ApiNoZipResult(reason)
 
             if self._looks_like_html(content_type):
                 text = await response.text(errors="replace")
@@ -1036,11 +1053,16 @@ class OpenDirSync(commands.Cog):
                 except Exception:
                     raise OpenDirSyncError(f"API generate returned invalid JSON: {self._short_error_text(text)}")
                 if data.get("success") is False or data.get("error") or data.get("message"):
+                    reason = str(
+                        data.get("error")
+                        or data.get("message")
+                        or data.get("detail")
+                        or "API returned JSON without ZIP"
+                    ).strip()
                     if len(summary.samples) < 3:
-                        summary.add_sample(
-                            f"api no zip {payload.get('app_id')}: {str(data.get('error') or data.get('message'))[:120]}"
-                        )
-                    return None
+                        summary.add_sample(f"api no zip {appid}: {reason[:120]}")
+                    log.info("OpenDir API generate returned no ZIP for appid=%s: %s", appid, reason)
+                    return ApiNoZipResult(reason)
                 raise OpenDirSyncError("API generate returned JSON, not a ZIP blob")
 
             raw_size = response.headers.get("Content-Length")
