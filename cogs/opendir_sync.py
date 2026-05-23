@@ -306,14 +306,14 @@ class OpenDirSync(commands.Cog):
         self.enabled = _cfg_bool("OPENDIR_SYNC_ENABLED", False)
         self.base_url = self._normalize_base_url(_cfg_str("OPENDIR_BASE_URL", ""))
         self.r2_prefix = self._normalize_r2_prefix(_cfg_str("OPENDIR_R2_PREFIX", "Database/"))
-        self.source_mode = _cfg_str("OPENDIR_SOURCE_MODE", "api").lower() or "api"
+        self.source_mode = _cfg_str("OPENDIR_SOURCE_MODE", "directory").lower() or "directory"
         if self.source_mode in {"manifest", "manifest_api", "generate", "generator"}:
             self.source_mode = "api"
         if self.source_mode in {"opendir", "directory", "dir", "direct"}:
             self.source_mode = "directory"
         if self.source_mode not in {"api", "directory"}:
-            log.warning("Unknown OPENDIR_SOURCE_MODE=%r; falling back to api", self.source_mode)
-            self.source_mode = "api"
+            log.warning("Unknown OPENDIR_SOURCE_MODE=%r; falling back to directory", self.source_mode)
+            self.source_mode = "directory"
 
         self.api_base_url = self._normalize_base_url(_cfg_str("OPENDIR_API_BASE_URL", self.base_url))
         self.api_search_path = _cfg_str("OPENDIR_API_SEARCH_PATH", "/api/search") or "/api/search"
