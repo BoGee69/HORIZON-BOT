@@ -47,9 +47,9 @@ logging.getLogger("discord").setLevel(logging.WARNING)
 logging.getLogger("discord.http").setLevel(logging.WARNING)
 log = logging.getLogger(__name__)
 
-# Only these slash commands should be visible in Discord.
-# All admin/maintenance work is automatic or handled through the AI/operator DM flow.
-PUBLIC_SLASH_COMMAND_ALLOWLIST = {"gen"}
+# Only these slash commands should be visible in Discord. r2_recent is admin-gated
+# but intentionally published so the owner can inspect fresh R2 uploads quickly.
+PUBLIC_SLASH_COMMAND_ALLOWLIST = {"gen", "r2_recent"}
 
 
 class SteamBot(commands.Bot):

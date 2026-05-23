@@ -448,7 +448,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.13"
+BOT_VERSION     = "9.2.14"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 import time
 from contextlib import suppress
 
@@ -29,6 +30,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 
 import config as bot_config
+from utils.helpers import format_size, truncate_text
 
 log = logging.getLogger(__name__)
 
@@ -211,12 +213,135 @@ class R2InventorySync(commands.Cog):
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(
+        name="r2_recent",
+        description="[Admin] Show newest files in the R2 Database folder",
+    )
+    @app_commands.describe(limit="How many recent files to show (1-50)")
+    async def cmd_r2_recent(
+        self,
+        interaction: discord.Interaction,
+        limit: app_commands.Range[int, 1, 50] = 20,
+    ) -> None:
+        if not self._is_admin(interaction):
+            await interaction.response.send_message("Admin only.", ephemeral=True)
+            return
+        if not _r2_configured():
+            await interaction.response.send_message("R2 not configured.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            objects = await asyncio.to_thread(self._list_recent_objects, int(limit))
+        except Exception as exc:
+            log.exception("R2InventorySync: recent object listing failed")
+            await interaction.followup.send(f"Failed to list R2 files: {exc}", ephemeral=True)
+            return
+
+        if not objects:
+            await interaction.followup.send(
+                f"No ZIP files found under `{self.prefix}`.", ephemeral=True
+            )
+            return
+
+        await interaction.followup.send(
+            embeds=self._recent_objects_embeds(objects, int(limit)),
+            ephemeral=True,
+        )
+
     # ─── helpers ────────────────────────────────────────────────────────
 
     @staticmethod
     def _norm_prefix(p: str) -> str:
         p = (p or "").strip().lstrip("/")
         return f"{p}/" if p and not p.endswith("/") else p
+
+    def _list_recent_objects(self, limit: int) -> list[dict]:
+        limit = max(1, min(50, int(limit or 20)))
+        s3 = _make_r2_client()
+        paginator = s3.get_paginator("list_objects_v2")
+        rows: list[dict] = []
+
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=self.prefix):
+            for obj in page.get("Contents", []) or []:
+                key = str(obj.get("Key") or "")
+                if not key or key.endswith("/") or not key.lower().endswith(".zip"):
+                    continue
+                last_modified = obj.get("LastModified")
+                rows.append(
+                    {
+                        "key": key,
+                        "title": self._title_from_key(key),
+                        "size": int(obj.get("Size") or 0),
+                        "last_modified": last_modified,
+                        "last_modified_ts": self._timestamp(last_modified),
+                    }
+                )
+
+        rows.sort(key=lambda item: float(item.get("last_modified_ts") or 0), reverse=True)
+        return rows[:limit]
+
+    def _recent_objects_embeds(self, objects: list[dict], limit: int) -> list[discord.Embed]:
+        embeds: list[discord.Embed] = []
+        current = discord.Embed(
+            title="R2 Recent Uploads",
+            description="Newest ZIP files from R2, sorted by modified date.",
+            color=discord.Color.blurple(),
+        )
+        current.add_field(name="Bucket", value=f"`{self.bucket}`", inline=True)
+        current.add_field(name="Prefix", value=f"`{self.prefix}`", inline=True)
+        current.add_field(name="Showing", value=f"{len(objects):,}/{limit:,}", inline=True)
+        body = ""
+
+        def flush() -> None:
+            nonlocal current, body
+            if body:
+                current.add_field(name="Files", value=body, inline=False)
+            embeds.append(current)
+            current = discord.Embed(
+                title="R2 Recent Uploads (continued)",
+                color=discord.Color.blurple(),
+            )
+            body = ""
+
+        for idx, obj in enumerate(objects, start=1):
+            key = truncate_text(str(obj.get("key") or ""), 180)
+            title = truncate_text(str(obj.get("title") or "Unknown"), 120)
+            size = format_size(int(obj.get("size") or 0))
+            line = (
+                f"**{idx}. {discord.utils.escape_markdown(title)}**\n"
+                f"`{key}`\n"
+                f"Size: `{size}` | Date: {self._discord_time(obj.get('last_modified'))}\n\n"
+            )
+            if len(body) + len(line) > 950:
+                flush()
+            body += line
+
+        if body or not embeds:
+            flush()
+        return embeds[:10]
+
+    def _title_from_key(self, key: str) -> str:
+        name = posixpath.basename(key)
+        if name.lower().endswith(".zip"):
+            name = name[:-4]
+        return name.strip() or key
+
+    @staticmethod
+    def _discord_time(value) -> str:
+        if hasattr(value, "timestamp"):
+            ts = int(value.timestamp())
+            return f"<t:{ts}:F> (<t:{ts}:R>)"
+        return "`unknown`"
+
+    @staticmethod
+    def _timestamp(value) -> float:
+        if hasattr(value, "timestamp"):
+            try:
+                return float(value.timestamp())
+            except Exception:
+                return 0.0
+        return 0.0
 
 
 async def setup(bot: commands.Bot) -> None:
