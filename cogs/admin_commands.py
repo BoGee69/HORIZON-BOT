@@ -20,11 +20,8 @@ from config import (
     COLOR_SUCCESS, COLOR_WARNING, GEN_DAILY_LIMIT, GEN_USAGE_PATH, R2_BASE_URL,
 )
 from utils.diagnostics import collect_health, yes_no
-from utils.database import R2InventoryDB
 from utils.helpers import format_number, format_size, has_any_role_id, has_any_role_name, is_admin_interaction
 from utils.gen_limits import DailyGenLimiter
-from utils.r2_keys import build_r2_key_candidates
-from utils.r2_presign import _BUCKET as R2_BUCKET, _PRESIGN_ENABLED as R2_PRESIGN_ENABLED, _make_client as make_r2_client
 
 log = logging.getLogger(__name__)
 
@@ -73,192 +70,6 @@ class AdminCommands(commands.Cog):
         if self.gen_limiter is None:
             self.gen_limiter = DailyGenLimiter()
             bot.gen_limiter = self.gen_limiter
-
-    async def _resolve_add_game(self, query: str) -> tuple[str | None, str]:
-        raw = str(query or "").strip()
-        if not raw:
-            return None, ""
-
-        if raw.isdigit():
-            entry = self.db.get_game(raw)
-            db_name = str((entry or {}).get("name") or "").strip()
-            if db_name:
-                return raw, db_name
-            steam_name = await self._fetch_steam_title(raw)
-            return raw, steam_name or f"App {raw}"
-
-        matches = self.db.search_games(raw, limit=1)
-        for item in matches:
-            appid = str(item.get("appid") or item.get("id") or "").strip()
-            name = str(item.get("name") or "").strip()
-            if appid and name:
-                return appid, name
-
-        try:
-            async with self.bot.session.get(
-                bot_config.STEAM_SEARCH_API,
-                params={"term": raw, "l": "english", "cc": "US"},
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    for item in data.get("items", []):
-                        appid = str(item.get("id") or "").strip()
-                        name = str(item.get("name") or "").strip()
-                        if appid and name:
-                            return appid, name
-        except Exception:
-            log.exception("Steam search failed for /add_game query %r", raw)
-
-        return None, ""
-
-    async def _fetch_steam_title(self, appid: str) -> str | None:
-        try:
-            async with self.bot.session.get(
-                bot_config.STEAM_STORE_API,
-                params={"appids": appid, "l": "english", "cc": bot_config.DEFAULT_CC},
-                timeout=aiohttp.ClientTimeout(total=8),
-            ) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.json()
-                block = data.get(str(appid), {})
-                if block.get("success") and isinstance(block.get("data"), dict):
-                    name = str(block["data"].get("name") or "").strip()
-                    return name or None
-        except Exception:
-            log.debug("Steam title lookup failed for %s", appid, exc_info=True)
-        return None
-
-    @staticmethod
-    def _summary_detail(summary) -> str:
-        errors = list(getattr(summary, "errors", []) or [])
-        samples = list(getattr(summary, "samples", []) or [])
-        if errors:
-            return str(errors[-1])[:900]
-        if samples:
-            return str(samples[-1])[:900]
-        return "-"
-
-    async def _find_existing_r2_file(self, appid: str, name: str) -> dict | None:
-        prefix = str(getattr(bot_config, "OPENDIR_R2_PREFIX", "Database/") or "Database/").lstrip("/")
-        candidates = build_r2_key_candidates(appid, name)
-
-        try:
-            inventory = R2InventoryDB()
-            for key in candidates:
-                if await asyncio.to_thread(inventory.contains, key):
-                    return {"key": key, "size": 0, "last_modified": "", "source": "r2-inventory-cache"}
-
-            cached = await asyncio.to_thread(inventory.find_zip_by_appid, prefix, appid)
-            if cached:
-                cached["source"] = "r2-inventory-cache"
-                return cached
-        except Exception:
-            log.debug("R2 inventory lookup failed for /add_game %s", appid, exc_info=True)
-
-        if not (R2_PRESIGN_ENABLED and R2_BUCKET):
-            return None
-
-        try:
-            client = await asyncio.to_thread(make_r2_client)
-            for key in candidates:
-                try:
-                    obj = await asyncio.to_thread(client.head_object, Bucket=R2_BUCKET, Key=key)
-                    return {
-                        "key": key,
-                        "size": int(obj.get("ContentLength") or 0),
-                        "last_modified": str(obj.get("LastModified") or ""),
-                        "source": "r2-head-object",
-                    }
-                except Exception:
-                    continue
-        except Exception:
-            log.debug("R2 head-object lookup failed for /add_game %s", appid, exc_info=True)
-
-        return None
-
-    async def _send_add_game_priority_result(
-        self,
-        interaction: discord.Interaction,
-        appid: str,
-        name: str,
-        summary,
-    ) -> None:
-        uploaded = int(getattr(summary, "files_uploaded", 0) or 0)
-        existing = int(getattr(summary, "files_existing", 0) or 0)
-        skipped = int(getattr(summary, "files_skipped", 0) or 0)
-        no_match = int(getattr(summary, "no_match", 0) or 0)
-        errors = list(getattr(summary, "errors", []) or [])
-        elapsed = float(getattr(summary, "elapsed_seconds", 0.0) or 0.0)
-
-        if uploaded > 0:
-            self.db.mark_as_starred(appid, name)
-            self.db.save()
-            title = "OpenDir upload complete"
-            description = f"`{name}` (`{appid}`) sudah berhasil diupload ke R2."
-            color = COLOR_SUCCESS
-        elif existing > 0:
-            self.db.mark_as_starred(appid, name)
-            self.db.save()
-            title = "OpenDir file already exists"
-            description = f"`{name}` (`{appid}`) sudah ada di R2."
-            color = COLOR_SUCCESS
-        elif errors:
-            title = "OpenDir upload failed"
-            description = f"`{name}` (`{appid}`) gagal diproses."
-            color = COLOR_ERROR
-        elif no_match > 0:
-            title = "OpenDir file not ready"
-            description = f"`{name}` (`{appid}`) belum tersedia dari OpenDir."
-            color = COLOR_WARNING
-        else:
-            title = "OpenDir upload not completed"
-            description = f"`{name}` (`{appid}`) selesai dicek, tapi tidak ada file yang diupload."
-            color = COLOR_WARNING
-
-        embed = discord.Embed(title=title, description=description, color=color)
-        embed.add_field(name="App ID", value=appid, inline=True)
-        embed.add_field(name="Name", value=(name or "-")[:1024], inline=True)
-        embed.add_field(name="Uploaded", value=str(uploaded), inline=True)
-        embed.add_field(name="Already existed", value=str(existing), inline=True)
-        embed.add_field(name="No match", value=str(no_match), inline=True)
-        embed.add_field(name="Skipped", value=str(skipped), inline=True)
-        embed.add_field(name="Elapsed", value=f"{elapsed:.1f}s", inline=True)
-        embed.add_field(name="Detail", value=self._summary_detail(summary), inline=False)
-
-        try:
-            await interaction.followup.send(embed=embed, ephemeral=True)
-            return
-        except Exception:
-            log.exception("Could not send /add_game final followup for %s", appid)
-
-        try:
-            await interaction.user.send(embed=embed)
-            return
-        except Exception:
-            log.exception("Could not DM /add_game final result for %s", appid)
-
-        notifier = getattr(self.bot, "notify_admins", None)
-        if notifier:
-            result = notifier(
-                title,
-                description,
-                level="error" if errors else "info",
-                fields={
-                    "App ID": appid,
-                    "Name": name,
-                    "Uploaded": str(uploaded),
-                    "Already existed": str(existing),
-                    "No match": str(no_match),
-                    "Skipped": str(skipped),
-                    "Detail": self._summary_detail(summary)[:500],
-                },
-                key=f"add-game-result-{appid}",
-                force=True,
-            )
-            if asyncio.iscoroutine(result):
-                await result
 
     @app_commands.command(name="role_debug", description="[Admin] Explain why a member is limited or exempt")
     @app_commands.describe(member="Server member to inspect")
@@ -459,98 +270,36 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="⭐ Total Files", value=format_number(self.db.get_stats()["with_files"]), inline=True)
         await interaction.edit_original_response(embed=embed)
 
-    @app_commands.command(name="add_game", description="[Admin] Add a game and priority-process it via OpenDir")
-    @app_commands.describe(appid="Steam App ID or game title", name="Game name override (optional)", has_file="Mark as having a file immediately")
+    @app_commands.command(name="add_game", description="[Admin] Manually add a game to the database")
+    @app_commands.describe(appid="Steam App ID", name="Game name (optional)", has_file="Mark as having a file immediately")
     @admin_check()
     async def add_game(self, interaction: discord.Interaction, appid: str,
                        name: Optional[str] = None, has_file: bool = False):
         await interaction.response.defer(ephemeral=True)
 
-        resolved_appid, resolved_name = await self._resolve_add_game(appid)
-        if not resolved_appid:
+        if not appid.isdigit():
             await interaction.followup.send(
                 embed=discord.Embed(
-                    title="Game not found",
-                    description=f"I could not find a Steam game for `{appid}`.",
+                    title="❌ Invalid App ID",
+                    description=f"`{appid}` is not a valid number.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
             )
             return
 
-        appid = resolved_appid
-        name = (name or resolved_name or f"App {appid}").strip()
-
-        existing_game = self.db.get_game(appid)
-        existed = existing_game is not None
-        db_has_file = bool((existing_game or {}).get("file") or (existing_game or {}).get("has_file"))
-        r2_existing = None
+        existed = self.db.get_game(appid) is not None
         if existed:
-            if has_file or db_has_file:
+            if has_file:
                 self.db.mark_as_starred(appid, name)
                 self.db.save()
-                db_has_file = True
-                msg = f"Game `{appid}` already existed and is marked as having a file."
+                msg = f"Game `{appid}` already existed — status updated → ⭐ has file."
             else:
                 msg = f"Game `{appid}` is already in the database."
         else:
             self.db.add_game(appid, name, has_file)
             self.db.save()
             msg = f"Game `{appid}` successfully added."
-
-        if not has_file and not db_has_file:
-            r2_existing = await self._find_existing_r2_file(appid, name)
-            if r2_existing:
-                self.db.mark_as_starred(appid, name)
-                self.db.save()
-                db_has_file = True
-                msg = f"Game `{appid}` is already available in R2."
-
-        opendir_cog = self.bot.get_cog("OpenDirSync")
-        priority_scheduled = False
-
-        async def on_priority_done(summary) -> None:
-            await self._send_add_game_priority_result(interaction, appid, name, summary)
-
-        async def on_priority_task_done(done: asyncio.Task) -> None:
-            try:
-                summary = done.result()
-            except asyncio.CancelledError:
-                return
-            except Exception as exc:
-                log.exception("OpenDir direct priority task failed for /add_game %s", appid)
-
-                class FailedSummary:
-                    pass
-
-                summary = FailedSummary()
-                summary.files_uploaded = 0
-                summary.files_existing = 0
-                summary.files_skipped = 1
-                summary.no_match = 0
-                summary.elapsed_seconds = 0.0
-                summary.errors = [f"OpenDir priority task failed: {exc!r}"]
-                summary.samples = []
-            await on_priority_done(summary)
-
-        if opendir_cog and not (has_file or db_has_file or r2_existing):
-            if hasattr(opendir_cog, "schedule_priority_sync"):
-                priority_scheduled = bool(
-                    opendir_cog.schedule_priority_sync(
-                        appid,
-                        source="add_game",
-                        callback=on_priority_done,
-                    )
-                )
-            else:
-                task = asyncio.create_task(
-                    opendir_cog.run_sync_once(priority_appid=appid),
-                    name=f"opendir-priority-{appid}",
-                )
-                task.add_done_callback(
-                    lambda done: asyncio.create_task(on_priority_task_done(done))
-                )
-                priority_scheduled = True
 
         embed = discord.Embed(
             title="✅ Database Updated" if not existed or has_file else "ℹ️ Already Exists",
@@ -560,30 +309,7 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="App ID", value=appid, inline=True)
         if name:
             embed.add_field(name="Name", value=name, inline=True)
-        embed.add_field(
-            name="OpenDir priority",
-            value=(
-                "Started now in the priority lane. I will send a final confirmation when it uploads, already exists, or fails."
-                if priority_scheduled
-                else (
-                    "Skipped — file already exists in R2."
-                    if r2_existing
-                    else (
-                        "Skipped — database already marks this game as having a file."
-                        if has_file or db_has_file
-                        else "OpenDir cog not available"
-                    )
-                )
-            ),
-            inline=False,
-        )
-        if r2_existing:
-            size = int(r2_existing.get("size") or 0)
-            detail = str(r2_existing.get("key") or "-")
-            if size:
-                detail = f"{detail}\n{format_size(size)}"
-            embed.add_field(name="R2 file", value=detail[:1024], inline=False)
-        embed.add_field(name="File?", value="✅ Yes" if (has_file or db_has_file or r2_existing) else "❌ No", inline=True)
+        embed.add_field(name="File?", value="✅ Yes" if has_file else "❌ No", inline=True)
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     @app_commands.command(name="remove_game", description="[Admin] Remove a game from the database")

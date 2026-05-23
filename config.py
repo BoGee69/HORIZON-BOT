@@ -138,21 +138,6 @@ BOOSTER_ROLE_NAMES = {
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
-# Public /request routing. If REQUEST_CHANNEL_IDS is set, requests are posted
-# there. Otherwise TriadBot looks for these channel names, then falls back to
-# the channel where the command was used.
-REQUEST_CHANNEL_IDS = parse_id_set(os.getenv("REQUEST_CHANNEL_IDS", ""))
-REQUEST_CHANNEL_NAMES = {
-    x.strip().lower()
-    for x in os.getenv(
-        "REQUEST_CHANNEL_NAMES",
-        "request,requests,game-request,game-requests,request-game,request-games",
-    ).split(",")
-    if x.strip()
-}
-REQUEST_PING_ADMINS = parse_bool(os.getenv("REQUEST_PING_ADMINS", "true"), True)
-GAME_REQUESTS_PATH = env_path("GAME_REQUESTS_PATH", DATA_DIR / "game_requests.json")
-
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 
 # FIX 3: WEB_URL — WAJIB di-set di your .env file env agar JWT link tidak nunjuk ke localhost.
@@ -187,17 +172,6 @@ OPENDIR_API_RETRY_DELAY_SECONDS = float(os.getenv("OPENDIR_API_RETRY_DELAY_SECON
 OPENDIR_API_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_API_REQUEST_TIMEOUT_SECONDS", os.getenv("OPENDIR_REQUEST_TIMEOUT_SECONDS", "900")))
 OPENDIR_API_CONNECT_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_API_CONNECT_TIMEOUT_SECONDS", os.getenv("OPENDIR_CONNECT_TIMEOUT_SECONDS", "30")))
 OPENDIR_API_READ_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_API_READ_TIMEOUT_SECONDS", "300"))
-OPENDIR_API_PENDING_RETRY_ENABLED = parse_bool(os.getenv("OPENDIR_API_PENDING_RETRY_ENABLED", "true"), True)
-OPENDIR_API_PENDING_RETRY_DELAY_SECONDS = float(os.getenv("OPENDIR_API_PENDING_RETRY_DELAY_SECONDS", "180"))
-OPENDIR_API_PENDING_RETRY_MAX_ATTEMPTS = int(os.getenv("OPENDIR_API_PENDING_RETRY_MAX_ATTEMPTS", "12"))
-OPENDIR_API_PENDING_RETRY_MAX_PER_RUN = int(os.getenv("OPENDIR_API_PENDING_RETRY_MAX_PER_RUN", "50"))
-OPENDIR_API_PENDING_RETRY_MAX_QUEUE = int(os.getenv("OPENDIR_API_PENDING_RETRY_MAX_QUEUE", "5000"))
-OPENDIR_PRIORITY_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_PRIORITY_TIMEOUT_SECONDS", "900"))
-OPENDIR_PRIORITY_API_GENERATE_RETRIES = int(os.getenv("OPENDIR_PRIORITY_API_GENERATE_RETRIES", "2"))
-OPENDIR_PRIORITY_API_REQUEST_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_PRIORITY_API_REQUEST_TIMEOUT_SECONDS", "180"))
-OPENDIR_PRIORITY_API_READ_TIMEOUT_SECONDS = float(os.getenv("OPENDIR_PRIORITY_API_READ_TIMEOUT_SECONDS", "90"))
-OPENDIR_PRIORITY_PENDING_RETRIES = int(os.getenv("OPENDIR_PRIORITY_PENDING_RETRIES", "8"))
-OPENDIR_PRIORITY_PENDING_DELAY_SECONDS = float(os.getenv("OPENDIR_PRIORITY_PENDING_DELAY_SECONDS", "45"))
 OPENDIR_INTERVAL_HOURS = float(os.getenv("OPENDIR_INTERVAL_HOURS", os.getenv("SYNC_INTERVAL_HOURS", "6")))
 OPENDIR_RUN_ON_START = parse_bool(os.getenv("OPENDIR_RUN_ON_START", "true"), True)
 OPENDIR_START_DELAY_SECONDS = float(os.getenv("OPENDIR_START_DELAY_SECONDS", "20"))
@@ -476,7 +450,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.26"
+BOT_VERSION     = "9.2.27"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))
