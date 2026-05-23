@@ -244,6 +244,14 @@ class ApiNoZipResult:
 
 
 @dataclass(slots=True)
+class PendingApiRetry:
+    game: GameRecord
+    attempts: int = 0
+    next_retry_at: float = 0.0
+    reason: str = ""
+
+
+@dataclass(slots=True)
 class SyncState:
     cursor: int = 0
     completed_cycles: int = 0
@@ -273,6 +281,8 @@ class SyncSummary:
     cleaned_objects: int = 0
     cleaned_files: int = 0
     api_transient_failures: int = 0
+    api_pending_queued: int = 0
+    api_pending_retried: int = 0
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
 
@@ -311,6 +321,8 @@ class SyncSummary:
             "Cleaned objects": str(self.cleaned_objects),
             "Cleaned files": str(self.cleaned_files),
             "API transient": str(self.api_transient_failures),
+            "API pending queued": str(self.api_pending_queued),
+            "API pending retried": str(self.api_pending_retried),
             "Errors": str(len(self.errors)),
             "Elapsed": f"{self.elapsed_seconds:.1f}s",
         }
@@ -328,6 +340,7 @@ class OpenDirSync(commands.Cog):
         self._priority_pending: set[str] = set()
         self._priority_counts: dict[str, int] = {}
         self._priority_tasks: set[asyncio.Task] = set()
+        self._api_pending_retries: dict[str, PendingApiRetry] = {}
         self._normal_wakeup = asyncio.Event()
 
         self.enabled = _cfg_bool("OPENDIR_SYNC_ENABLED", False)
@@ -392,6 +405,23 @@ class OpenDirSync(commands.Cog):
             1,
             _cfg_int("OPENDIR_API_BUFFER_MAX_MB", default_buffer_mb),
         ) * 1024 * 1024
+        self.api_pending_retry_enabled = _cfg_bool("OPENDIR_API_PENDING_RETRY_ENABLED", True)
+        self.api_pending_retry_delay = max(
+            5.0,
+            _cfg_float("OPENDIR_API_PENDING_RETRY_DELAY_SECONDS", 180.0),
+        )
+        self.api_pending_retry_max_attempts = max(
+            1,
+            _cfg_int("OPENDIR_API_PENDING_RETRY_MAX_ATTEMPTS", 12),
+        )
+        self.api_pending_retry_max_per_run = max(
+            1,
+            _cfg_int("OPENDIR_API_PENDING_RETRY_MAX_PER_RUN", 50),
+        )
+        self.api_pending_retry_max_queue = max(
+            1,
+            _cfg_int("OPENDIR_API_PENDING_RETRY_MAX_QUEUE", 5000),
+        )
         self.concurrency = max(1, _cfg_int("OPENDIR_CONCURRENCY", 2))
         self.queue_chunks = max(1, _cfg_int("OPENDIR_QUEUE_CHUNKS", 8))
         self.chunk_size = max(64 * 1024, _cfg_int("OPENDIR_CHUNK_SIZE_BYTES", _DEFAULT_CHUNK_SIZE))
@@ -644,8 +674,9 @@ class OpenDirSync(commands.Cog):
         await self.bot.wait_until_ready()
         if self.start_delay > 0:
             await asyncio.sleep(self.start_delay)
+        next_run_reason = "interval"
         if not self.run_on_start:
-            await self._sleep_until_next_run()
+            next_run_reason = await self._sleep_until_next_run()
 
         if not self._initial_done:
             await self._wait_for_sqlite_ready()
@@ -656,8 +687,11 @@ class OpenDirSync(commands.Cog):
                 log.info("OpenDir: normal queue resuming after priority sync")
 
             mode = "initial" if not self._initial_done else "monitor"
+            pending_only = next_run_reason == "pending"
+            if pending_only:
+                mode = "pending-retry"
             try:
-                summary = await self.run_sync_once(mode=mode)
+                summary = await self.run_sync_once(mode=mode, pending_only=pending_only)
                 self._initial_done = True
             except asyncio.CancelledError:
                 raise
@@ -670,19 +704,33 @@ class OpenDirSync(commands.Cog):
             if summary.paused_for_priority:
                 await self._wait_for_priority_drain()
                 log.info("OpenDir: normal queue resuming after priority pause")
+                next_run_reason = "priority"
                 continue
 
-            await self._sleep_until_next_run()
+            next_run_reason = await self._sleep_until_next_run()
 
-    async def _sleep_until_next_run(self) -> None:
+    def _next_api_pending_retry_delay(self) -> float | None:
+        if not self.api_pending_retry_enabled or not self._api_pending_retries:
+            return None
+        next_at = min(item.next_retry_at for item in self._api_pending_retries.values())
+        return max(0.0, next_at - time.time())
+
+    async def _sleep_until_next_run(self) -> str:
         if self._normal_wakeup.is_set():
             self._normal_wakeup.clear()
-            return
+            return "wakeup"
         self._normal_wakeup.clear()
+        timeout = self.interval_seconds
+        timeout_reason = "interval"
+        pending_delay = self._next_api_pending_retry_delay()
+        if pending_delay is not None and pending_delay < timeout:
+            timeout = pending_delay
+            timeout_reason = "pending"
         try:
-            await asyncio.wait_for(self._normal_wakeup.wait(), timeout=self.interval_seconds)
+            await asyncio.wait_for(self._normal_wakeup.wait(), timeout=timeout)
+            return "wakeup"
         except asyncio.TimeoutError:
-            pass
+            return timeout_reason
         finally:
             self._normal_wakeup.clear()
 
@@ -695,6 +743,7 @@ class OpenDirSync(commands.Cog):
         *,
         mode: str = "manual",
         priority_appid: str | None = None,
+        pending_only: bool = False,
     ) -> SyncSummary:
         """
         Run one sync pass.
@@ -780,9 +829,18 @@ class OpenDirSync(commands.Cog):
                     await self._report_summary(summary)
                     return summary
 
-                await self._sync_games_window(
-                    session, games, indexed_by_name, existing_keys, state, summary
+                pending_processed = await self._sync_due_api_pending_retries(
+                    session,
+                    existing_keys,
+                    summary,
                 )
+
+                if pending_only and pending_processed:
+                    summary.cursor_next = state.cursor
+                else:
+                    await self._sync_games_window(
+                        session, games, indexed_by_name, existing_keys, state, summary
+                    )
 
             if summary.files_uploaded:
                 try:
@@ -794,6 +852,126 @@ class OpenDirSync(commands.Cog):
             self._save_state(state)
             await self._report_summary(summary)
             return summary
+
+    def _queue_api_pending_retry(
+        self,
+        game: GameRecord,
+        reason: str,
+        summary: SyncSummary,
+    ) -> None:
+        if not self.api_pending_retry_enabled:
+            summary.no_match += 1
+            return
+
+        current = self._api_pending_retries.get(game.appid)
+        attempts = current.attempts if current else 0
+        if attempts >= self.api_pending_retry_max_attempts:
+            self._api_pending_retries.pop(game.appid, None)
+            summary.no_match += 1
+            summary.add_sample(f"api pending exhausted {game.appid}: {reason[:120]}")
+            log.info(
+                "OpenDir API pending retries exhausted for appid=%s after %d attempt(s): %s",
+                game.appid,
+                attempts,
+                reason,
+            )
+            return
+
+        if current is None and len(self._api_pending_retries) >= self.api_pending_retry_max_queue:
+            summary.no_match += 1
+            summary.add_sample(f"api pending queue full {game.appid}: {reason[:120]}")
+            log.warning(
+                "OpenDir API pending queue is full (%d); appid=%s will wait for a later cursor cycle",
+                self.api_pending_retry_max_queue,
+                game.appid,
+            )
+            return
+
+        self._api_pending_retries[game.appid] = PendingApiRetry(
+            game=game,
+            attempts=attempts,
+            next_retry_at=time.time() + self.api_pending_retry_delay,
+            reason=reason,
+        )
+        summary.api_pending_queued += 1
+        summary.add_sample(
+            f"api pending {game.appid}: retry in {self.api_pending_retry_delay:.0f}s"
+        )
+        log.info(
+            "OpenDir API pending for appid=%s; queued retry in %.0fs (%d/%d): %s",
+            game.appid,
+            self.api_pending_retry_delay,
+            attempts,
+            self.api_pending_retry_max_attempts,
+            reason,
+        )
+
+    def _db_game_record(self, appid: str) -> GameRecord | None:
+        try:
+            raw = self.bot.db.get_game(appid)
+        except Exception:
+            return None
+        if not raw:
+            return None
+        appid_value = str(raw.get("appid") or raw.get("id") or "").strip()
+        name = str(raw.get("name") or raw.get("title") or "").strip()
+        if not appid_value or not name:
+            return None
+        return GameRecord(appid=appid_value, name=name)
+
+    async def _sync_due_api_pending_retries(
+        self,
+        session: aiohttp.ClientSession,
+        existing_keys: set[str],
+        summary: SyncSummary,
+    ) -> int:
+        if self.source_mode != "api" or not self.api_pending_retry_enabled:
+            return 0
+        if not self._api_pending_retries:
+            return 0
+
+        now = time.time()
+        due = sorted(
+            (item for item in self._api_pending_retries.values() if item.next_retry_at <= now),
+            key=lambda item: item.next_retry_at,
+        )
+        if not due:
+            return 0
+
+        processed = 0
+        for item in due[: self.api_pending_retry_max_per_run]:
+            if self.max_files_per_run and summary.files_uploaded >= self.max_files_per_run:
+                break
+            if self._priority_pending:
+                pending = ", ".join(sorted(self._priority_pending)[:5])
+                summary.paused_for_priority = True
+                summary.add_sample(f"priority pending: {pending}; pending retry paused")
+                break
+
+            game = self._db_game_record(item.game.appid) or item.game
+            item.game = game
+            item.attempts += 1
+            item.next_retry_at = time.time() + self.api_pending_retry_delay
+            summary.games_checked += 1
+            summary.api_pending_retried += 1
+            log.info(
+                "OpenDir API pending retry %d/%d for appid=%s (%s)",
+                item.attempts,
+                self.api_pending_retry_max_attempts,
+                game.appid,
+                game.name,
+            )
+            await self._sync_one_game_from_api(
+                session,
+                game,
+                self._target_key(game, "zip"),
+                existing_keys,
+                summary,
+                pending_retry=True,
+            )
+            processed += 1
+
+        return processed
 
     async def _sync_games_window(
         self,
@@ -909,10 +1087,12 @@ class OpenDirSync(commands.Cog):
         summary: SyncSummary,
         *,
         priority: bool = False,
+        pending_retry: bool = False,
     ) -> None:
         summary.files_seen += 1
         if target_key in existing_keys:
             summary.files_existing += 1
+            self._api_pending_retries.pop(game.appid, None)
             if priority:
                 summary.add_sample(f"already exists {game.appid} -> {target_key}")
                 log.info("OpenDir priority %s: target already exists at %s", game.appid, target_key)
@@ -925,6 +1105,8 @@ class OpenDirSync(commands.Cog):
             if self.api_lookup_before_generate and game_info is None:
                 if priority:
                     log.info("OpenDir priority %s: API lookup found no downloadable game", game.appid)
+                if pending_retry:
+                    self._api_pending_retries.pop(game.appid, None)
                 summary.no_match += 1
                 return
 
@@ -978,6 +1160,11 @@ class OpenDirSync(commands.Cog):
                         break
 
             if isinstance(data_or_reason, ApiNoZipResult):
+                if data_or_reason.is_pending and not priority:
+                    self._queue_api_pending_retry(game, data_or_reason.reason, summary)
+                    return
+                if pending_retry:
+                    self._api_pending_retries.pop(game.appid, None)
                 if priority:
                     summary.add_error(f"{game.appid}/api-generate returned no ZIP: {data_or_reason.reason}")
                     log.warning(
@@ -990,6 +1177,8 @@ class OpenDirSync(commands.Cog):
             if data_or_reason is None:
                 if priority:
                     log.info("OpenDir priority %s: API generate returned no ZIP", game.appid)
+                if pending_retry:
+                    self._api_pending_retries.pop(game.appid, None)
                 summary.no_match += 1
                 return
             data = data_or_reason
@@ -1007,6 +1196,7 @@ class OpenDirSync(commands.Cog):
                 remote_file,
             )
             existing_keys.add(target_key)
+            self._api_pending_retries.pop(game.appid, None)
 
             if _r2_inventory_db is not None:
                 _r2_inventory_db.mark_uploaded(target_key, uploaded_bytes)
