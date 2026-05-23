@@ -242,9 +242,7 @@ STEAM_DB_SYNC_ENABLED = parse_bool(os.getenv("STEAM_DB_SYNC_ENABLED", "true"), T
 STEAM_DB_SYNC_APPLY = parse_bool(os.getenv("STEAM_DB_SYNC_APPLY", "true"), True)
 STEAM_DB_SYNC_RUN_ON_START = parse_bool(os.getenv("STEAM_DB_SYNC_RUN_ON_START", "true"), True)
 STEAM_DB_SYNC_START_DELAY_SECONDS = float(os.getenv("STEAM_DB_SYNC_START_DELAY_SECONDS", "5"))
-STEAM_DB_SYNC_INTERVAL_HOURS = float(os.getenv("STEAM_DB_SYNC_INTERVAL_HOURS", "6"))
-if STEAM_DB_SYNC_INTERVAL_HOURS > 6:
-    STEAM_DB_SYNC_INTERVAL_HOURS = 6.0
+STEAM_DB_SYNC_INTERVAL_HOURS = float(os.getenv("STEAM_DB_SYNC_INTERVAL_HOURS", "24"))
 STEAM_DB_SYNC_INCLUDE_NEW = parse_bool(os.getenv("STEAM_DB_SYNC_INCLUDE_NEW", "true"), True)
 STEAM_DB_SYNC_MAX_NEW = int(os.getenv("STEAM_DB_SYNC_MAX_NEW", "0"))
 STEAM_DB_SYNC_MAX_UPDATES = int(os.getenv("STEAM_DB_SYNC_MAX_UPDATES", "0"))
@@ -450,7 +448,7 @@ LOG_FORMAT      = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 LOG_DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 BOT_PREFIX      = os.getenv("BOT_PREFIX", "!")
-BOT_VERSION     = "9.2.27"
+BOT_VERSION     = "9.2.14"
 BOT_DESCRIPTION = "Steam Game Database & Download Manager"
 
 MAX_DOWNLOAD_SIZE_MB   = int(os.getenv("MAX_DOWNLOAD_SIZE_MB", "10240"))
