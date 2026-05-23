@@ -25,7 +25,7 @@ import unicodedata
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 from urllib.parse import quote, unquote, urldefrag, urljoin, urlparse
 
 import aiohttp
@@ -259,6 +259,7 @@ class SyncSummary:
     cursor_start: int = 0
     cursor_next: int = 0
     full_cycle_completed: bool = False
+    paused_for_priority: bool = False
     directories_scanned: int = 0
     indexed_files: int = 0
     candidates_checked: int = 0
@@ -325,7 +326,9 @@ class OpenDirSync(commands.Cog):
         self._priority_lock = asyncio.Lock()
         self._initial_done = False
         self._priority_pending: set[str] = set()
+        self._priority_counts: dict[str, int] = {}
         self._priority_tasks: set[asyncio.Task] = set()
+        self._normal_wakeup = asyncio.Event()
 
         self.enabled = _cfg_bool("OPENDIR_SYNC_ENABLED", False)
         self.base_url = self._normalize_base_url(_cfg_str("OPENDIR_BASE_URL", ""))
@@ -442,22 +445,35 @@ class OpenDirSync(commands.Cog):
             use_threads=False,
         )
 
-    def schedule_priority_sync(self, appid: str, *, source: str = "manual") -> bool:
+    def schedule_priority_sync(
+        self,
+        appid: str,
+        *,
+        source: str = "manual",
+        callback: Callable[[SyncSummary], Any] | None = None,
+    ) -> bool:
         appid = str(appid or "").strip()
         if not appid.isdigit():
             return False
 
         self._priority_pending.add(appid)
+        self._priority_counts[appid] = self._priority_counts.get(appid, 0) + 1
         task = asyncio.create_task(
             self._run_scheduled_priority_sync(appid, source=source),
             name=f"opendir-priority-{appid}",
         )
         self._priority_tasks.add(task)
         task.add_done_callback(self._priority_tasks.discard)
+        if callback is not None:
+            task.add_done_callback(
+                lambda done: asyncio.create_task(
+                    self._dispatch_priority_callback(done, appid, callback)
+                )
+            )
         log.info("OpenDir priority sync scheduled for %s (source=%s)", appid, source)
         return True
 
-    async def _run_scheduled_priority_sync(self, appid: str, *, source: str) -> None:
+    async def _run_scheduled_priority_sync(self, appid: str, *, source: str) -> SyncSummary:
         try:
             log.info("OpenDir priority sync starting for %s (source=%s)", appid, source)
             summary = await asyncio.wait_for(
@@ -473,6 +489,7 @@ class OpenDirSync(commands.Cog):
                 len(summary.errors),
                 summary.elapsed_seconds,
             )
+            return summary
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
@@ -490,10 +507,50 @@ class OpenDirSync(commands.Cog):
             )
             summary.add_sample("priority timed out while waiting for OpenDir API generate/upload")
             await self._report_summary(summary)
+            return summary
         except Exception:
             log.exception("OpenDir priority sync failed for %s", appid)
+            summary = SyncSummary(mode="targeted")
+            summary.games_total = 1
+            summary.games_checked = 1
+            summary.files_skipped = 1
+            summary.add_error(f"targeted appid {appid} failed unexpectedly")
+            await self._report_summary(summary)
+            return summary
         finally:
-            self._priority_pending.discard(appid)
+            remaining = self._priority_counts.get(appid, 1) - 1
+            if remaining > 0:
+                self._priority_counts[appid] = remaining
+            else:
+                self._priority_counts.pop(appid, None)
+                self._priority_pending.discard(appid)
+            if not self._priority_pending:
+                self._normal_wakeup.set()
+
+    async def _dispatch_priority_callback(
+        self,
+        task: asyncio.Task,
+        appid: str,
+        callback: Callable[[SyncSummary], Any],
+    ) -> None:
+        try:
+            summary = task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            log.exception("OpenDir priority callback could not read result for %s", appid)
+            summary = SyncSummary(mode="targeted")
+            summary.games_total = 1
+            summary.games_checked = 1
+            summary.files_skipped = 1
+            summary.add_error(f"targeted appid {appid} callback failed: {exc!r}")
+
+        try:
+            result = callback(summary)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            log.exception("OpenDir priority callback failed for %s", appid)
 
     @asynccontextmanager
     async def _run_lock(self, *, priority: bool):
@@ -587,7 +644,7 @@ class OpenDirSync(commands.Cog):
         if self.start_delay > 0:
             await asyncio.sleep(self.start_delay)
         if not self.run_on_start:
-            await asyncio.sleep(self.interval_seconds)
+            await self._sleep_until_next_run()
 
         if not self._initial_done:
             await self._wait_for_sqlite_ready()
@@ -605,7 +662,27 @@ class OpenDirSync(commands.Cog):
                 summary.add_error(repr(exc))
                 await self._report_summary(summary)
 
-            await asyncio.sleep(self.interval_seconds)
+            if summary.paused_for_priority:
+                await self._wait_for_priority_drain()
+                continue
+
+            await self._sleep_until_next_run()
+
+    async def _sleep_until_next_run(self) -> None:
+        if self._normal_wakeup.is_set():
+            self._normal_wakeup.clear()
+            return
+        self._normal_wakeup.clear()
+        try:
+            await asyncio.wait_for(self._normal_wakeup.wait(), timeout=self.interval_seconds)
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._normal_wakeup.clear()
+
+    async def _wait_for_priority_drain(self) -> None:
+        while self._priority_pending and not self.bot.is_closed():
+            await asyncio.sleep(2.0)
 
     async def run_sync_once(
         self,
@@ -754,6 +831,7 @@ class OpenDirSync(commands.Cog):
                     "OpenDir: priority sync pending (%s) - pausing normal window",
                     pending,
                 )
+                summary.paused_for_priority = True
                 summary.add_sample(f"priority pending: {pending}; normal window paused")
                 break
             if current == start:
@@ -830,6 +908,7 @@ class OpenDirSync(commands.Cog):
         if target_key in existing_keys:
             summary.files_existing += 1
             if priority:
+                summary.add_sample(f"already exists {game.appid} -> {target_key}")
                 log.info("OpenDir priority %s: target already exists at %s", game.appid, target_key)
             return
 

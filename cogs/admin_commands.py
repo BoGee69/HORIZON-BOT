@@ -127,6 +127,98 @@ class AdminCommands(commands.Cog):
             log.debug("Steam title lookup failed for %s", appid, exc_info=True)
         return None
 
+    @staticmethod
+    def _summary_detail(summary) -> str:
+        errors = list(getattr(summary, "errors", []) or [])
+        samples = list(getattr(summary, "samples", []) or [])
+        if errors:
+            return str(errors[-1])[:900]
+        if samples:
+            return str(samples[-1])[:900]
+        return "-"
+
+    async def _send_add_game_priority_result(
+        self,
+        interaction: discord.Interaction,
+        appid: str,
+        name: str,
+        summary,
+    ) -> None:
+        uploaded = int(getattr(summary, "files_uploaded", 0) or 0)
+        existing = int(getattr(summary, "files_existing", 0) or 0)
+        skipped = int(getattr(summary, "files_skipped", 0) or 0)
+        no_match = int(getattr(summary, "no_match", 0) or 0)
+        errors = list(getattr(summary, "errors", []) or [])
+        elapsed = float(getattr(summary, "elapsed_seconds", 0.0) or 0.0)
+
+        if uploaded > 0:
+            self.db.mark_as_starred(appid, name)
+            self.db.save()
+            title = "OpenDir upload complete"
+            description = f"`{name}` (`{appid}`) sudah berhasil diupload ke R2."
+            color = COLOR_SUCCESS
+        elif existing > 0:
+            self.db.mark_as_starred(appid, name)
+            self.db.save()
+            title = "OpenDir file already exists"
+            description = f"`{name}` (`{appid}`) sudah ada di R2."
+            color = COLOR_SUCCESS
+        elif errors:
+            title = "OpenDir upload failed"
+            description = f"`{name}` (`{appid}`) gagal diproses."
+            color = COLOR_ERROR
+        elif no_match > 0:
+            title = "OpenDir file not ready"
+            description = f"`{name}` (`{appid}`) belum tersedia dari OpenDir."
+            color = COLOR_WARNING
+        else:
+            title = "OpenDir upload not completed"
+            description = f"`{name}` (`{appid}`) selesai dicek, tapi tidak ada file yang diupload."
+            color = COLOR_WARNING
+
+        embed = discord.Embed(title=title, description=description, color=color)
+        embed.add_field(name="App ID", value=appid, inline=True)
+        embed.add_field(name="Name", value=(name or "-")[:1024], inline=True)
+        embed.add_field(name="Uploaded", value=str(uploaded), inline=True)
+        embed.add_field(name="Already existed", value=str(existing), inline=True)
+        embed.add_field(name="No match", value=str(no_match), inline=True)
+        embed.add_field(name="Skipped", value=str(skipped), inline=True)
+        embed.add_field(name="Elapsed", value=f"{elapsed:.1f}s", inline=True)
+        embed.add_field(name="Detail", value=self._summary_detail(summary), inline=False)
+
+        try:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            return
+        except Exception:
+            log.exception("Could not send /add_game final followup for %s", appid)
+
+        try:
+            await interaction.user.send(embed=embed)
+            return
+        except Exception:
+            log.exception("Could not DM /add_game final result for %s", appid)
+
+        notifier = getattr(self.bot, "notify_admins", None)
+        if notifier:
+            result = notifier(
+                title,
+                description,
+                level="error" if errors else "info",
+                fields={
+                    "App ID": appid,
+                    "Name": name,
+                    "Uploaded": str(uploaded),
+                    "Already existed": str(existing),
+                    "No match": str(no_match),
+                    "Skipped": str(skipped),
+                    "Detail": self._summary_detail(summary)[:500],
+                },
+                key=f"add-game-result-{appid}",
+                force=True,
+            )
+            if asyncio.iscoroutine(result):
+                await result
+
     @app_commands.command(name="role_debug", description="[Admin] Explain why a member is limited or exempt")
     @app_commands.describe(member="Server member to inspect")
     @admin_check()
@@ -363,13 +455,47 @@ class AdminCommands(commands.Cog):
 
         opendir_cog = self.bot.get_cog("OpenDirSync")
         priority_scheduled = False
+
+        async def on_priority_done(summary) -> None:
+            await self._send_add_game_priority_result(interaction, appid, name, summary)
+
+        async def on_priority_task_done(done: asyncio.Task) -> None:
+            try:
+                summary = done.result()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                log.exception("OpenDir direct priority task failed for /add_game %s", appid)
+
+                class FailedSummary:
+                    pass
+
+                summary = FailedSummary()
+                summary.files_uploaded = 0
+                summary.files_existing = 0
+                summary.files_skipped = 1
+                summary.no_match = 0
+                summary.elapsed_seconds = 0.0
+                summary.errors = [f"OpenDir priority task failed: {exc!r}"]
+                summary.samples = []
+            await on_priority_done(summary)
+
         if opendir_cog:
             if hasattr(opendir_cog, "schedule_priority_sync"):
-                priority_scheduled = bool(opendir_cog.schedule_priority_sync(appid, source="add_game"))
+                priority_scheduled = bool(
+                    opendir_cog.schedule_priority_sync(
+                        appid,
+                        source="add_game",
+                        callback=on_priority_done,
+                    )
+                )
             else:
-                asyncio.create_task(
+                task = asyncio.create_task(
                     opendir_cog.run_sync_once(priority_appid=appid),
                     name=f"opendir-priority-{appid}",
+                )
+                task.add_done_callback(
+                    lambda done: asyncio.create_task(on_priority_task_done(done))
                 )
                 priority_scheduled = True
 
@@ -384,7 +510,7 @@ class AdminCommands(commands.Cog):
         embed.add_field(
             name="OpenDir priority",
             value=(
-                "Started now in the priority lane. Watch the OpenDir summary for upload result."
+                "Started now in the priority lane. I will send a final confirmation when it uploads, already exists, or fails."
                 if priority_scheduled
                 else "OpenDir cog not available"
             ),
