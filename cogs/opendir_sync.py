@@ -226,6 +226,22 @@ class ApiNoZipResult:
     def __init__(self, reason: str) -> None:
         self.reason = reason
 
+    @property
+    def is_pending(self) -> bool:
+        text = self.reason.lower()
+        return any(
+            needle in text
+            for needle in (
+                "being generated",
+                "try again",
+                "please wait",
+                "pending",
+                "not ready",
+                "processing",
+                "queued",
+            )
+        )
+
 
 @dataclass(slots=True)
 class SyncState:
@@ -404,11 +420,13 @@ class OpenDirSync(commands.Cog):
             connect=max(3.0, _cfg_float("OPENDIR_API_CONNECT_TIMEOUT_SECONDS", _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0))),
             sock_read=max(30.0, _cfg_float("OPENDIR_API_READ_TIMEOUT_SECONDS", 300.0)),
         )
-        self.priority_timeout_seconds = max(30.0, _cfg_float("OPENDIR_PRIORITY_TIMEOUT_SECONDS", 360.0))
+        self.priority_timeout_seconds = max(30.0, _cfg_float("OPENDIR_PRIORITY_TIMEOUT_SECONDS", 900.0))
         self.priority_api_generate_retries = max(
             1,
             _cfg_int("OPENDIR_PRIORITY_API_GENERATE_RETRIES", min(2, self.api_generate_retries)),
         )
+        self.priority_pending_retries = max(0, _cfg_int("OPENDIR_PRIORITY_PENDING_RETRIES", 8))
+        self.priority_pending_delay = max(1.0, _cfg_float("OPENDIR_PRIORITY_PENDING_DELAY_SECONDS", 45.0))
         self.priority_api_generate_timeout = aiohttp.ClientTimeout(
             total=max(30.0, _cfg_float("OPENDIR_PRIORITY_API_REQUEST_TIMEOUT_SECONDS", 180.0)),
             connect=max(3.0, _cfg_float("OPENDIR_API_CONNECT_TIMEOUT_SECONDS", _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0))),
@@ -856,6 +874,24 @@ class OpenDirSync(commands.Cog):
                     target_key,
                 )
             data_or_reason = await self._download_api_zip(session, payload, summary, priority=priority)
+            if priority and isinstance(data_or_reason, ApiNoZipResult) and data_or_reason.is_pending:
+                for pending_attempt in range(1, self.priority_pending_retries + 1):
+                    log.info(
+                        "OpenDir priority %s: manifest pending; retrying in %.0fs (%d/%d): %s",
+                        game.appid,
+                        self.priority_pending_delay,
+                        pending_attempt,
+                        self.priority_pending_retries,
+                        data_or_reason.reason,
+                    )
+                    summary.add_sample(
+                        f"api pending {game.appid}: retry {pending_attempt}/{self.priority_pending_retries} in {self.priority_pending_delay:.0f}s"
+                    )
+                    await asyncio.sleep(self.priority_pending_delay)
+                    data_or_reason = await self._download_api_zip(session, payload, summary, priority=priority)
+                    if not isinstance(data_or_reason, ApiNoZipResult) or not data_or_reason.is_pending:
+                        break
+
             if isinstance(data_or_reason, ApiNoZipResult):
                 if priority:
                     summary.add_error(f"{game.appid}/api-generate returned no ZIP: {data_or_reason.reason}")
