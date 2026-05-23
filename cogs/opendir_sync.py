@@ -399,6 +399,16 @@ class OpenDirSync(commands.Cog):
             connect=max(3.0, _cfg_float("OPENDIR_API_CONNECT_TIMEOUT_SECONDS", _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0))),
             sock_read=max(30.0, _cfg_float("OPENDIR_API_READ_TIMEOUT_SECONDS", 300.0)),
         )
+        self.priority_timeout_seconds = max(30.0, _cfg_float("OPENDIR_PRIORITY_TIMEOUT_SECONDS", 360.0))
+        self.priority_api_generate_retries = max(
+            1,
+            _cfg_int("OPENDIR_PRIORITY_API_GENERATE_RETRIES", min(2, self.api_generate_retries)),
+        )
+        self.priority_api_generate_timeout = aiohttp.ClientTimeout(
+            total=max(30.0, _cfg_float("OPENDIR_PRIORITY_API_REQUEST_TIMEOUT_SECONDS", 180.0)),
+            connect=max(3.0, _cfg_float("OPENDIR_API_CONNECT_TIMEOUT_SECONDS", _cfg_float("OPENDIR_CONNECT_TIMEOUT_SECONDS", 30.0))),
+            sock_read=max(30.0, _cfg_float("OPENDIR_PRIORITY_API_READ_TIMEOUT_SECONDS", 90.0)),
+        )
 
         self.s3 = None
         multipart_size = max(5 * 1024 * 1024, self.chunk_size * 8)
@@ -426,9 +436,37 @@ class OpenDirSync(commands.Cog):
 
     async def _run_scheduled_priority_sync(self, appid: str, *, source: str) -> None:
         try:
-            await self.run_sync_once(mode=source, priority_appid=appid)
+            log.info("OpenDir priority sync starting for %s (source=%s)", appid, source)
+            summary = await asyncio.wait_for(
+                self.run_sync_once(mode=source, priority_appid=appid),
+                timeout=self.priority_timeout_seconds,
+            )
+            log.info(
+                "OpenDir priority sync finished for %s: uploaded=%d existing=%d skipped=%d errors=%d elapsed=%.1fs",
+                appid,
+                summary.files_uploaded,
+                summary.files_existing,
+                summary.files_skipped,
+                len(summary.errors),
+                summary.elapsed_seconds,
+            )
         except asyncio.CancelledError:
             raise
+        except asyncio.TimeoutError:
+            log.warning(
+                "OpenDir priority sync timed out for %s after %.0fs",
+                appid,
+                self.priority_timeout_seconds,
+            )
+            summary = SyncSummary(mode="targeted")
+            summary.games_total = 1
+            summary.games_checked = 1
+            summary.files_skipped = 1
+            summary.add_error(
+                f"targeted appid {appid} timed out after {self.priority_timeout_seconds:.0f}s"
+            )
+            summary.add_sample("priority timed out while waiting for OpenDir API generate/upload")
+            await self._report_summary(summary)
         except Exception:
             log.exception("OpenDir priority sync failed for %s", appid)
         finally:
@@ -609,7 +647,7 @@ class OpenDirSync(commands.Cog):
                         summary.games_total = 1
                         summary.games_checked = 1
                         await self._sync_one_game(
-                            session, game_record, indexed_by_name, existing_keys, summary
+                            session, game_record, indexed_by_name, existing_keys, summary, priority=True
                         )
                     else:
                         summary.add_error(f"targeted appid {priority_appid!r} not found in DB")
@@ -714,6 +752,8 @@ class OpenDirSync(commands.Cog):
         indexed_by_name: dict[str, list[RemoteFile]],
         existing_keys: set[str],
         summary: SyncSummary,
+        *,
+        priority: bool = False,
     ) -> None:
         for ext in sorted(self.target_extensions):
             target_key = self._target_key(game, ext)
@@ -725,7 +765,14 @@ class OpenDirSync(commands.Cog):
                 if ext.lower().lstrip(".") != "zip":
                     summary.files_skipped += 1
                     continue
-                await self._sync_one_game_from_api(session, game, target_key, existing_keys, summary)
+                await self._sync_one_game_from_api(
+                    session,
+                    game,
+                    target_key,
+                    existing_keys,
+                    summary,
+                    priority=priority,
+                )
                 continue
 
             remote = self._match_indexed_file(game, ext, target_key, indexed_by_name)
@@ -753,15 +800,23 @@ class OpenDirSync(commands.Cog):
         target_key: str,
         existing_keys: set[str],
         summary: SyncSummary,
+        *,
+        priority: bool = False,
     ) -> None:
         summary.files_seen += 1
         if target_key in existing_keys:
             summary.files_existing += 1
+            if priority:
+                log.info("OpenDir priority %s: target already exists at %s", game.appid, target_key)
             return
 
         try:
+            if priority:
+                log.info("OpenDir priority %s: API lookup started", game.appid)
             game_info = await self._api_lookup_game(session, game, summary)
             if self.api_lookup_before_generate and game_info is None:
+                if priority:
+                    log.info("OpenDir priority %s: API lookup found no downloadable game", game.appid)
                 summary.no_match += 1
                 return
 
@@ -788,12 +843,27 @@ class OpenDirSync(commands.Cog):
             }
 
             summary.candidates_checked += 1
-            data = await self._download_api_zip(session, payload, summary)
+            if priority:
+                log.info(
+                    "OpenDir priority %s: API generate started (depot=%s, target=%s)",
+                    game.appid,
+                    depot_id,
+                    target_key,
+                )
+            data = await self._download_api_zip(session, payload, summary, priority=priority)
             if data is None:
+                if priority:
+                    log.info("OpenDir priority %s: API generate returned no ZIP", game.appid)
                 summary.no_match += 1
                 return
 
             summary.remote_matches += 1
+            if priority:
+                log.info(
+                    "OpenDir priority %s: API generate returned %d bytes; uploading to R2",
+                    game.appid,
+                    len(data),
+                )
             uploaded_bytes, cleaned_files = await self._upload_api_zip_bytes(
                 data,
                 target_key,
@@ -869,12 +939,29 @@ class OpenDirSync(commands.Cog):
         session: aiohttp.ClientSession,
         payload: dict[str, Any],
         summary: SyncSummary,
+        *,
+        priority: bool = False,
     ) -> bytes | None:
         appid = str(payload.get("app_id") or "")
         last_exc: BaseException | None = None
-        for attempt in range(1, self.api_generate_retries + 1):
+        retries = self.priority_api_generate_retries if priority else self.api_generate_retries
+        timeout = self.priority_api_generate_timeout if priority else self.api_generate_timeout
+        retry_delay = self.api_retry_delay
+        for attempt in range(1, retries + 1):
             try:
-                return await self._download_api_zip_once(session, payload, summary)
+                log.info(
+                    "OpenDir API%s generate attempt %d/%d for appid=%s",
+                    " priority" if priority else "",
+                    attempt,
+                    retries,
+                    appid,
+                )
+                return await self._download_api_zip_once(
+                    session,
+                    payload,
+                    summary,
+                    timeout=timeout,
+                )
             except (
                 asyncio.TimeoutError,
                 TimeoutError,
@@ -884,8 +971,15 @@ class OpenDirSync(commands.Cog):
                 aiohttp.ClientConnectionError,
             ) as exc:
                 last_exc = exc
-                if attempt < self.api_generate_retries:
-                    await asyncio.sleep(self.api_retry_delay * attempt)
+                if attempt < retries:
+                    log.info(
+                        "OpenDir API%s generate retry for appid=%s after %s: %r",
+                        " priority" if priority else "",
+                        appid,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    await asyncio.sleep(retry_delay * attempt)
                     continue
 
         summary.api_transient_failures += 1
@@ -895,7 +989,7 @@ class OpenDirSync(commands.Cog):
         log.info(
             "OpenDir API transient timeout for appid=%s after %d attempt(s): %r",
             appid,
-            self.api_generate_retries,
+            retries,
             last_exc,
         )
         return None
@@ -905,6 +999,8 @@ class OpenDirSync(commands.Cog):
         session: aiohttp.ClientSession,
         payload: dict[str, Any],
         summary: SyncSummary,
+        *,
+        timeout: aiohttp.ClientTimeout,
     ) -> bytes | None:
         url = self._api_url(self.api_generate_path)
         async with session.post(
@@ -912,7 +1008,7 @@ class OpenDirSync(commands.Cog):
             json=payload,
             headers={"Accept": "application/zip, application/octet-stream, application/json"},
             allow_redirects=True,
-            timeout=self.api_generate_timeout,
+            timeout=timeout,
         ) as response:
             content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
             if response.status >= 400:
