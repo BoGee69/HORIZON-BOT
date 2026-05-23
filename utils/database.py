@@ -35,24 +35,22 @@ class DatabaseManager:
         
     def _init_db(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        # Enable WAL mode for better concurrency and crash resistance
-        conn.execute("PRAGMA journal_mode=WAL")
-        cursor = conn.cursor()
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS games (
-            appid TEXT PRIMARY KEY,
-            name TEXT,
-            has_file BOOLEAN,
-            raw_data TEXT
-        )
-        """)
-        # Index for fast name/appid search used by autocomplete
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_games_name ON games(name COLLATE NOCASE)")
-        cursor.execute("CREATE INDEX IF NOT EXISTS idx_games_has_file ON games(has_file)")
-        conn.commit()
-        self._warn_if_empty(conn)
-        conn.close()
+        with sqlite3.connect(self.db_path) as conn:
+            # Enable WAL mode for better concurrency and crash resistance
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS games (
+                appid TEXT PRIMARY KEY,
+                name TEXT,
+                has_file BOOLEAN,
+                raw_data TEXT
+            )
+            """)
+            # Index for fast name/appid search used by autocomplete
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_games_name ON games(name COLLATE NOCASE)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_games_has_file ON games(has_file)")
+            conn.commit()
+            self._warn_if_empty(conn)
 
     def _warn_if_empty(self, conn: sqlite3.Connection) -> None:
         cursor = conn.cursor()
@@ -68,18 +66,14 @@ class DatabaseManager:
     def load(self) -> bool:
         """Verify database connection and integrity"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            # Perform a quick integrity check
-            integrity = conn.execute("PRAGMA integrity_check(1)").fetchone()[0]
-            if integrity != "ok":
-                log.error(f"❌ Database corruption detected: {integrity}")
-                conn.close()
-                return False
-                
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM games")
-            count = cursor.fetchone()[0]
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                # Perform a quick integrity check
+                integrity = conn.execute("PRAGMA integrity_check(1)").fetchone()[0]
+                if integrity != "ok":
+                    log.error(f"❌ Database corruption detected: {integrity}")
+                    return False
+
+                count = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
             log.info(f"✅ SQLite Database ready at {self.db_path} with {count:,} games (WAL mode active)")
             return True
         except Exception as e:
@@ -94,15 +88,13 @@ class DatabaseManager:
         """Add a game to database"""
         appid_str = str(appid)
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
             raw_data = json.dumps({"appid": appid_str, "name": name, "file": has_file})
-            cursor.execute(
-                "INSERT OR IGNORE INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
-                (appid_str, name, 1 if has_file else 0, raw_data)
-            )
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
+                    (appid_str, name, 1 if has_file else 0, raw_data)
+                )
+                conn.commit()
             return True
         except Exception as e:
             log.error(f"Failed to add game to SQLite: {e}")
@@ -114,17 +106,18 @@ class DatabaseManager:
         game = self.get_game(appid_str)
         if not game:
             return False
-        
+
+        if "has_file" in kwargs and "file" not in kwargs:
+            kwargs["file"] = kwargs.pop("has_file")
+
         game.update(kwargs)
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE games SET name = ?, has_file = ?, raw_data = ? WHERE appid = ?",
-                (game.get("name"), 1 if game.get("file") else 0, json.dumps(game), appid_str)
-            )
-            conn.commit()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute(
+                    "UPDATE games SET name = ?, has_file = ?, raw_data = ? WHERE appid = ?",
+                    (game.get("name"), 1 if game.get("file") else 0, json.dumps(game), appid_str)
+                )
+                conn.commit()
             return True
         except Exception as e:
             log.error(f"Failed to update game in SQLite: {e}")
@@ -137,11 +130,8 @@ class DatabaseManager:
     def get_game(self, appid: str) -> Optional[Dict]:
         """Get game by AppID"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT raw_data FROM games WHERE appid = ?", (str(appid),))
-            row = cursor.fetchone()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                row = conn.execute("SELECT raw_data FROM games WHERE appid = ?", (str(appid),)).fetchone()
             return json.loads(row[0]) if row else None
         except Exception:
             return None
@@ -150,26 +140,23 @@ class DatabaseManager:
         """Search games by name or AppID. Empty query returns starred games first."""
         results = []
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            if query:
-                cursor.execute(
-                    """SELECT raw_data FROM games
-                       WHERE name LIKE ? OR appid LIKE ?
-                       ORDER BY has_file DESC, name ASC
-                       LIMIT ?""",
-                    (f"%{query}%", f"%{query}%", limit)
-                )
-            else:
-                cursor.execute(
-                    """SELECT raw_data FROM games
-                       WHERE name IS NOT NULL AND name != ''
-                       ORDER BY has_file DESC, name ASC
-                       LIMIT ?""",
-                    (limit,)
-                )
-            rows = cursor.fetchall()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                if query:
+                    rows = conn.execute(
+                        """SELECT raw_data FROM games
+                           WHERE name LIKE ? OR appid LIKE ?
+                           ORDER BY has_file DESC, name ASC
+                           LIMIT ?""",
+                        (f"%{query}%", f"%{query}%", limit)
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT raw_data FROM games
+                           WHERE name IS NOT NULL AND name != ''
+                           ORDER BY has_file DESC, name ASC
+                           LIMIT ?""",
+                        (limit,)
+                    ).fetchall()
             for row in rows:
                 results.append(json.loads(row[0]))
         except Exception as e:
@@ -182,31 +169,28 @@ class DatabaseManager:
         limit = max(1, min(int(limit or 25), 25))
         query = " ".join(str(query or "").strip().split())
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            if query:
-                cursor.execute(
-                    """SELECT appid, name, has_file, raw_data FROM games
-                       WHERE name IS NOT NULL
-                         AND name != ''
-                         AND name LIKE ?
-                       ORDER BY
-                         CASE WHEN name LIKE ? THEN 0 ELSE 1 END,
-                         has_file DESC,
-                         name COLLATE NOCASE ASC
-                       LIMIT ?""",
-                    (f"%{query}%", f"{query}%", limit),
-                )
-            else:
-                cursor.execute(
-                    """SELECT appid, name, has_file, raw_data FROM games
-                       WHERE name IS NOT NULL AND name != ''
-                       ORDER BY has_file DESC, name COLLATE NOCASE ASC
-                       LIMIT ?""",
-                    (limit,),
-                )
-            rows = cursor.fetchall()
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                if query:
+                    rows = conn.execute(
+                        """SELECT appid, name, has_file, raw_data FROM games
+                           WHERE name IS NOT NULL
+                             AND name != ''
+                             AND name LIKE ?
+                           ORDER BY
+                             CASE WHEN name LIKE ? THEN 0 ELSE 1 END,
+                             has_file DESC,
+                             name COLLATE NOCASE ASC
+                           LIMIT ?""",
+                        (f"%{query}%", f"{query}%", limit),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT appid, name, has_file, raw_data FROM games
+                           WHERE name IS NOT NULL AND name != ''
+                           ORDER BY has_file DESC, name COLLATE NOCASE ASC
+                           LIMIT ?""",
+                        (limit,),
+                    ).fetchall()
             for appid, name, has_file, raw_data in rows:
                 try:
                     item = json.loads(raw_data) if raw_data else {}
@@ -223,15 +207,12 @@ class DatabaseManager:
     def get_stats(self) -> Dict:
         """Get database statistics using SQL"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM games")
-            total = cursor.fetchone()[0]
-            cursor.execute("SELECT COUNT(*) FROM games WHERE has_file = 1")
-            with_files = cursor.fetchone()[0]
-            cursor.execute("SELECT MAX(CAST(appid AS INTEGER)) FROM games WHERE appid GLOB '[0-9]*'")
-            last_appid = cursor.fetchone()[0] or 0
-            conn.close()
+            with sqlite3.connect(self.db_path) as conn:
+                total = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
+                with_files = conn.execute("SELECT COUNT(*) FROM games WHERE has_file = 1").fetchone()[0]
+                last_appid = conn.execute(
+                    "SELECT MAX(CAST(appid AS INTEGER)) FROM games WHERE appid GLOB '[0-9]*'"
+                ).fetchone()[0] or 0
             return {
                 "total": total,
                 "with_files": with_files,

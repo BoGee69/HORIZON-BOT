@@ -60,9 +60,9 @@ async def autocomplete_games(
     # SQLite-backed title autocomplete only. Keep suggestions fast and local.
     try:
         if hasattr(db, "autocomplete_titles"):
-            all_results = db.autocomplete_titles(q_raw, limit=25)
+            all_results = await asyncio.to_thread(db.autocomplete_titles, q_raw, limit=25)
         else:
-            all_results = db.search_games(q_raw or "", limit=25)
+            all_results = await asyncio.to_thread(db.search_games, q_raw or "", limit=25)
     except Exception:
         all_results = []
 
@@ -171,7 +171,7 @@ class GameCommands(commands.Cog):
             return
 
         game_info = self.steam_api.extract_game_info(steam_data)
-        db_entry  = self.db.get_game(target_id)
+        db_entry  = await asyncio.to_thread(self.db.get_game, target_id)
         has_file  = db_entry.get("file", False) if db_entry else False
 
         dl = await self._find_download(target_id, game_info["name"])
@@ -179,8 +179,8 @@ class GameCommands(commands.Cog):
         await safe_edit(self._embed_game_card(game_info, db_entry, dl))
 
         if dl["available"]:
-            self.db.mark_as_starred(target_id, game_info["name"])
-            self.db.save()
+            await asyncio.to_thread(self.db.mark_as_starred, target_id, game_info["name"])
+            await asyncio.to_thread(self.db.save)
             if not is_limit_exempt:
                 limit_status = self.gen_limiter.consume(interaction.user.id)
             try:
@@ -232,7 +232,7 @@ class GameCommands(commands.Cog):
                 target_id = results[0]["id"]
                 game_name = results[0]["name"]
 
-            self.db.add_game(target_id, game_name)
+            await asyncio.to_thread(self.db.add_game, target_id, game_name)
 
             from config import DATA_DIR
             priority_file = DATA_DIR / "priority_requests.json"
@@ -269,7 +269,7 @@ class GameCommands(commands.Cog):
     async def search(self, interaction: discord.Interaction, query: str):
         await interaction.response.defer(ephemeral=True)
 
-        results = self.db.search_games(query, limit=10)
+        results = await asyncio.to_thread(self.db.search_games, query, limit=10)
         if not results:
             embed = discord.Embed(
                 title="🔍  No Results Found",
@@ -320,7 +320,7 @@ class GameCommands(commands.Cog):
             return
 
         game_info  = self.steam_api.extract_game_info(steam_data)
-        db_entry   = self.db.get_game(appid)
+        db_entry   = await asyncio.to_thread(self.db.get_game, appid)
         protection = extract_protection_type(game_info.get("drm_notice"))
 
         embed = discord.Embed(
@@ -483,11 +483,14 @@ class GameCommands(commands.Cog):
         opendir_cog = self.bot.get_cog("OpenDirSync")
         if opendir_cog is None:
             return
-        # Make sure game is in DB so targeted sync can look it up
-        self.db.add_game(appid, game_name)
+        async def _run_priority_sync() -> None:
+            # Make sure game is in DB so targeted sync can look it up.
+            await asyncio.to_thread(self.db.add_game, appid, game_name)
+            await opendir_cog.run_sync_once(priority_appid=appid)
+
         log.info("⚡ /gen triggered background priority sync for %s (%s)", game_name, appid)
         asyncio.create_task(
-            opendir_cog.run_sync_once(priority_appid=appid),
+            _run_priority_sync(),
             name=f"opendir-priority-{appid}",
         )
 

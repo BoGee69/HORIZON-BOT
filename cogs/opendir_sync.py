@@ -1448,9 +1448,9 @@ class OpenDirSync(commands.Cog):
         """
         if _r2_inventory_db is None or self.s3 is None:
             return
-        last = _r2_inventory_db.last_synced_at(self.r2_prefix)
+        last = await asyncio.to_thread(_r2_inventory_db.last_synced_at, self.r2_prefix)
         age = time.time() - last
-        count = _r2_inventory_db.count(self.r2_prefix)
+        count = await asyncio.to_thread(_r2_inventory_db.count, self.r2_prefix)
         if count == 0 or age > self._R2_CACHE_TTL:
             log.info(
                 "OpenDir: R2 SQLite cache is %s (age=%.0fs, count=%d) — rebuilding from R2 …",
@@ -1477,7 +1477,7 @@ class OpenDirSync(commands.Cog):
         unavailable.
         """
         if _r2_inventory_db is not None:
-            keys = _r2_inventory_db.get_all_keys(self.r2_prefix)
+            keys = await asyncio.to_thread(_r2_inventory_db.get_all_keys, self.r2_prefix)
             log.debug("OpenDir: loaded %d existing keys from SQLite cache", len(keys))
             return keys
         log.warning("OpenDir: R2InventoryDB not available — falling back to live R2 list")
