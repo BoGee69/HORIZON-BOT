@@ -321,8 +321,6 @@ class SyncSummary:
             "Cleaned objects": str(self.cleaned_objects),
             "Cleaned files": str(self.cleaned_files),
             "API transient": str(self.api_transient_failures),
-            "API pending queued": str(self.api_pending_queued),
-            "API pending retried": str(self.api_pending_retried),
             "Errors": str(len(self.errors)),
             "Elapsed": f"{self.elapsed_seconds:.1f}s",
         }
@@ -868,8 +866,7 @@ class OpenDirSync(commands.Cog):
         if attempts >= self.api_pending_retry_max_attempts:
             self._api_pending_retries.pop(game.appid, None)
             summary.no_match += 1
-            summary.add_sample(f"api pending exhausted {game.appid}: {reason[:120]}")
-            log.warning(
+            log.debug(
                 "OpenDir API pending retries exhausted for appid=%s after %d attempt(s): %s",
                 game.appid,
                 attempts,
@@ -879,8 +876,7 @@ class OpenDirSync(commands.Cog):
 
         if current is None and len(self._api_pending_retries) >= self.api_pending_retry_max_queue:
             summary.no_match += 1
-            summary.add_sample(f"api pending queue full {game.appid}: {reason[:120]}")
-            log.warning(
+            log.debug(
                 "OpenDir API pending queue is full (%d); appid=%s will wait for a later cursor cycle",
                 self.api_pending_retry_max_queue,
                 game.appid,
@@ -894,9 +890,6 @@ class OpenDirSync(commands.Cog):
             reason=reason,
         )
         summary.api_pending_queued += 1
-        summary.add_sample(
-            f"api pending {game.appid}: retry in {self.api_pending_retry_delay:.0f}s"
-        )
         log.debug(
             "OpenDir API pending for appid=%s; queued retry in %.0fs (%d/%d): %s",
             game.appid,
@@ -945,7 +938,7 @@ class OpenDirSync(commands.Cog):
             if self._priority_pending:
                 pending = ", ".join(sorted(self._priority_pending)[:5])
                 summary.paused_for_priority = True
-                summary.add_sample(f"priority pending: {pending}; pending retry paused")
+                log.debug("OpenDir: pending retry paused for priority sync (%s)", pending)
                 break
 
             game = self._db_game_record(item.game.appid) or item.game
@@ -1019,7 +1012,6 @@ class OpenDirSync(commands.Cog):
                     pending,
                 )
                 summary.paused_for_priority = True
-                summary.add_sample(f"priority pending: {pending}; normal window paused")
                 break
             if current == start:
                 # Wrapped around — full cycle done
@@ -1154,9 +1146,6 @@ class OpenDirSync(commands.Cog):
                         self.priority_pending_retries,
                         data_or_reason.reason,
                     )
-                    summary.add_sample(
-                        f"api pending {game.appid}: retry {pending_attempt}/{self.priority_pending_retries} in {self.priority_pending_delay:.0f}s"
-                    )
                     await asyncio.sleep(self.priority_pending_delay)
                     data_or_reason = await self._download_api_zip(session, payload, summary, priority=priority)
                     if not isinstance(data_or_reason, ApiNoZipResult) or not data_or_reason.is_pending:
@@ -1169,12 +1158,19 @@ class OpenDirSync(commands.Cog):
                 if pending_retry:
                     self._api_pending_retries.pop(game.appid, None)
                 if priority:
-                    summary.add_error(f"{game.appid}/api-generate returned no ZIP: {data_or_reason.reason}")
-                    log.warning(
-                        "OpenDir priority %s: API generate returned no ZIP: %s",
-                        game.appid,
-                        data_or_reason.reason,
-                    )
+                    if data_or_reason.is_pending:
+                        summary.add_error(f"{game.appid}/api-generate ZIP not available after retries")
+                        log.warning(
+                            "OpenDir priority %s: ZIP not available after retries",
+                            game.appid,
+                        )
+                    else:
+                        summary.add_error(f"{game.appid}/api-generate returned no ZIP: {data_or_reason.reason}")
+                        log.warning(
+                            "OpenDir priority %s: API generate returned no ZIP: %s",
+                            game.appid,
+                            data_or_reason.reason,
+                        )
                 summary.no_match += 1
                 return
             if data_or_reason is None:
