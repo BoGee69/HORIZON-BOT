@@ -7,6 +7,8 @@ import asyncio
 import logging
 import re
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import discord
 from discord.ext import commands
@@ -130,8 +132,42 @@ class AIChat(commands.Cog):
             )
         )
 
+    @staticmethod
+    def _looks_like_time_question(text: str) -> bool:
+        lower = re.sub(r"\s+", " ", sanitize_text(text).lower()).strip()
+        if not lower:
+            return False
+        time_words = (
+            "jam", "pukul", "waktu", "tanggal", "hari", "tgl",
+            "time", "clock", "date", "today", "sekarang hari", "hari ini",
+        )
+        question_words = (
+            "berapa", "apa", "kapan", "sekarang", "now", "current", "today",
+            "hari ini", "tanggal berapa", "jam berapa",
+        )
+        return any(word in lower for word in time_words) and any(word in lower for word in question_words)
+
+    @staticmethod
+    def _local_now() -> tuple[datetime, str]:
+        tz_name = getattr(bot_config, "BOT_TIMEZONE", "Asia/Jakarta") or "Asia/Jakarta"
+        try:
+            tz = ZoneInfo(tz_name)
+        except ZoneInfoNotFoundError:
+            tz_name = "Asia/Jakarta"
+            tz = ZoneInfo(tz_name)
+        return datetime.now(tz), tz_name
+
+    def _time_reply(self) -> str:
+        now, tz_name = self._local_now()
+        return (
+            f"Sekarang `{now:%H:%M:%S}` ({tz_name}).\n"
+            f"Tanggal: `{now:%A, %d %B %Y}`."
+        )
+
     def _wants_zip_name_stats(self, text: str, user_id: int) -> bool:
         lower = sanitize_text(text).lower()
+        if self._looks_like_time_question(text):
+            return False
         has_count = any(word in lower for word in ("berapa", "total", "how many", "count", "jumlah"))
         has_name_update = any(
             word in lower
@@ -224,6 +260,8 @@ class AIChat(commands.Cog):
     def _looks_like_readonly_status(text: str) -> bool:
         lower = sanitize_text(text).lower()
         if not lower:
+            return False
+        if AIChat._looks_like_time_question(text):
             return False
 
         # Explicit run/change intents must stay with the operator, not status chat.
@@ -444,7 +482,11 @@ class AIChat(commands.Cog):
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                         return
-                    if is_dm and access_allowed and self._looks_like_readonly_status(user_message):
+                    if is_dm and access_allowed and self._looks_like_time_question(user_message):
+                        reply = self._time_reply()
+                        self.memory.append(message.author.id, "user", user_message)
+                        self.memory.append(message.author.id, "assistant", reply)
+                    elif is_dm and access_allowed and self._looks_like_readonly_status(user_message):
                         reply = await self._direct_status_reply(user_message)
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)

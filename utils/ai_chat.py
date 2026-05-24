@@ -12,6 +12,8 @@ import re
 import time
 import psutil
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from collections import defaultdict, deque
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,24 @@ import config as bot_config
 from utils.ai_caretaker import call_ai_provider, sanitize_data, sanitize_text
 from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
+
+
+def _local_time_context() -> dict[str, str]:
+    tz_name = getattr(bot_config, "BOT_TIMEZONE", "Asia/Jakarta") or "Asia/Jakarta"
+    try:
+        tz = ZoneInfo(tz_name)
+    except ZoneInfoNotFoundError:
+        tz_name = "Asia/Jakarta"
+        tz = ZoneInfo(tz_name)
+    now = datetime.now(tz)
+    return {
+        "timezone": tz_name,
+        "iso": now.isoformat(),
+        "date": now.strftime("%Y-%m-%d"),
+        "time": now.strftime("%H:%M:%S"),
+        "weekday": now.strftime("%A"),
+        "human": now.strftime("%A, %d %B %Y %H:%M:%S"),
+    }
 
 
 class AIChatMemory:
@@ -752,6 +772,7 @@ async def build_chat_prompt(
     if public_info_only:
         public_context = sanitize_data({
             "mode": "public_info_only",
+            "current_local_time": _local_time_context(),
             "server_public_knowledge": _public_server_knowledge(server_knowledge),
             "allowed_public_topics": [
                 "server rules",
@@ -813,6 +834,7 @@ async def build_chat_prompt(
     )
 
     context = sanitize_data({
+        "current_local_time": _local_time_context(),
         "operational_pulse": pulse,
         "server_knowledge": server_knowledge,
         "recent_events": recent_events.snapshot(8) if recent_events else [],
@@ -895,10 +917,10 @@ async def build_chat_prompt(
         "storage is healthy. My storage state is in operational_pulse.r2_storage and is backed by the SQLite R2 inventory cache. "
         "When asked about files, archives, storage, or maintenance progress, I speak as the person "
         "responsible for that storage — with actual numbers from the current inventory cache.\n\n"
-        "Proactive awareness: if my live context shows something wrong — an alert, a degraded "
-        "subsystem, a storage anomaly, a failed recent event — I mention it naturally even when "
-        "not directly asked. Especially with the Owner: I don't wait to be asked about something "
-        "I can already see.\n\n"
+        "Context discipline: do not dump R2/database/server numbers into unrelated conversations. "
+        "Use live operational data only when the latest message asks about server, R2, ZIP files, database, sync, maintenance, health, status, progress, or when there is a critical active alert that the Owner/Admin clearly needs to see. "
+        "If the user asks a normal out-of-context question, answer that question normally and do not force operational data into the reply. "
+        "If asked about current time/date, answer from current_local_time only.\n\n"
         "Personality: calm, sharp, operationally precise. Not overly casual. "
         "I do not use filler words, jokes, or phrases like 'oi', 'santuy'. "
         "I am confident about what I know and honest when something is uncertain or outside my data.\n\n"
@@ -923,7 +945,8 @@ async def build_chat_prompt(
         "system — I do not handle them in chat.\n"
         "• Non-Owner users requesting changes: the Owner must approve first.\n"
         "• Changes to my behavior, code, or configuration require a code update and redeploy.\n"
-        "• Read-only status questions such as `progres rename`, `status R2`, `berapa ZIP`, `udah upload?`, or `sync database selesai?` are NOT approvals and NOT new proposals. Answer them from live context/history.\n\n"
+        "• Read-only status questions such as `progres rename`, `status R2`, `berapa ZIP`, `udah upload?`, or `sync database selesai?` are NOT approvals and NOT new proposals. Answer them from live context/history.\n"
+        "• Time/date questions such as `jam berapa`, `tanggal berapa`, or `sekarang hari apa` are NOT R2/database status questions. Answer only with current_local_time.\n\n"
         "Intent: 'Lock #channel for admin only' = channel access config, not new channel creation. "
         "If ambiguous, ask one short clarifying question.\n\n"
         "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources. "

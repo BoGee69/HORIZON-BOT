@@ -45,6 +45,10 @@ def parse_str_list(value: str) -> list[str]:
 BASE_DIR = Path(__file__).parent
 LOCAL_DATA_DIR = BASE_DIR / "data"
 
+# Local timezone used by AI chat and status replies.
+# Default is WIB because TriadGames is operated from Indonesia.
+BOT_TIMEZONE = os.getenv("BOT_TIMEZONE", os.getenv("TZ", "Asia/Jakarta")).strip() or "Asia/Jakarta"
+
 
 def _running_on_railway() -> bool:
     return any(
