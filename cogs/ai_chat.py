@@ -16,6 +16,7 @@ from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
 from utils.ai_access import resolve_ai_chat_access
 from utils.attachments import read_message_attachments, store_attachment_text
+from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
 
 log = logging.getLogger(__name__)
@@ -194,6 +195,163 @@ class AIChat(commands.Cog):
             lines.append("Catatan: scan R2 terpotong karena batas halaman, jadi angka ini belum full bucket.")
         return "\n".join(lines)
 
+
+    @staticmethod
+    def _summary_fields(summary) -> dict[str, str]:
+        if summary is None:
+            return {}
+        to_fields = getattr(summary, "to_fields", None)
+        if callable(to_fields):
+            try:
+                fields = to_fields()
+                if isinstance(fields, dict):
+                    return {str(k): str(v) for k, v in fields.items()}
+            except Exception:
+                return {}
+        if isinstance(summary, dict):
+            return {str(k): str(v) for k, v in summary.items()}
+        return {}
+
+    @staticmethod
+    def _pick_fields(fields: dict[str, str], keys: tuple[str, ...]) -> list[str]:
+        lines: list[str] = []
+        for key in keys:
+            if key in fields:
+                lines.append(f"- {key}: `{fields[key]}`")
+        return lines
+
+    @staticmethod
+    def _looks_like_readonly_status(text: str) -> bool:
+        lower = sanitize_text(text).lower()
+        if not lower:
+            return False
+
+        # Explicit run/change intents must stay with the operator, not status chat.
+        action_markers = (
+            "jalankan", "jalanin", "run ", "start ", "mulai", "execute",
+            "buat proposal", "minta approval", "create proposal",
+            "approve", "reject", "gas ", "lanjutkan",
+        )
+        if any(marker in lower for marker in action_markers):
+            return False
+
+        status_markers = (
+            "progress", "progres", "status", "perkembangan", "hasil",
+            "selesai", "done", "beres", "udah", "sudah", "belum",
+            "berapa", "jumlah", "total", "cek", "check", "gimana",
+        )
+        topic_markers = (
+            "rename", "renaming", "nama", "r2", "zip", "file", "upload",
+            "uploaded", "opendir", "open dir", "database", "db", "sqlite",
+            "steam", "sync", "sinkron", "server", "bot", "maintenance",
+        )
+        return any(marker in lower for marker in status_markers) and any(marker in lower for marker in topic_markers)
+
+    async def _direct_status_reply(self, text: str) -> str:
+        lower = sanitize_text(text).lower()
+        wants_r2 = any(word in lower for word in ("r2", "rename", "renaming", "zip", "file", "maintenance", "storage", "nama"))
+        wants_opendir = any(word in lower for word in ("opendir", "open dir", "upload", "uploaded", "download", "sync file"))
+        wants_steam = any(word in lower for word in ("steam", "database", "db", "sqlite", "catalog", "katalog", "sync", "sinkron"))
+        wants_server = any(word in lower for word in ("server", "bot", "status", "health", "sehat"))
+
+        lines: list[str] = ["Saya cek dari data live yang saya pegang sekarang:"]
+
+        if wants_r2:
+            timeout = max(1.0, float(getattr(bot_config, "AI_CHAT_R2_STATS_TIMEOUT_SECONDS", 8) or 8))
+            try:
+                inventory = await asyncio.wait_for(
+                    get_r2_inventory_snapshot_async(
+                        prefix=bot_config.R2_MAINTENANCE_PREFIX,
+                        cache_seconds=bot_config.AI_CHAT_R2_STATS_CACHE_SECONDS,
+                        max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                inventory = {"error": f"R2 inventory timeout setelah {timeout:.0f}s"}
+
+            lines.append("")
+            lines.append("**R2 / rename ZIP**")
+            if inventory.get("error"):
+                lines.append(f"- Status inventory: error — `{sanitize_text(inventory.get('error'))[:300]}`")
+            else:
+                total_zip = int(inventory.get("zip_objects_counted") or 0)
+                named_zip = int(inventory.get("named_zip_objects_counted") or 0)
+                appid_only = int(inventory.get("appid_only_zip_objects_counted") or 0)
+                unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
+                pending = appid_only + unknown
+                pct = round(named_zip / total_zip * 100, 1) if total_zip else 0.0
+                lines.extend([
+                    f"- Total ZIP: `{total_zip:,}`",
+                    f"- Sudah format `Nama Game (AppID).zip`: `{named_zip:,}` (`{pct}%`)",
+                    f"- Masih AppID-only: `{appid_only:,}`",
+                    f"- Format belum dikenali: `{unknown:,}`",
+                    f"- Sisa yang perlu dirapikan: `{pending:,}`",
+                    f"- Source: `{sanitize_text(inventory.get('source') or 'unknown')}`",
+                ])
+                if inventory.get("cache_age_seconds") is not None:
+                    lines.append(f"- Umur data cache: `{int(inventory.get('cache_age_seconds') or 0)}s`")
+                if inventory.get("truncated"):
+                    lines.append("- Catatan: scan R2 terpotong, angka real bisa lebih tinggi.")
+
+            r2_fields = self._summary_fields(getattr(self.bot, "last_r2_maintenance_summary", None))
+            if r2_fields:
+                lines.append("")
+                lines.append("**Run R2 maintenance terakhir**")
+                lines.extend(self._pick_fields(r2_fields, (
+                    "Mode", "Scanned", "Processed", "Rename applied",
+                    "Total rename applied", "R2 ZIP objects counted",
+                    "R2 ZIP already formatted", "R2 ZIP AppID-only",
+                    "R2 ZIP unknown format", "Errors",
+                )))
+
+        if wants_opendir:
+            opendir_fields = self._summary_fields(getattr(self.bot, "last_opendir_sync_summary", None))
+            lines.append("")
+            lines.append("**OpenDir sync terakhir**")
+            if opendir_fields:
+                lines.extend(self._pick_fields(opendir_fields, (
+                    "Mode", "Games total", "Games checked", "Cursor",
+                    "Cycle completed", "Remote matches", "Already existed",
+                    "Uploaded", "Skipped", "No match", "Cleaned files", "Errors", "Elapsed",
+                )))
+            else:
+                lines.append("- Belum ada ringkasan OpenDir sync di memori runtime ini.")
+
+        if wants_steam:
+            steam_fields = self._summary_fields(getattr(self.bot, "last_steam_db_sync_summary", None))
+            lines.append("")
+            lines.append("**Steam DB sync terakhir**")
+            if steam_fields:
+                lines.extend(self._pick_fields(steam_fields, (
+                    "Mode", "Fetched Steam apps", "Existing DB entries",
+                    "Placeholders found", "Names updated", "New entries added",
+                    "Saved", "Errors",
+                )))
+            else:
+                lines.append("- Belum ada ringkasan Steam DB sync di memori runtime ini.")
+
+        if wants_server or len(lines) == 1:
+            try:
+                health = await collect_health(self.bot)
+            except Exception as exc:
+                health = {"ok": False, "error": sanitize_text(str(exc))[:300]}
+            db = health.get("database") or {}
+            checks = health.get("checks") or {}
+            lines.append("")
+            lines.append("**Bot / server health**")
+            lines.append(f"- Overall: `{'OK' if health.get('ok') else 'DEGRADED'}`")
+            if db:
+                total_games = db.get("total_games", db.get("total", 0))
+                with_files = db.get("with_files", 0)
+                lines.append(f"- SQLite catalog: `{int(total_games or 0):,}` game, with files: `{int(with_files or 0):,}`")
+            if checks:
+                bad = [name for name, ok in checks.items() if not ok]
+                lines.append("- Checks bermasalah: " + ("`" + "`, `".join(bad[:8]) + "`" if bad else "`tidak ada`"))
+            if health.get("error"):
+                lines.append(f"- Error: `{health['error']}`")
+
+        return "\n".join(lines[:80])
     async def _message_text_with_attachments(self, message: discord.Message) -> str:
         text = sanitize_text(message.content).strip()
         attachments = list(getattr(message, "attachments", []) or [])
@@ -285,7 +443,11 @@ class AIChat(commands.Cog):
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                         return
-                    if is_dm and access_allowed and self._wants_zip_name_stats(user_message, message.author.id):
+                    if is_dm and access_allowed and self._looks_like_readonly_status(user_message):
+                        reply = await self._direct_status_reply(user_message)
+                        self.memory.append(message.author.id, "user", user_message)
+                        self.memory.append(message.author.id, "assistant", reply)
+                    elif is_dm and access_allowed and self._wants_zip_name_stats(user_message, message.author.id):
                         reply = await self._zip_name_stats_reply()
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)

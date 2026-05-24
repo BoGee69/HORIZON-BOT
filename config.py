@@ -282,7 +282,10 @@ AI_CHAT_MODEL = os.getenv(
     "AI_CHAT_MODEL",
     "gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL,
 ).strip() or ("gpt-oss:120b" if AI_CHAT_PROVIDER == "ollama" else AI_MAINTENANCE_MODEL)
-AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "12"))
+AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "30"))
+AI_CHAT_MEMORY_PERSIST = parse_bool(os.getenv("AI_CHAT_MEMORY_PERSIST", "true"), True)
+AI_CHAT_MEMORY_PATH = env_path("AI_CHAT_MEMORY_PATH", DATA_DIR / "ai_chat_memory.json")
+AI_CHAT_TEMPERATURE = float(os.getenv("AI_CHAT_TEMPERATURE", "0.25"))
 AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
 AI_CHAT_RESPONSE_TIMEOUT_SECONDS = float(os.getenv("AI_CHAT_RESPONSE_TIMEOUT_SECONDS", "60"))
 AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))

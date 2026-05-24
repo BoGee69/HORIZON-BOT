@@ -13,6 +13,7 @@ import time
 import psutil
 import os
 from collections import defaultdict, deque
+from pathlib import Path
 from typing import Any
 
 import config as bot_config
@@ -22,12 +23,67 @@ from utils.r2_inventory import get_r2_inventory_snapshot_async
 
 
 class AIChatMemory:
-    def __init__(self, max_history: int):
-        self.max_history = max(2, int(max_history or 12))
+    """Small persistent per-user chat memory.
+
+    The old memory lived only in RAM, so after every Railway restart TriadBot
+    forgot the recent owner/admin context.  This keeps the same lightweight
+    in-memory API, but optionally mirrors it to DATA_DIR/ai_chat_memory.json.
+    """
+
+    def __init__(self, max_history: int, path: str | Path | None = None, persist: bool | None = None):
+        self.max_history = max(2, int(max_history or 30))
+        configured_path = getattr(bot_config, "AI_CHAT_MEMORY_PATH", None)
+        self.path = Path(path or configured_path or (Path(getattr(bot_config, "DATA_DIR", "data")) / "ai_chat_memory.json"))
+        self.persist = bool(getattr(bot_config, "AI_CHAT_MEMORY_PERSIST", True) if persist is None else persist)
         self._history: dict[int, deque[dict[str, str]]] = defaultdict(lambda: deque(maxlen=self.max_history))
+        if self.persist:
+            self._load()
+
+    def _load(self) -> None:
+        try:
+            if not self.path.exists():
+                return
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return
+            for user_id_raw, items in payload.items():
+                if not str(user_id_raw).isdigit() or not isinstance(items, list):
+                    continue
+                user_id = int(user_id_raw)
+                bucket = self._history[user_id]
+                for item in items[-self.max_history:]:
+                    if not isinstance(item, dict):
+                        continue
+                    role = sanitize_text(str(item.get("role") or "")).strip().lower()
+                    text = sanitize_text(str(item.get("text") or "")).strip()
+                    if role in {"user", "assistant"} and text:
+                        bucket.append({"role": role, "text": text[:2000]})
+        except Exception:
+            # Memory is helpful, not critical.  A corrupt file must never break chat.
+            self._history.clear()
+
+    def _save(self) -> None:
+        if not self.persist:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                str(user_id): list(items)[-self.max_history:]
+                for user_id, items in self._history.items()
+                if items
+            }
+            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
+        except Exception:
+            pass
 
     def append(self, user_id: int, role: str, text: str) -> None:
+        role = sanitize_text(role).strip().lower()
+        if role not in {"user", "assistant"}:
+            role = "user"
         self._history[user_id].append({"role": role, "text": sanitize_text(text)[:2000]})
+        self._save()
 
     def snapshot(self, user_id: int) -> list[dict[str, str]]:
         return list(self._history[user_id])
@@ -865,7 +921,8 @@ async def build_chat_prompt(
         "• Approval control phrases ('approve all', 'semua', 'lanjut', etc.) go to the operator "
         "system — I do not handle them in chat.\n"
         "• Non-Owner users requesting changes: the Owner must approve first.\n"
-        "• Changes to my behavior, code, or configuration require a code update and redeploy.\n\n"
+        "• Changes to my behavior, code, or configuration require a code update and redeploy.\n"
+        "• Read-only status questions such as `progres rename`, `status R2`, `berapa ZIP`, `udah upload?`, or `sync database selesai?` are NOT approvals and NOT new proposals. Answer them from live context/history.\n\n"
         "Intent: 'Lock #channel for admin only' = channel access config, not new channel creation. "
         "If ambiguous, ask one short clarifying question.\n\n"
         "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources. "
@@ -910,7 +967,7 @@ async def chat_with_triadbot(
         prompt,
         provider=bot_config.AI_CHAT_PROVIDER,
         model=bot_config.AI_CHAT_MODEL,
-        temperature=0.75,
+        temperature=float(getattr(bot_config, "AI_CHAT_TEMPERATURE", 0.25) or 0.25),
         max_output_tokens=900,
     )
     reply = sanitize_text(reply).strip()
