@@ -833,9 +833,23 @@ async def build_chat_prompt(
         recent_events=recent_events,
     )
 
+    security_cog = getattr(bot, "ai_security", None)
+    if security_cog and hasattr(security_cog, "snapshot"):
+        try:
+            security_snapshot = sanitize_data(security_cog.snapshot())
+        except Exception as exc:
+            security_snapshot = {"enabled": False, "error": repr(exc)[:300]}
+    else:
+        security_snapshot = {"enabled": False, "loaded": False}
+    if security_snapshot.get("alerts_total"):
+        pulse.setdefault("active_alerts", []).append(
+            f"AI Security has {security_snapshot.get('alerts_total')} alert(s) since this runtime started"
+        )
+
     context = sanitize_data({
         "current_local_time": _local_time_context(),
         "operational_pulse": pulse,
+        "security_guardian": security_snapshot,
         "server_knowledge": server_knowledge,
         "recent_events": recent_events.snapshot(8) if recent_events else [],
         "last_r2_maintenance": sanitize_data(last_r2),
@@ -917,6 +931,10 @@ async def build_chat_prompt(
         "storage is healthy. My storage state is in operational_pulse.r2_storage and is backed by the SQLite R2 inventory cache. "
         "When asked about files, archives, storage, or maintenance progress, I speak as the person "
         "responsible for that storage — with actual numbers from the current inventory cache.\n\n"
+        "3. MY SECURITY GUARDIAN — I monitor server abuse signals like spam bursts, mention floods, link floods, "
+        "and repeated operational errors. My state is in security_guardian. If the Owner asks whether the server is safe, "
+        "answer from health checks plus security_guardian, not from vague reassurance. By default, security is alert-only unless "
+        "auto-action env variables are explicitly enabled.\n\n"
         "Context discipline: do not dump R2/database/server numbers into unrelated conversations. "
         "Use live operational data only when the latest message asks about server, R2, ZIP files, database, sync, maintenance, health, status, progress, or when there is a critical active alert that the Owner/Admin clearly needs to see. "
         "If the user asks a normal out-of-context question, answer that question normally and do not force operational data into the reply. "
@@ -949,6 +967,8 @@ async def build_chat_prompt(
         "• Time/date questions such as `jam berapa`, `tanggal berapa`, or `sekarang hari apa` are NOT R2/database status questions. Answer only with current_local_time.\n\n"
         "Intent: 'Lock #channel for admin only' = channel access config, not new channel creation. "
         "If ambiguous, ask one short clarifying question.\n\n"
+        "Security: If asked about safety, spam, suspicious users, abuse, or guardian status, use security_guardian plus recent_events. Do not invent moderation incidents. "
+        "If security_guardian.auto_action_enabled is false, explain that I am monitoring and alerting but not deleting/timing out users automatically.\n\n"
         "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources. "
         "For RAM, report process_ram_mb and container_ram_* as the bot/container usage. Do not treat host_ram_* as bot memory; it is Railway host/node memory visible from the container.\n\n"
         "Counting: operational_pulse.r2_storage has accurate ZIP numbers from the SQLite-backed R2 inventory cache. "

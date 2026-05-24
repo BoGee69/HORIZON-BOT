@@ -66,6 +66,7 @@ class SteamBot(commands.Bot):
         self.ai_events  = SafeEventRingBuffer(maxlen=60)
         self.ai_caretaker = None
         self.ai_operator = None
+        self.ai_security = None
         self.last_ai_caretaker_result = None
         self.last_r2_maintenance_summary = None
         self.last_steam_db_sync_summary = None

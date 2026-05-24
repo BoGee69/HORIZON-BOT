@@ -17,6 +17,7 @@ import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
 from utils.ai_access import resolve_ai_chat_access
+from utils.ai_brain import direct_assistant_reply
 from utils.attachments import read_message_attachments, store_attachment_text
 from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
@@ -482,7 +483,19 @@ class AIChat(commands.Cog):
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                         return
-                    if is_dm and access_allowed and self._looks_like_time_question(user_message):
+                    direct_reply = None
+                    if is_dm and access_allowed:
+                        direct_reply = await direct_assistant_reply(
+                            self.bot,
+                            user_message,
+                            access_level=access_level,
+                        )
+
+                    if direct_reply is not None:
+                        reply = direct_reply
+                        self.memory.append(message.author.id, "user", user_message)
+                        self.memory.append(message.author.id, "assistant", reply)
+                    elif is_dm and access_allowed and self._looks_like_time_question(user_message):
                         reply = self._time_reply()
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
