@@ -355,7 +355,7 @@ class OpenDirSync(commands.Cog):
 
         self.max_depth = max(0, _cfg_int("OPENDIR_MAX_DEPTH", 3))
         self.max_games_per_run = max(0, _cfg_int("OPENDIR_MAX_GAMES_PER_RUN", 500))
-        self.max_files_per_run = max(0, _cfg_int("OPENDIR_MAX_FILES_PER_RUN", 20))
+        self.max_files_per_run = max(0, _cfg_int("OPENDIR_MAX_FILES_PER_RUN", 0))
         self.max_file_bytes = max(1, _cfg_int("OPENDIR_MAX_FILE_MB", 1024)) * 1024 * 1024
         default_buffer_mb = min(
             max(1, _cfg_int("OPENDIR_MAX_FILE_MB", 1024)),
@@ -369,6 +369,7 @@ class OpenDirSync(commands.Cog):
         self.queue_chunks = max(1, _cfg_int("OPENDIR_QUEUE_CHUNKS", 8))
         self.chunk_size = max(64 * 1024, _cfg_int("OPENDIR_CHUNK_SIZE_BYTES", _DEFAULT_CHUNK_SIZE))
         self.interval_seconds = max(0.1, _cfg_float("OPENDIR_INTERVAL_HOURS", 6.0)) * 3600
+        self.short_sleep_seconds = max(1.0, _cfg_float("OPENDIR_SHORT_SLEEP_SECONDS", 30.0))
         self.start_delay = max(0.0, _cfg_float("OPENDIR_START_DELAY_SECONDS", 20.0))
         self.user_agent = _cfg_str("OPENDIR_USER_AGENT", "TriadBot OpenDirSync/1.0")
 
@@ -506,8 +507,25 @@ class OpenDirSync(commands.Cog):
                 summary = SyncSummary(mode=mode)
                 summary.add_error(repr(exc))
                 await self._report_summary(summary)
+                # Unexpected failures use the long interval to avoid alert/log spam.
+                await asyncio.sleep(self.interval_seconds)
+                continue
 
-            await asyncio.sleep(self.interval_seconds)
+            if summary.files_uploaded > 0:
+                log.info(
+                    "OpenDir: uploaded %d file(s) this run - continuing immediately",
+                    summary.files_uploaded,
+                )
+                continue
+
+            if summary.full_cycle_completed:
+                log.info(
+                    "OpenDir: full cycle complete with nothing new - sleeping %.0f hours",
+                    self.interval_seconds / 3600,
+                )
+                await asyncio.sleep(self.interval_seconds)
+            else:
+                await asyncio.sleep(self.short_sleep_seconds)
 
     async def run_sync_once(
         self,
