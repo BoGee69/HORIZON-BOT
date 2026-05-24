@@ -726,15 +726,30 @@ class AIOperator(commands.Cog):
                 "request approval",
                 "minta approval",
                 "jalankan",
+                "jalanin",
                 "run ",
                 "start ",
                 "mulai",
                 "execute",
+                "lanjut",
+                "lanjutkan",
+                "continue",
+                "proceed",
+                "gas",
+                "rapikan",
+                "rapihin",
+                "rapih",
+                "rapi",
+                "perapihan",
+                "bereskan",
+                "beresin",
             )
         )
         if not has_run_intent:
             return None
-        if "r2" in lower and "maintenance" in lower:
+        r2_terms = ("r2", "rename", "renaming", "zip", "appid", "nama game", "nama file", "storage", "bucket", "maintenance")
+        tidy_terms = ("maintenance", "rename", "renaming", "rapikan", "rapihin", "rapih", "rapi", "perapihan", "bereskan", "beresin", "bersihkan")
+        if any(term in lower for term in r2_terms) and any(term in lower for term in tidy_terms):
             return "run_r2_maintenance"
         if "steam" in lower and ("sync" in lower or "database" in lower or "db" in lower):
             return "run_steam_db_sync"
@@ -1139,12 +1154,17 @@ class AIOperator(commands.Cog):
                 )
             )
 
-        if "r2" in lower and "maintenance" in lower and self._action_enabled("run_r2_maintenance"):
+        r2_context_words = (
+            "r2", "rename", "renaming", "zip", "appid", "nama game", "nama file",
+            "storage", "bucket", "maintenance", "rapikan", "rapihin", "perapihan",
+            "bereskan", "bersihkan", "format nama",
+        )
+        if any(word in lower for word in r2_context_words) and self._action_enabled("run_r2_maintenance"):
             actions.append(
                 (
                     "run_r2_maintenance",
                     {},
-                    "Follow-up from the previous owner chat: run R2 maintenance.",
+                    "Follow-up from the previous owner chat: run R2 maintenance / rename cleanup.",
                     "Safe maintenance run using current R2 rules. It can rename/clean objects only within the configured maintenance scope.",
                 )
             )
@@ -2009,6 +2029,25 @@ class AIOperator(commands.Cog):
         clean = re.sub(r"^triadbot\s*[:,]?\s*", "", clean, flags=re.I).strip()
         return clean
 
+    @staticmethod
+    def _looks_like_contextual_followup_request(text: str) -> bool:
+        lower = sanitize_text(text).strip().lower()
+        if not lower:
+            return False
+        followup_words = (
+            "lanjut", "lanjutkan", "continue", "proceed", "gas",
+            "rapikan", "rapihin", "rapih", "rapi", "perapihan",
+            "bereskan", "beresin", "bersihkan", "lanjut proses",
+        )
+        topic_words = (
+            "r2", "rename", "renaming", "zip", "appid", "nama", "file",
+            "storage", "bucket", "maintenance", "database", "db", "sqlite",
+            "steam", "sync", "server", "audit", "booster",
+        )
+        return any(word in lower for word in followup_words) and (
+            any(word in lower for word in topic_words) or len(lower.split()) <= 5
+        )
+
     def _with_prompt_text(self, message: discord.Message, text: str):
         class _PromptMessage:
             __slots__ = ("_message", "content")
@@ -2079,6 +2118,10 @@ class AIOperator(commands.Cog):
 
         if await self._update_pending_proposal(prompt_message):
             return
+
+        if self._looks_like_contextual_followup_request(prompt_text):
+            if await self._create_contextual_followup_proposals(message.author.id, message.channel):
+                return
 
         server_action, params = self._parse_server_content_request(prompt_text)
         if server_action:

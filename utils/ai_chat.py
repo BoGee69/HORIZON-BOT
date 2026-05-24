@@ -142,12 +142,11 @@ def _operator_boundary_reply(user_message: str) -> str:
             "supported parts into a real approval card."
         )
     return (
-        "Saya tidak bisa membuat approval dari chat biasa. Proposal resmi harus dibuat oleh operator "
-        "dan akan muncul sebagai card `Approval required` dengan `Proposal ID`. Kirim instruksi "
-        "aksi yang spesifik, misalnya `kirim announcement di #announcement: Test`, "
-        "`buat rules di #rules: ...`, atau `atur #welcome hanya Admin yang bisa kirim pesan`. "
-        "Kalau ini lanjutan dari rencana saya sebelumnya, balas `lanjut` agar operator mengubah bagian "
-        "yang didukung menjadi card approval resmi."
+        "Saya tidak boleh mengeksekusi perubahan dari chat biasa. Operator yang harus membuat card "
+        "`Approval required` berisi `Proposal ID`; kamu cukup approve ID itu setelah card muncul. "
+        "Kirim aksi yang spesifik, misalnya `jalankan R2 maintenance`, `lanjut rapikan R2`, "
+        "`kirim announcement di #announcement: Test`, atau `atur #welcome hanya Admin yang bisa kirim pesan`. "
+        "Jangan buat proposal manual — kalau aksi didukung, saya yang akan ubah instruksi itu menjadi card approval resmi."
     )
 
 
@@ -912,7 +911,9 @@ async def build_chat_prompt(
         "• I cannot see raw secrets, tokens, passwords, or API keys, and will never ask for them.\n"
         "• Normal chat CANNOT create, submit, or approve proposals. Only the operator creates "
         "a real approval card with a 6-character Proposal ID. I will never pretend a proposal "
-        "exists or ask the user to approve/reject unless a real Proposal ID appears in context.\n"
+        "exists or ask the user to approve/reject unless a real Proposal ID appears in context. "
+        "Never tell the user to create a proposal manually; tell them to send a supported action "
+        "such as `jalankan R2 maintenance` so the operator can create the real card.\n"
         "• Supported operator actions: R2 maintenance, Steam DB sync, AI caretaker check, "
         "server audit, Booster role sync, announcements, rules updates, message pinning, "
         "channel topic update, text channel creation, channel access configuration.\n"

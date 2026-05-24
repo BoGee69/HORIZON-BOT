@@ -230,7 +230,8 @@ class AIChat(commands.Cog):
         action_markers = (
             "jalankan", "jalanin", "run ", "start ", "mulai", "execute",
             "buat proposal", "minta approval", "create proposal",
-            "approve", "reject", "gas ", "lanjutkan",
+            "approve", "reject", "gas ", "lanjut", "lanjutkan",
+            "rapikan", "rapihin", "perapihan", "bereskan", "beresin",
         )
         if any(marker in lower for marker in action_markers):
             return False
