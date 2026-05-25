@@ -301,7 +301,14 @@ AI_LEARNING_MIN_MATCH_SCORE = float(os.getenv("AI_LEARNING_MIN_MATCH_SCORE", "0.
 AI_LEARNING_SUGGEST_PATCH_AFTER_MISTAKES = int(os.getenv("AI_LEARNING_SUGGEST_PATCH_AFTER_MISTAKES", "3"))
 
 AI_CHAT_TEMPERATURE = float(os.getenv("AI_CHAT_TEMPERATURE", "0.25"))
-AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
+# Human-style replies: keep owner/admin answers direct by default.
+# Detailed evidence/log dumps are shown only when the user asks for detail.
+AI_CHAT_HUMAN_STYLE = parse_bool(os.getenv("AI_CHAT_HUMAN_STYLE", "true"), True)
+AI_CHAT_BRIEF_STATUS = parse_bool(os.getenv("AI_CHAT_BRIEF_STATUS", "true"), True)
+AI_CHAT_BRIEF_DIAGNOSTIC = parse_bool(os.getenv("AI_CHAT_BRIEF_DIAGNOSTIC", "true"), True)
+AI_CHAT_SHOW_EVIDENCE_SAMPLES = parse_bool(os.getenv("AI_CHAT_SHOW_EVIDENCE_SAMPLES", "false"), False)
+AI_CHAT_DIAGNOSTIC_MAX_REASONS = int(os.getenv("AI_CHAT_DIAGNOSTIC_MAX_REASONS", "4"))
+AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1200"))
 AI_CHAT_RESPONSE_TIMEOUT_SECONDS = float(os.getenv("AI_CHAT_RESPONSE_TIMEOUT_SECONDS", "60"))
 AI_CHAT_COOLDOWN_SECONDS = float(os.getenv("AI_CHAT_COOLDOWN_SECONDS", "3"))
 AI_CHAT_MAX_MESSAGE_CHARS = int(os.getenv("AI_CHAT_MAX_MESSAGE_CHARS", "1800"))

@@ -483,6 +483,15 @@ class AIChat(commands.Cog):
         )
         return any(marker in lower for marker in status_markers) and any(marker in lower for marker in topic_markers)
 
+    @staticmethod
+    def _wants_detailed_answer(text: str) -> bool:
+        lower = sanitize_text(text).lower()
+        return any(marker in lower for marker in (
+            "detail", "lengkap", "rinci", "rincian", "breakdown",
+            "contoh", "sample", "sampel", "log", "bukti file",
+            "full", "semua", "panjang", "verbose",
+        ))
+
     async def _append_r2_diagnostic_if_needed(self, lines: list[str], text: str) -> bool:
         if not getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_ENABLED", True):
             return False
@@ -506,7 +515,10 @@ class AIChat(commands.Cog):
             )
             setattr(self.bot, "last_r2_rename_diagnostic", diag)
             lines.append("")
-            lines.extend(format_r2_rename_diagnostic(diag))
+            lines.extend(format_r2_rename_diagnostic(
+                diag,
+                detailed=self._wants_detailed_answer(text),
+            ))
             return True
         except asyncio.TimeoutError:
             lines.append("")
@@ -527,7 +539,7 @@ class AIChat(commands.Cog):
         wants_steam = any(word in lower for word in ("steam", "database", "db", "sqlite", "catalog", "katalog", "sync", "sinkron"))
         wants_server = any(word in lower for word in ("server", "bot", "status", "health", "sehat"))
 
-        lines: list[str] = ["Saya cek dari data live yang saya pegang sekarang:"]
+        lines: list[str] = []
 
         if wants_r2:
             timeout = max(1.0, float(getattr(bot_config, "AI_CHAT_R2_STATS_TIMEOUT_SECONDS", 8) or 8))
@@ -543,7 +555,6 @@ class AIChat(commands.Cog):
             except asyncio.TimeoutError:
                 inventory = {"error": f"R2 inventory timeout setelah {timeout:.0f}s"}
 
-            lines.append("")
             lines.append("**R2 / rename ZIP**")
             if inventory.get("error"):
                 lines.append(f"- Status inventory: error — `{sanitize_text(inventory.get('error'))[:300]}`")
@@ -555,17 +566,11 @@ class AIChat(commands.Cog):
                 pending = appid_only + unknown
                 pct = round(named_zip / total_zip * 100, 1) if total_zip else 0.0
                 lines.extend([
-                    f"- Total ZIP: `{total_zip:,}`",
-                    f"- Sudah format `Nama Game (AppID).zip`: `{named_zip:,}` (`{pct}%`)",
-                    f"- Masih AppID-only: `{appid_only:,}`",
-                    f"- Format belum dikenali: `{unknown:,}`",
-                    f"- Sisa yang perlu dirapikan: `{pending:,}`",
-                    f"- Source: `{sanitize_text(inventory.get('source') or 'unknown')}`",
+                    f"Intinya: masih ada `{pending:,}` ZIP yang belum rapi dari total `{total_zip:,}`.",
+                    f"Yang sudah rapi `{named_zip:,}` (`{pct}%`). Sisanya: AppID-only `{appid_only:,}`, format tidak dikenali `{unknown:,}`.",
                 ])
-                if inventory.get("cache_age_seconds") is not None:
-                    lines.append(f"- Umur data cache: `{int(inventory.get('cache_age_seconds') or 0)}s`")
                 if inventory.get("truncated"):
-                    lines.append("- Catatan: scan R2 terpotong, angka real bisa lebih tinggi.")
+                    lines.append("Catatan: scan R2 terpotong, jadi angka real bisa lebih tinggi.")
                 if self._wants_r2_rename_reason(text):
                     diagnostic_added = await self._append_r2_diagnostic_if_needed(lines, text)
                     if not diagnostic_added:
@@ -576,14 +581,12 @@ class AIChat(commands.Cog):
                         )
 
             r2_fields = self._summary_fields(getattr(self.bot, "last_r2_maintenance_summary", None))
-            if r2_fields:
+            if r2_fields and self._wants_detailed_answer(text):
                 lines.append("")
                 lines.append("**Run R2 maintenance terakhir**")
                 lines.extend(self._pick_fields(r2_fields, (
                     "Mode", "Scanned", "Processed", "Rename applied",
-                    "Total rename applied", "R2 ZIP objects counted",
-                    "R2 ZIP already formatted", "R2 ZIP AppID-only",
-                    "R2 ZIP unknown format", "Errors",
+                    "Total rename applied", "Errors",
                 )))
 
         if wants_opendir:
@@ -632,7 +635,8 @@ class AIChat(commands.Cog):
             if health.get("error"):
                 lines.append(f"- Error: `{health['error']}`")
 
-        return "\n".join(lines[:80])
+        max_lines = 80 if self._wants_detailed_answer(text) else 18
+        return "\n".join(lines[:max_lines])
     async def _message_text_with_attachments(self, message: discord.Message) -> str:
         text = sanitize_text(message.content).strip()
         attachments = list(getattr(message, "attachments", []) or [])

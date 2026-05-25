@@ -258,8 +258,59 @@ async def diagnose_r2_rename_leftovers_async(**kwargs) -> R2RenameDiagnostic:
     return await asyncio.to_thread(diagnose_r2_rename_leftovers, **kwargs)
 
 
-def format_r2_rename_diagnostic(diag: R2RenameDiagnostic) -> list[str]:
-    lines: list[str] = []
+def format_r2_rename_diagnostic(diag: R2RenameDiagnostic, *, detailed: bool = False) -> list[str]:
+    """Format diagnostic results for chat.
+
+    Default output is intentionally short and human-readable. Detailed file
+    examples/log-like evidence are shown only when the owner asks for detail.
+    """
+    brief_enabled = bool(getattr(bot_config, "AI_CHAT_BRIEF_DIAGNOSTIC", True)) and not detailed
+    show_samples = bool(getattr(bot_config, "AI_CHAT_SHOW_EVIDENCE_SAMPLES", False)) or detailed
+    max_reasons = max(1, int(getattr(bot_config, "AI_CHAT_DIAGNOSTIC_MAX_REASONS", 4) or 4))
+
+    pending_left_unchecked = max(0, int(diag.pending_known or 0) - int(diag.pending_checked or 0))
+    sorted_reasons = sorted(diag.reason_counts.items(), key=lambda item: item[1], reverse=True)
+
+    possible = int(diag.reason_counts.get("rename_possible_now", 0) or 0)
+    blocking = sum(
+        int(diag.reason_counts.get(key, 0) or 0)
+        for key in (
+            "no_appid", "missing_game_name", "unsafe_game_name", "target_exists",
+            "steam_blacklisted", "steam_failed_before", "error",
+        )
+    )
+
+    if brief_enabled:
+        lines: list[str] = ["**Jawaban singkatnya:**"]
+        if sorted_reasons:
+            top_reason, top_count = sorted_reasons[0]
+            top_label = _REASON_LABELS.get(top_reason, top_reason.replace("_", " "))
+            lines.append(
+                f"Dari `{diag.pending_checked:,}` file yang saya cek, penyebab terbesar adalah **{top_label}**: `{top_count:,}` file."
+            )
+        else:
+            lines.append("Saya belum punya alasan detail yang terbukti dari sample diagnostic ini.")
+
+        if blocking and possible:
+            lines.append("Jadi masalahnya campuran: ada yang memang kena blocker, ada juga yang sebenarnya sudah bisa di-rename tapi belum kena batch/apply.")
+        elif blocking:
+            lines.append("Jadi ini bukan sekadar belum diproses; sample yang dicek memang punya blocker data.")
+        elif possible:
+            lines.append("Jadi kemungkinan besarnya bukan data rusak, tapi belum kena batch/apply run.")
+
+        if sorted_reasons:
+            lines.append("")
+            lines.append("Bukti ringkas:")
+            for reason, count in sorted_reasons[:max_reasons]:
+                label = _REASON_LABELS.get(reason, reason.replace("_", " "))
+                lines.append(f"- {label}: `{count:,}`")
+
+        if pending_left_unchecked:
+            lines.append(f"- Batas analisis: masih ada `{pending_left_unchecked:,}` pending yang belum dicek detail karena limit sample.")
+        lines.append("Kalau mau bukti file/log-nya, tanya: `detail diagnostic rename`.")
+        return lines
+
+    lines = []
     lines.append("**Diagnostic sisa rename R2 (read-only)**")
     lines.append("- Mode: `read-only`, tidak copy/delete/upload file.")
     lines.append(f"- Source: `{diag.source}`.")
@@ -274,27 +325,17 @@ def format_r2_rename_diagnostic(diag: R2RenameDiagnostic) -> list[str]:
     if diag.target_exists_checks_limited:
         lines.append("- Batas bukti: pengecekan target-exists dibatasi agar chat tidak lambat.")
 
-    if diag.reason_counts:
-        lines.append("")
-        lines.append("**Alasan yang terbukti dari diagnostic**")
-        for reason, count in sorted(diag.reason_counts.items(), key=lambda item: item[1], reverse=True):
+    lines.append("")
+    lines.append("**Alasan yang terbukti dari diagnostic**")
+    if sorted_reasons:
+        for reason, count in sorted_reasons:
             label = _REASON_LABELS.get(reason, reason.replace("_", " "))
             lines.append(f"- {label}: `{count:,}`")
     else:
-        lines.append("")
-        lines.append("**Alasan yang terbukti dari diagnostic**")
         lines.append("- Belum ada reason detail yang bisa dibuktikan dari sample ini.")
 
     lines.append("")
     lines.append("**Kesimpulan berbasis bukti**")
-    possible = int(diag.reason_counts.get("rename_possible_now", 0) or 0)
-    blocking = sum(
-        int(diag.reason_counts.get(key, 0) or 0)
-        for key in (
-            "no_appid", "missing_game_name", "unsafe_game_name", "target_exists",
-            "steam_blacklisted", "steam_failed_before", "error",
-        )
-    )
     if possible and not blocking:
         lines.append("- Sample yang dicek tidak punya blocker data. Ini menunjukkan sisa rename kemungkinan besar belum kena batch/apply run, bukan karena datanya rusak.")
     elif possible and blocking:
@@ -304,20 +345,21 @@ def format_r2_rename_diagnostic(diag: R2RenameDiagnostic) -> list[str]:
     else:
         lines.append("- Bukti belum cukup untuk menyimpulkan penyebab detail. Jalankan diagnostic dengan sample lebih besar atau rebuild inventory R2 dulu.")
 
-    if diag.pending_known > diag.pending_checked:
-        lines.append(f"- Masih ada `{diag.pending_known - diag.pending_checked:,}` pending known yang belum dianalisis detail karena batas sample.")
+    if pending_left_unchecked:
+        lines.append(f"- Masih ada `{pending_left_unchecked:,}` pending known yang belum dianalisis detail karena batas sample.")
 
-    sample_lines: list[str] = []
-    for reason, samples in sorted(diag.samples.items(), key=lambda item: len(item[1]), reverse=True):
-        label = _REASON_LABELS.get(reason, reason.replace("_", " "))
-        for sample in samples[:2]:
-            sample_lines.append(f"- {label}: `{sample}`")
-        if len(sample_lines) >= 6:
-            break
-    if sample_lines:
-        lines.append("")
-        lines.append("**Contoh bukti file**")
-        lines.extend(sample_lines[:6])
+    if show_samples:
+        sample_lines: list[str] = []
+        for reason, samples in sorted(diag.samples.items(), key=lambda item: len(item[1]), reverse=True):
+            label = _REASON_LABELS.get(reason, reason.replace("_", " "))
+            for sample in samples[:2]:
+                sample_lines.append(f"- {label}: `{sample}`")
+            if len(sample_lines) >= 6:
+                break
+        if sample_lines:
+            lines.append("")
+            lines.append("**Contoh bukti file**")
+            lines.extend(sample_lines[:6])
 
     if diag.errors:
         lines.append("")
