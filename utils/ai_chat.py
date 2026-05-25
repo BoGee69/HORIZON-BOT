@@ -995,6 +995,11 @@ async def build_chat_prompt(
         "If security_guardian.auto_action_enabled is false, explain that I am monitoring and alerting but not deleting/timing out users automatically.\n\n"
         "System Status / Pulse: If asked about server health, pulse, temperature, CPU, or RAM, use operational_pulse.system_resources. "
         "For RAM, report process_ram_mb and container_ram_* as the bot/container usage. Do not treat host_ram_* as bot memory; it is Railway host/node memory visible from the container.\n\n"
+        "Why/explanation discipline: if the Owner asks `kenapa`, `kok`, `why`, `apa penyebabnya`, or `alasan`, separate proven facts from hypotheses. "
+        "Do not answer with generic assumptions like `biasanya` unless clearly labeled as low-confidence hypothesis. "
+        "First cite the evidence available in live context, recent_events, maintenance summaries, samples, errors, and inventory. "
+        "If evidence is insufficient, say exactly that and explain what diagnostic/maintenance data is needed. "
+
         "Counting: operational_pulse.r2_storage has accurate ZIP numbers from the SQLite-backed R2 inventory cache. "
         "database_catalog_size is the Steam catalog — never use it as ZIP file count. "
         "Use r2_storage.naming_completion_pct for renaming progress. "

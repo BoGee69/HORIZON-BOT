@@ -307,6 +307,145 @@ class AIChat(commands.Cog):
         return lines
 
     @staticmethod
+    def _wants_r2_rename_reason(text: str) -> bool:
+        lower = sanitize_text(text).lower()
+        if not lower:
+            return False
+        reason_words = (
+            "kenapa", "mengapa", "alasan", "sebab", "why", "kok",
+            "belum di rename", "belum rename", "belum rapi", "masih ada",
+        )
+        topic_words = ("r2", "rename", "renaming", "zip", "rapi", "appid", "nama")
+        return any(word in lower for word in reason_words) and any(word in lower for word in topic_words)
+
+    @staticmethod
+    def _field_int(fields: dict[str, str], key: str) -> int:
+        raw = sanitize_text(str(fields.get(key, "") or "")).replace(",", "").strip()
+        try:
+            return int(raw)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _append_r2_rename_reason(
+        lines: list[str],
+        *,
+        inventory: dict,
+        summary=None,
+    ) -> None:
+        """Append evidence-based explanation for R2 rename leftovers.
+
+        Important: this must not present guesses as facts. It only states what
+        can be proven from inventory and the latest maintenance summary. When
+        per-file evidence is missing, TriadBot says so plainly.
+        """
+        appid_only = int(inventory.get("appid_only_zip_objects_counted") or 0)
+        unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
+        pending = appid_only + unknown
+        source = sanitize_text(str(inventory.get("source") or "unknown"))
+
+        lines.append("")
+        lines.append("**Analisis kenapa masih ada yang belum rename**")
+        if pending <= 0:
+            lines.append("- Berdasarkan inventory sekarang, tidak ada ZIP yang perlu direname.")
+            return
+
+        lines.append("**Bukti yang saya punya sekarang**")
+        lines.append(f"- Inventory R2 menunjukkan `{pending:,}` ZIP belum rapi.")
+        lines.append(f"- Rinciannya: AppID-only `{appid_only:,}`, format belum dikenali `{unknown:,}`.")
+        lines.append(f"- Source inventory: `{source}`.")
+        if inventory.get("truncated"):
+            lines.append("- Catatan bukti: scan R2 terpotong, jadi angka bisa belum mencakup seluruh bucket.")
+
+        fields = AIChat._summary_fields(summary) if summary is not None else {}
+        samples = list(getattr(summary, "samples", None) or []) if summary is not None else []
+        errors_list = list(getattr(summary, "errors", None) or []) if summary is not None else []
+
+        skipped = AIChat._field_int(fields, "Skipped")
+        steam_failed = AIChat._field_int(fields, "Steam lookup failed")
+        blacklisted = AIChat._field_int(fields, "Blacklisted skips")
+        errors = AIChat._field_int(fields, "Errors")
+        processed = AIChat._field_int(fields, "Processed")
+        rename_applied = AIChat._field_int(fields, "Rename applied")
+        no_appid = AIChat._field_int(fields, "Skip no AppID")
+        missing_name = AIChat._field_int(fields, "Skip missing game name")
+        unsafe_name = AIChat._field_int(fields, "Skip unsafe game name")
+        target_exists = AIChat._field_int(fields, "Skip target exists")
+        oversized = AIChat._field_int(fields, "Skip oversized ZIP")
+
+        has_maintenance_evidence = bool(
+            fields or samples or errors_list or any(
+                value > 0
+                for value in (
+                    skipped, steam_failed, blacklisted, errors, no_appid,
+                    missing_name, unsafe_name, target_exists, oversized,
+                )
+            )
+        )
+
+        lines.append("")
+        if has_maintenance_evidence:
+            lines.append("**Bukti dari run maintenance terakhir**")
+            if processed:
+                lines.append(f"- File yang diproses pada run terakhir: `{processed:,}`.")
+            if rename_applied:
+                lines.append(f"- Rename yang benar-benar diterapkan pada run terakhir: `{rename_applied:,}`.")
+            if skipped:
+                lines.append(f"- File/object yang dilewati pada run terakhir: `{skipped:,}`.")
+
+            reason_lines: list[str] = []
+            if no_appid:
+                reason_lines.append(f"tidak ada AppID yang bisa diparse: `{no_appid:,}`")
+            if missing_name:
+                reason_lines.append(f"nama game tidak ditemukan di DB/cache/API: `{missing_name:,}`")
+            if unsafe_name:
+                reason_lines.append(f"nama game tidak aman untuk nama file: `{unsafe_name:,}`")
+            if target_exists:
+                reason_lines.append(f"target nama baru sudah ada, jadi dilewati agar tidak overwrite: `{target_exists:,}`")
+            if oversized:
+                reason_lines.append(f"ZIP melewati batas ukuran untuk proses clean/comment: `{oversized:,}`")
+            if steam_failed:
+                reason_lines.append(f"Steam lookup gagal: `{steam_failed:,}`")
+            if blacklisted:
+                reason_lines.append(f"AppID masuk blacklist lookup sementara: `{blacklisted:,}`")
+            if errors:
+                reason_lines.append(f"error saat maintenance: `{errors:,}`")
+
+            if reason_lines:
+                lines.append("- Alasan yang terbukti dari log maintenance:")
+                for item in reason_lines[:8]:
+                    lines.append(f"  - {item}")
+            else:
+                lines.append("- Run terakhir punya ringkasan, tapi belum punya breakdown alasan skip yang detail. Jalankan maintenance sekali lagi dengan patch ini agar alasan skip tercatat per kategori.")
+
+            if samples:
+                lines.append("- Contoh bukti log:")
+                for sample in samples[:5]:
+                    lines.append(f"  - `{sanitize_text(str(sample))[:220]}`")
+            if errors_list:
+                lines.append("- Error terakhir:")
+                for error in errors_list[:3]:
+                    lines.append(f"  - `{sanitize_text(str(error))[:260]}`")
+        else:
+            lines.append("**Batas analisis**")
+            lines.append("- Saya belum punya bukti per-file dari run maintenance terakhir, jadi saya tidak akan mengarang alasan pasti.")
+            lines.append("- Yang bisa dipastikan dari data sekarang hanya: masih ada AppID-only dan/atau format belum dikenali di inventory R2.")
+
+        lines.append("")
+        lines.append("**Kesimpulan berbasis data**")
+        if appid_only and unknown:
+            lines.append(f"- Penyebab yang terbukti di level inventory: `{appid_only:,}` masih AppID-only dan `{unknown:,}` belum bisa diklasifikasikan formatnya.")
+        elif appid_only:
+            lines.append(f"- Penyebab yang terbukti di level inventory: `{appid_only:,}` masih AppID-only.")
+        elif unknown:
+            lines.append(f"- Penyebab yang terbukti di level inventory: `{unknown:,}` belum bisa diklasifikasikan formatnya.")
+
+        if not has_maintenance_evidence:
+            lines.append("- Untuk alasan pasti seperti missing DB name, Steam lookup gagal, target exists, atau no AppID, saya perlu bukti dari run maintenance/diagnostic terbaru.")
+        else:
+            lines.append("- Kalau butuh jawaban per-file, saya perlu menjalankan diagnostic/maintenance terbaru agar setiap file yang skip punya reason log.")
+
+    @staticmethod
     def _looks_like_readonly_status(text: str) -> bool:
         lower = sanitize_text(text).lower()
         if not lower:
@@ -387,6 +526,12 @@ class AIChat(commands.Cog):
                     lines.append(f"- Umur data cache: `{int(inventory.get('cache_age_seconds') or 0)}s`")
                 if inventory.get("truncated"):
                     lines.append("- Catatan: scan R2 terpotong, angka real bisa lebih tinggi.")
+                if self._wants_r2_rename_reason(text):
+                    self._append_r2_rename_reason(
+                        lines,
+                        inventory=inventory,
+                        summary=getattr(self.bot, "last_r2_maintenance_summary", None),
+                    )
 
             r2_fields = self._summary_fields(getattr(self.bot, "last_r2_maintenance_summary", None))
             if r2_fields:

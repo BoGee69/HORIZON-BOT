@@ -79,6 +79,7 @@ class R2MaintenanceSummary:
     errors: list[str] = field(default_factory=list)
     samples: list[str] = field(default_factory=list)
     applied_samples: list[str] = field(default_factory=list)
+    skip_reasons: dict[str, int] = field(default_factory=dict)
 
     @property
     def has_changes(self) -> bool:
@@ -102,6 +103,19 @@ class R2MaintenanceSummary:
     def add_applied_sample(self, message: str, limit: int = 12) -> None:
         if len(self.applied_samples) < limit:
             self.applied_samples.append(message[:300])
+
+    def add_skip(self, reason: str, message: str | None = None, limit: int = 12) -> None:
+        """Record a skipped object with a machine-readable reason.
+
+        This gives TriadBot evidence for owner questions like "kenapa masih
+        ada yang belum rename?" so it can explain from actual maintenance
+        observations instead of guessing.
+        """
+        clean_reason = str(reason or "unknown").strip().lower().replace(" ", "_")
+        self.skipped += 1
+        self.skip_reasons[clean_reason] = int(self.skip_reasons.get(clean_reason, 0) or 0) + 1
+        if message:
+            self.add_sample(message, limit=limit)
 
     def add_error(self, message: str, limit: int = 10) -> None:
         log.error(message)
@@ -133,6 +147,11 @@ class R2MaintenanceSummary:
             "R2 ZIP already formatted": str(self.r2_named_zip_objects_counted),
             "R2 ZIP AppID-only": str(self.r2_appid_only_zip_objects_counted),
             "R2 ZIP unknown format": str(self.r2_unknown_zip_objects_counted),
+            "Skip no AppID": str(int(self.skip_reasons.get("no_appid", 0) or 0)),
+            "Skip missing game name": str(int(self.skip_reasons.get("missing_game_name", 0) or 0)),
+            "Skip unsafe game name": str(int(self.skip_reasons.get("unsafe_game_name", 0) or 0)),
+            "Skip target exists": str(int(self.skip_reasons.get("target_exists", 0) or 0)),
+            "Skip oversized ZIP": str(int(self.skip_reasons.get("oversized_zip", 0) or 0)),
             "Errors": str(len(self.errors)),
         }
 
@@ -579,8 +598,7 @@ def run_r2_maintenance(
 
             if rename_objects:
                 if not appid:
-                    summary.skipped += 1
-                    summary.add_sample(f"skip rename: {source_key} (no appid found)")
+                    summary.add_skip("no_appid", f"skip rename: {source_key} (no appid found)")
                 else:
                     name_info = name_map.get(appid)
                     if not name_info:
@@ -591,32 +609,27 @@ def run_r2_maintenance(
                             summary.rename_planned += 1
                             summary.fallback_renames += 1
                         elif not fallback_to_appid:
-                            summary.skipped += 1
-                            summary.add_sample(f"skip rename: {source_key} (missing game name)")
+                            summary.add_skip("missing_game_name", f"skip rename: {source_key} (missing game name)")
                     else:
                         planned_key = _target_key(source_key, appid, name_info[0])
                         if not planned_key:
-                            summary.skipped += 1
-                            summary.add_sample(f"skip rename: {source_key} (unsafe game name)")
+                            summary.add_skip("unsafe_game_name", f"skip rename: {source_key} (unsafe game name)")
                         elif planned_key != source_key:
                             needs_rename = True
                             target_key = planned_key
                             summary.rename_planned += 1
 
             if needs_rename and target_key in object_keys:
-                summary.skipped += 1
-                summary.add_sample(f"skip object: {source_key} -> {target_key} (target exists)")
+                summary.add_skip("target_exists", f"skip object: {source_key} -> {target_key} (target exists)")
                 continue
 
             if apply and needs_rename and _object_exists(client, target_key):
-                summary.skipped += 1
-                summary.add_sample(f"skip object: {source_key} -> {target_key} (target exists)")
+                summary.add_skip("target_exists", f"skip object: {source_key} -> {target_key} (target exists)")
                 continue
 
             if clean_lua_comments:
                 if source_size > max_zip_bytes:
-                    summary.skipped += 1
-                    summary.add_sample(f"skip comment clean: {source_key} ({source_size} bytes exceeds limit)")
+                    summary.add_skip("oversized_zip", f"skip comment clean: {source_key} ({source_size} bytes exceeds limit)")
                 else:
                     response = client.get_object(Bucket=_BUCKET, Key=source_key)
                     body = response["Body"].read()
