@@ -80,3 +80,14 @@ Owner menjalankan dengan:
 ```text
 approve abc123
 ```
+
+## Incident-aware follow-up
+
+Patch ini membuat pertanyaan pendek seperti `ada apa?`, `ini apa?`, `warning apa?`, `kenapa warning?`, dan `apa masalahnya?` membaca sumber internal terlebih dahulu:
+
+- `last_ai_caretaker_result`
+- event buffer `bot.ai_events`
+- security recent alerts
+- bad health checks
+
+Tujuannya agar bot tidak menjawab `tidak ada masalah` saat di atasnya ada pesan `WARNING` dari caretaker atau event runtime.

@@ -55,6 +55,185 @@ def _pick(fields: dict[str, str], keys: tuple[str, ...]) -> list[str]:
     return out
 
 
+def _age_label(event_ts: Any) -> str:
+    try:
+        seconds = max(0, int(datetime.now().timestamp()) - int(event_ts or 0))
+    except Exception:
+        return "waktu tidak diketahui"
+    if seconds < 60:
+        return f"{seconds}s lalu"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m lalu"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}j lalu"
+    days = hours // 24
+    return f"{days}h lalu"
+
+
+def _event_level(event: dict[str, Any]) -> str:
+    return sanitize_text(str(event.get("level") or "INFO")).upper()
+
+
+def _event_is_warning(event: dict[str, Any]) -> bool:
+    return _event_level(event) in {"WARNING", "WARN", "ERROR", "CRITICAL"}
+
+
+def _format_event_line(event: dict[str, Any]) -> str:
+    level = _event_level(event)
+    source = sanitize_text(str(event.get("source") or "unknown"))[:80]
+    message = sanitize_text(str(event.get("message") or ""))[:260]
+    age = _age_label(event.get("at"))
+    fields = event.get("fields") or {}
+    if isinstance(fields, dict):
+        reason = sanitize_text(str(fields.get("reason") or fields.get("Trigger") or "")).strip()
+        summary = sanitize_text(str(fields.get("summary") or "")).strip()
+        extra = []
+        if reason:
+            extra.append(f"trigger: {reason[:80]}")
+        if summary:
+            extra.append(f"summary: {summary[:160]}")
+        if extra:
+            message = f"{message} ({'; '.join(extra)})" if message else "; ".join(extra)
+    return f"- `{level}` `{source}` `{age}` — {message or 'tanpa detail'}"
+
+
+def looks_like_incident_question(text: str) -> bool:
+    lower = _norm(text)
+    if not lower:
+        return False
+
+    explicit_warning = any(
+        phrase in lower
+        for phrase in (
+            "warning", "peringatan", "warn", "error", "critical", "alert",
+            "masalah", "problem", "issue", "trouble", "gagal", "rusak",
+        )
+    ) and any(
+        phrase in lower
+        for phrase in (
+            "apa", "kenapa", "mengapa", "why", "what", "ada", "jelasin", "explain", "maksud",
+        )
+    )
+    if explicit_warning:
+        return True
+
+    short_followups = {
+        "ada apa", "ini apa", "itu apa", "apa ini", "apa itu", "kenapa ini", "kenapa itu",
+        "maksudnya apa", "maksud nya apa", "ada masalah apa", "apa masalahnya",
+        "what happened", "what is wrong", "what's wrong", "any warning", "any warnings",
+    }
+    if lower in short_followups:
+        return True
+
+    return bool(
+        any(x in lower for x in ("ada apa", "apa yang terjadi", "what happened"))
+        or (
+            any(x in lower for x in ("tadi", "barusan", "terakhir", "latest", "last"))
+            and any(x in lower for x in ("warning", "alert", "error", "masalah", "issue"))
+        )
+    )
+
+
+async def incident_report(bot: Any, *, access_level: str = "owner") -> str:
+    if access_level not in {"owner", "admin"}:
+        return "Saya tidak bisa membuka detail warning internal di chat ini. Minta owner/admin cek lewat DM."
+
+    now, tz_name = local_now()
+    lines: list[str] = [
+        "**Yang terjadi sekarang:**",
+        f"- Waktu cek: `{now:%H:%M:%S}` `{now:%A, %d %B %Y}` ({tz_name})",
+    ]
+
+    try:
+        health = await collect_health(bot)
+    except Exception as exc:
+        health = {"ok": False, "error": repr(exc)[:300], "checks": {}}
+
+    checks = health.get("checks") or {}
+    bad_checks = [str(name) for name, ok in checks.items() if not ok]
+
+    events_obj = getattr(bot, "ai_events", None)
+    events = events_obj.snapshot(25) if events_obj and hasattr(events_obj, "snapshot") else []
+    warning_events = [event for event in events if isinstance(event, dict) and _event_is_warning(event)]
+    warning_events = warning_events[-6:]
+
+    caretaker_result = getattr(bot, "last_ai_caretaker_result", None)
+    caretaker_status = sanitize_text(str(getattr(caretaker_result, "status", "") or "")).upper()
+
+    security = getattr(bot, "ai_security", None)
+    security_snapshot: dict[str, Any] = {}
+    if security and hasattr(security, "snapshot"):
+        try:
+            snap = security.snapshot()
+            if isinstance(snap, dict):
+                security_snapshot = snap
+        except Exception as exc:
+            security_snapshot = {"error": repr(exc)[:200]}
+
+    found_any = False
+
+    if caretaker_result and caretaker_status and caretaker_status != "OK":
+        found_any = True
+        lines.append("")
+        lines.append("**Warning caretaker terakhir**")
+        lines.append(f"- Status: `{caretaker_status}`")
+        title = sanitize_text(str(getattr(caretaker_result, "title", "") or "")).strip()
+        summary = sanitize_text(str(getattr(caretaker_result, "summary", "") or "")).strip()
+        if title:
+            lines.append(f"- Judul: {title[:260]}")
+        if summary:
+            lines.append(f"- Ringkasan: {summary[:700]}")
+        causes = list(getattr(caretaker_result, "causes", []) or [])
+        actions = list(getattr(caretaker_result, "actions", []) or [])
+        envs = list(getattr(caretaker_result, "env_to_check", []) or [])
+        if causes:
+            lines.append("- Kemungkinan penyebab:")
+            lines.extend(f"  - {sanitize_text(str(item))[:220]}" for item in causes[:5])
+        if actions:
+            lines.append("- Saran tindakan:")
+            lines.extend(f"  - {sanitize_text(str(item))[:220]}" for item in actions[:5])
+        if envs:
+            lines.append("- Env yang perlu dicek: " + ", ".join(f"`{sanitize_text(str(item))[:80]}`" for item in envs[:6]))
+
+    if warning_events:
+        found_any = True
+        lines.append("")
+        lines.append("**Event warning/error terbaru**")
+        for event in reversed(warning_events):
+            lines.append(_format_event_line(event))
+
+    if bad_checks or health.get("error"):
+        found_any = True
+        lines.append("")
+        lines.append("**Health check**")
+        lines.append("- Checks bermasalah: " + ("`" + "`, `".join(bad_checks[:8]) + "`" if bad_checks else "`tidak ada`") )
+        if health.get("error"):
+            lines.append(f"- Error health: `{sanitize_text(str(health.get('error')))[:300]}`")
+
+    recent_security = list(security_snapshot.get("recent_alerts") or []) if security_snapshot else []
+    if recent_security or security_snapshot.get("error"):
+        found_any = True
+        lines.append("")
+        lines.append("**Security guardian**")
+        if security_snapshot.get("error"):
+            lines.append(f"- Error security snapshot: `{sanitize_text(str(security_snapshot.get('error')))[:200]}`")
+        if recent_security:
+            for item in recent_security[-5:]:
+                lines.append(f"- {sanitize_text(str(item))[:260]}")
+
+    if not found_any:
+        lines.append("")
+        lines.append("Saya tidak menemukan warning/error aktif di event buffer runtime saat ini.")
+        lines.append("Kalau ada warning yang terlihat di chat atas, kemungkinan itu pesan DM lama/attachment dari caretaker yang belum masuk ke memory chat biasa. Patch ini sekarang membuat pertanyaan seperti `ada apa?` membaca event buffer dan hasil caretaker terakhir dulu.")
+    else:
+        lines.append("")
+        lines.append("Jadi, jangan anggap `tidak ada masalah` kalau ada blok `WARNING` di atas. Pertanyaan pendek seperti `ada apa?` sekarang harus membaca warning/event terakhir dulu, bukan menjawab ringkasan umum.")
+
+    return "\n".join(lines[:120])
+
+
 def local_now() -> tuple[datetime, str]:
     tz_name = getattr(bot_config, "BOT_TIMEZONE", "Asia/Jakarta") or "Asia/Jakarta"
     try:
@@ -183,6 +362,19 @@ async def guardian_report(bot: Any, *, access_level: str = "owner") -> str:
     if health.get("error"):
         lines.append(f"- Error: `{sanitize_text(str(health.get('error')))[:300]}`")
 
+    caretaker_result = getattr(bot, "last_ai_caretaker_result", None)
+    caretaker_status = sanitize_text(str(getattr(caretaker_result, "status", "") or "")).upper()
+    if caretaker_result and caretaker_status and caretaker_status != "OK":
+        lines.append("")
+        lines.append("**Warning caretaker aktif/terakhir**")
+        lines.append(f"- Status: `{caretaker_status}`")
+        title = sanitize_text(str(getattr(caretaker_result, "title", "") or "")).strip()
+        summary = sanitize_text(str(getattr(caretaker_result, "summary", "") or "")).strip()
+        if title:
+            lines.append(f"- Judul: {title[:220]}")
+        if summary:
+            lines.append(f"- Ringkasan: {summary[:500]}")
+
     inventory = await _safe_r2_snapshot()
     lines.append("")
     lines.append("**Caretaker / R2 storage**")
@@ -271,6 +463,8 @@ async def guardian_report(bot: Any, *, access_level: str = "owner") -> str:
         lines.append("- Bot terlihat stabil dari health check saat ini.")
     else:
         lines.append("- Ada bagian yang perlu dicek karena health check tidak full OK.")
+    if caretaker_result and caretaker_status and caretaker_status != "OK":
+        lines.append("- Ada warning caretaker terakhir; detailnya saya tampilkan di bagian `Warning caretaker aktif/terakhir`.")
     if security and hasattr(security, "snapshot"):
         try:
             alerts_total = int((security.snapshot() or {}).get("alerts_total") or 0)
@@ -279,12 +473,14 @@ async def guardian_report(bot: Any, *, access_level: str = "owner") -> str:
             pass
     if access_level in {"owner", "admin"}:
         lines.append("- Untuk aksi perubahan, saya tetap akan buat `Approval required` + `Proposal ID` dulu.")
-    return "\n".join(lines[:100])
+    return "\n".join(lines[:120])
 
 
 async def direct_assistant_reply(bot: Any, text: str, *, access_level: str = "owner") -> str | None:
     if looks_like_time_question(text):
         return time_reply()
+    if looks_like_incident_question(text):
+        return await incident_report(bot, access_level=access_level)
     if looks_like_capability_question(text):
         return capability_reply(access_level)
     if looks_like_guardian_report(text):
