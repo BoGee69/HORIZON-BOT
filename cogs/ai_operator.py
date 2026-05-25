@@ -753,6 +753,7 @@ class AIOperator(commands.Cog):
             "berapa", "jumlah", "total", "sisa", "status", "progres", "progress",
             "cek", "check", "lihat", "show", "ada apa", "apa ada", "apa yang",
             "warning", "error", "kenapa", "mengapa", "gimana", "bagaimana",
+            "diagnosa", "diagnose", "analisis", "analysis", "bukti", "evidence", "alasan", "sebab",
             "sudah", "udah", "belum", "yang belum", "terakhir", "sekarang",
         )
         domain_markers = (

@@ -22,6 +22,7 @@ from utils.ai_memory import get_learning_memory, route_hint_from_learning
 from utils.attachments import read_message_attachments, store_attachment_text
 from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
+from utils.r2_rename_diagnostic import diagnose_r2_rename_leftovers_async, format_r2_rename_diagnostic
 
 log = logging.getLogger(__name__)
 
@@ -472,6 +473,8 @@ class AIChat(commands.Cog):
             "progress", "progres", "status", "perkembangan", "hasil",
             "selesai", "done", "beres", "udah", "sudah", "belum",
             "berapa", "jumlah", "total", "cek", "check", "gimana",
+            "kenapa", "mengapa", "alasan", "sebab", "diagnosa", "diagnose",
+            "analisis", "analysis", "bukti", "evidence",
         )
         topic_markers = (
             "rename", "renaming", "nama", "r2", "zip", "file", "upload",
@@ -479,6 +482,43 @@ class AIChat(commands.Cog):
             "steam", "sync", "sinkron", "server", "bot", "maintenance",
         )
         return any(marker in lower for marker in status_markers) and any(marker in lower for marker in topic_markers)
+
+    async def _append_r2_diagnostic_if_needed(self, lines: list[str], text: str) -> bool:
+        if not getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_ENABLED", True):
+            return False
+        if not self._wants_r2_rename_reason(text):
+            return False
+        if not getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_ON_WHY", True):
+            return False
+
+        timeout = max(2.0, float(getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_TIMEOUT_SECONDS", 25) or 25))
+        try:
+            diag = await asyncio.wait_for(
+                diagnose_r2_rename_leftovers_async(
+                    prefix=bot_config.R2_MAINTENANCE_PREFIX,
+                    sample_limit=getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_LIMIT", 500),
+                    use_inventory_cache=getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_USE_CACHE", True),
+                    live_scan_fallback=getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_LIVE_FALLBACK", True),
+                    live_scan_limit=getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_LIVE_SCAN_LIMIT", 1000),
+                    target_exists_check_limit=getattr(bot_config, "AI_CHAT_R2_DIAGNOSTIC_TARGET_EXISTS_CHECKS", 100),
+                ),
+                timeout=timeout,
+            )
+            setattr(self.bot, "last_r2_rename_diagnostic", diag)
+            lines.append("")
+            lines.extend(format_r2_rename_diagnostic(diag))
+            return True
+        except asyncio.TimeoutError:
+            lines.append("")
+            lines.append("**Diagnostic sisa rename R2**")
+            lines.append(f"- Diagnostic read-only melewati timeout `{timeout:.0f}s`, jadi saya hentikan agar chat tetap responsif.")
+            lines.append("- Naikkan `AI_CHAT_R2_DIAGNOSTIC_TIMEOUT_SECONDS` atau turunkan `AI_CHAT_R2_DIAGNOSTIC_LIMIT` kalau perlu.")
+            return True
+        except Exception as exc:
+            lines.append("")
+            lines.append("**Diagnostic sisa rename R2**")
+            lines.append(f"- Diagnostic gagal: `{sanitize_text(str(exc))[:350]}`")
+            return True
 
     async def _direct_status_reply(self, text: str) -> str:
         lower = sanitize_text(text).lower()
@@ -527,11 +567,13 @@ class AIChat(commands.Cog):
                 if inventory.get("truncated"):
                     lines.append("- Catatan: scan R2 terpotong, angka real bisa lebih tinggi.")
                 if self._wants_r2_rename_reason(text):
-                    self._append_r2_rename_reason(
-                        lines,
-                        inventory=inventory,
-                        summary=getattr(self.bot, "last_r2_maintenance_summary", None),
-                    )
+                    diagnostic_added = await self._append_r2_diagnostic_if_needed(lines, text)
+                    if not diagnostic_added:
+                        self._append_r2_rename_reason(
+                            lines,
+                            inventory=inventory,
+                            summary=getattr(self.bot, "last_r2_maintenance_summary", None),
+                        )
 
             r2_fields = self._summary_fields(getattr(self.bot, "last_r2_maintenance_summary", None))
             if r2_fields:
