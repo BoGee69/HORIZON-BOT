@@ -289,6 +289,17 @@ AI_CHAT_MODEL = os.getenv(
 AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "30"))
 AI_CHAT_MEMORY_PERSIST = parse_bool(os.getenv("AI_CHAT_MEMORY_PERSIST", "true"), True)
 AI_CHAT_MEMORY_PATH = env_path("AI_CHAT_MEMORY_PATH", DATA_DIR / "ai_chat_memory.json")
+
+# TriadBot learning memory. This does not fine-tune the model; it stores owner/admin
+# corrections as persistent routing/prompt rules so repeated mistakes can be fixed over time.
+AI_LEARNING_ENABLED = parse_bool(os.getenv("AI_LEARNING_ENABLED", "true"), True)
+AI_LEARNING_MEMORY_PATH = env_path("AI_LEARNING_MEMORY_PATH", DATA_DIR / "ai_learning_memory.sqlite3")
+AI_LEARNING_ALLOW_ADMIN = parse_bool(os.getenv("AI_LEARNING_ALLOW_ADMIN", "false"), False)
+AI_LEARNING_MAX_RULES = int(os.getenv("AI_LEARNING_MAX_RULES", "300"))
+AI_LEARNING_PROMPT_RULE_LIMIT = int(os.getenv("AI_LEARNING_PROMPT_RULE_LIMIT", "8"))
+AI_LEARNING_MIN_MATCH_SCORE = float(os.getenv("AI_LEARNING_MIN_MATCH_SCORE", "0.12"))
+AI_LEARNING_SUGGEST_PATCH_AFTER_MISTAKES = int(os.getenv("AI_LEARNING_SUGGEST_PATCH_AFTER_MISTAKES", "3"))
+
 AI_CHAT_TEMPERATURE = float(os.getenv("AI_CHAT_TEMPERATURE", "0.25"))
 AI_CHAT_MAX_REPLY_CHARS = int(os.getenv("AI_CHAT_MAX_REPLY_CHARS", "1800"))
 AI_CHAT_RESPONSE_TIMEOUT_SECONDS = float(os.getenv("AI_CHAT_RESPONSE_TIMEOUT_SECONDS", "60"))

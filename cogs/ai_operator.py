@@ -23,6 +23,7 @@ import config as bot_config
 from config import COLOR_ERROR, COLOR_INFO, COLOR_SUCCESS, COLOR_WARNING
 from utils.ai_access import resolve_ai_operator_access
 from utils.ai_caretaker import AICaretakerResult, sanitize_data, sanitize_text
+from utils.ai_memory import route_hint_from_learning
 from utils.attachments import (
     clear_recent_attachment_text,
     get_recent_attachment_text,
@@ -727,6 +728,12 @@ class AIOperator(commands.Cog):
         lower = re.sub(r"\s+", " ", sanitize_text(text).strip().lower()).strip(" `.,!;:")
         if not lower:
             return False
+
+        try:
+            if route_hint_from_learning(text) == "read_only":
+                return True
+        except Exception:
+            pass
 
         # Explicit imperative/action phrases still belong to the operator.
         # The key difference is: "berapa yang belum rapi" is a question,

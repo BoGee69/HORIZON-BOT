@@ -22,6 +22,7 @@ import config as bot_config
 from utils.ai_caretaker import call_ai_provider, sanitize_data, sanitize_text
 from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
+from utils.ai_memory import relevant_learning_rules_for_prompt
 
 
 def _local_time_context() -> dict[str, str]:
@@ -833,6 +834,11 @@ async def build_chat_prompt(
         recent_events=recent_events,
     )
 
+    learning_rules = relevant_learning_rules_for_prompt(
+        message,
+        limit=getattr(bot_config, "AI_LEARNING_PROMPT_RULE_LIMIT", 8),
+    )
+
     security_cog = getattr(bot, "ai_security", None)
     if security_cog and hasattr(security_cog, "snapshot"):
         try:
@@ -861,6 +867,7 @@ async def build_chat_prompt(
             "r2_storage.pending_rename": "ZIPs still needing a proper name",
             "r2_storage.naming_completion_pct": "% of ZIPs that have proper game names",
         },
+        "learned_owner_corrections": learning_rules,
     })
 
     context_limit = max(
@@ -909,6 +916,22 @@ async def build_chat_prompt(
             + "\n\n"
         )
 
+    learning_block = ""
+    if learning_rules and access_level in {"owner", "admin"}:
+        learning_lines = []
+        for item in learning_rules[: int(getattr(bot_config, "AI_LEARNING_PROMPT_RULE_LIMIT", 8) or 8)]:
+            route = sanitize_text(str(item.get("route_hint") or "context_rule"))
+            lesson = sanitize_text(str(item.get("lesson") or ""))[:700]
+            topic = sanitize_text(str(item.get("topic") or "general"))
+            if lesson:
+                learning_lines.append(f"  • [{topic}/{route}] {lesson}")
+        if learning_lines:
+            learning_block = (
+                "LEARNED OWNER CORRECTION RULES — apply these before generic keyword assumptions:\n"
+                + "\n".join(learning_lines)
+                + "\n\n"
+            )
+
     return (
         "You are TriadBot — a Discord bot that permanently lives inside the TriadGames server "
         "and manages its Cloudflare R2 cloud storage. You are NOT an outside assistant. "
@@ -946,6 +969,7 @@ async def build_chat_prompt(
         f"Required reply language: {reply_language}. "
         "Match the latest user message language exactly. This overrides all other signals.\n\n"
         f"{alert_block}"
+        f"{learning_block}"
         "Hard boundaries I always respect:\n"
         "• I cannot execute actions directly — all changes go through operator approval.\n"
         "• I cannot see raw secrets, tokens, passwords, or API keys, and will never ask for them.\n"

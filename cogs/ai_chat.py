@@ -18,6 +18,7 @@ from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
 from utils.ai_access import resolve_ai_chat_access
 from utils.ai_brain import direct_assistant_reply
+from utils.ai_memory import get_learning_memory, route_hint_from_learning
 from utils.attachments import read_message_attachments, store_attachment_text
 from utils.diagnostics import collect_health
 from utils.r2_inventory import get_r2_inventory_snapshot_async
@@ -31,6 +32,7 @@ class AIChat(commands.Cog):
         self.memory = AIChatMemory(bot_config.AI_CHAT_MAX_HISTORY)
         self._locks: dict[int, asyncio.Lock] = {}
         self._last_reply_at: dict[int, float] = {}
+        self.learning = get_learning_memory()
 
     async def _access_for(self, user_id: int) -> tuple[bool, str, str]:
         return await resolve_ai_chat_access(self.bot, user_id)
@@ -53,6 +55,53 @@ class AIChat(commands.Cog):
         chunks = [clean[i : i + 1900] for i in range(0, len(clean), 1900)]
         for chunk in chunks[:3]:
             await message.channel.send(chunk, allowed_mentions=discord.AllowedMentions.none())
+
+    def _learning_allowed_for(self, access_level: str) -> bool:
+        if not getattr(bot_config, "AI_LEARNING_ENABLED", True):
+            return False
+        level = sanitize_text(access_level).lower().strip()
+        if level == "owner":
+            return True
+        return level == "admin" and bool(getattr(bot_config, "AI_LEARNING_ALLOW_ADMIN", False))
+
+    def _maybe_store_learning_correction(self, user_id: int, access_level: str, text: str) -> str | None:
+        if not self._learning_allowed_for(access_level):
+            return None
+        memory = self.learning or get_learning_memory()
+        if not memory:
+            return None
+        if not memory.correction_signal(text):
+            return None
+
+        ok, status, rule = memory.save_correction(
+            correction_text=text,
+            source_user_id=user_id,
+            history=self.memory.snapshot(user_id),
+            scope="owner" if sanitize_text(access_level).lower().strip() == "owner" else "admin",
+        )
+        if not ok:
+            # Only answer as learning feedback when the user clearly tried to teach TriadBot.
+            lower = sanitize_text(text).lower()
+            if any(word in lower for word in ("ingat", "remember", "catat", "simpan", "ke depannya", "kedepannya")):
+                return f"Saya belum menyimpan rule itu. Alasan: {sanitize_text(status)[:300]}"
+            return None
+
+        if rule is None:
+            return "Paham. Saya simpan koreksi itu sebagai learning memory."
+
+        route_note = ""
+        if rule.route_hint == "read_only":
+            route_note = "\nEfek routing: pesan serupa akan dianggap pertanyaan/status read-only, bukan proposal/action."
+        elif rule.route_hint == "action":
+            route_note = "\nEfek routing: pesan serupa bisa diarahkan ke action/proposal kalau aman dan whitelisted."
+
+        return (
+            "Paham. Saya simpan sebagai learning memory.\n"
+            f"- Topic: `{rule.topic}`\n"
+            f"- Rule ID: `{rule.id}`\n"
+            f"- Pelajaran: {rule.lesson[:700]}"
+            f"{route_note}"
+        )
 
     def _is_reply_to_bot(self, message: discord.Message) -> bool:
         reference = getattr(message, "reference", None)
@@ -264,6 +313,11 @@ class AIChat(commands.Cog):
             return False
         if AIChat._looks_like_time_question(text):
             return False
+        try:
+            if route_hint_from_learning(text) == "read_only":
+                return True
+        except Exception:
+            pass
 
         # Explicit run/change intents must stay with the operator, not status chat.
         action_markers = (
@@ -438,6 +492,12 @@ class AIChat(commands.Cog):
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
                 return
+            github_codex = getattr(self.bot, "ai_github_codex", None)
+            if github_codex:
+                codex_check = getattr(github_codex, "is_github_codex_command_for_user", None)
+                if callable(codex_check) and await codex_check(message.content, message.author.id):
+                    return
+
             operator = getattr(self.bot, "ai_operator", None)
             if operator:
                 role_aware = getattr(operator, "is_operator_command_for_user", None)
@@ -483,15 +543,28 @@ class AIChat(commands.Cog):
                             allowed_mentions=discord.AllowedMentions.none(),
                         )
                         return
-                    direct_reply = None
+
+                    learned_reply = None
                     if is_dm and access_allowed:
+                        learned_reply = self._maybe_store_learning_correction(
+                            message.author.id,
+                            access_level,
+                            user_message,
+                        )
+
+                    direct_reply = None
+                    if learned_reply is None and is_dm and access_allowed:
                         direct_reply = await direct_assistant_reply(
                             self.bot,
                             user_message,
                             access_level=access_level,
                         )
 
-                    if direct_reply is not None:
+                    if learned_reply is not None:
+                        reply = learned_reply
+                        self.memory.append(message.author.id, "user", user_message)
+                        self.memory.append(message.author.id, "assistant", reply)
+                    elif direct_reply is not None:
                         reply = direct_reply
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
