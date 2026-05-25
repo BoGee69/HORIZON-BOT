@@ -716,7 +716,49 @@ class AIOperator(commands.Cog):
 
         return None, {}
 
+    @staticmethod
+    def _looks_like_readonly_status_question(text: str) -> bool:
+        """Return True for read-only/status questions that must not create proposals.
+
+        This keeps natural owner follow-ups like
+        "berapa zip yang belum rapi?" or "warning terakhir apa?" in chat/status mode
+        instead of turning them into maintenance approvals.
+        """
+        lower = re.sub(r"\s+", " ", sanitize_text(text).strip().lower()).strip(" `.,!;:")
+        if not lower:
+            return False
+
+        # Explicit imperative/action phrases still belong to the operator.
+        # The key difference is: "berapa yang belum rapi" is a question,
+        # while "rapikan yang belum rapi" is an action request.
+        explicit_action_starts = (
+            "approve", "reject", "setuju", "tolak", "batal",
+            "jalankan", "jalanin", "run ", "start ", "mulai", "execute",
+            "lanjut", "lanjutkan", "continue", "proceed", "gas",
+            "rapikan", "rapihin", "bereskan", "beresin", "bersihkan",
+            "buat proposal", "minta approval", "create proposal", "request approval",
+            "sync ", "sinkronkan", "backup ", "deploy ",
+        )
+        if lower.startswith(explicit_action_starts):
+            return False
+
+        question_markers = (
+            "berapa", "jumlah", "total", "sisa", "status", "progres", "progress",
+            "cek", "check", "lihat", "show", "ada apa", "apa ada", "apa yang",
+            "warning", "error", "kenapa", "mengapa", "gimana", "bagaimana",
+            "sudah", "udah", "belum", "yang belum", "terakhir", "sekarang",
+        )
+        domain_markers = (
+            "r2", "rename", "renaming", "zip", "appid", "nama", "file",
+            "storage", "bucket", "maintenance", "opendir", "open dir",
+            "database", "db", "sqlite", "steam", "sync", "server", "bot",
+            "security", "caretaker", "warning", "error", "alert",
+        )
+        return any(marker in lower for marker in question_markers) and any(marker in lower for marker in domain_markers)
+
     def _parse_action_request(self, text: str) -> Optional[str]:
+        if self._looks_like_readonly_status_question(text):
+            return None
         lower = sanitize_text(text).lower()
         has_run_intent = any(
             phrase in lower
@@ -837,6 +879,8 @@ class AIOperator(commands.Cog):
             return False
         if self.is_operator_control_text(text):
             return True
+        if self._looks_like_readonly_status_question(text):
+            return False
         if user_id in self._drafts:
             return True
         proposal, updates = self._parse_pending_update(text, user_id)
@@ -850,6 +894,8 @@ class AIOperator(commands.Cog):
             return False
         if self.is_operator_control_text(text):
             return True
+        if self._looks_like_readonly_status_question(text):
+            return False
         if user_id in self._drafts:
             return True
         proposal, updates = self._parse_pending_update(text, user_id)
@@ -2033,6 +2079,8 @@ class AIOperator(commands.Cog):
     def _looks_like_contextual_followup_request(text: str) -> bool:
         lower = sanitize_text(text).strip().lower()
         if not lower:
+            return False
+        if AIOperator._looks_like_readonly_status_question(text):
             return False
         followup_words = (
             "lanjut", "lanjutkan", "continue", "proceed", "gas",
