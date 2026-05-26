@@ -194,7 +194,11 @@ OPENDIR_NOTIFY_ON_SUCCESS = parse_bool(os.getenv("OPENDIR_NOTIFY_ON_SUCCESS", "f
 OPENDIR_FLATTEN_R2_KEYS = parse_bool(os.getenv("OPENDIR_FLATTEN_R2_KEYS", "false"), False)
 OPENDIR_ALLOWED_EXTENSIONS = parse_csv_set(os.getenv("OPENDIR_ALLOWED_EXTENSIONS", "zip,manifest,lua,acf,vdf"))
 OPENDIR_ALLOWED_HOSTS = {x.strip().lower() for x in os.getenv("OPENDIR_ALLOWED_HOSTS", "").split(",") if x.strip()}
-OPENDIR_USER_AGENT = os.getenv("OPENDIR_USER_AGENT", "TriadBot OpenDirSync").strip()
+OPENDIR_USER_AGENT = os.getenv(
+    "OPENDIR_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+).strip()
 
 OPENDIR_STATE_PATH = env_path("OPENDIR_STATE_PATH", DATA_DIR / "opendir_sync_state.json")
 OPENDIR_INDEX_SCAN_ENABLED = parse_bool(os.getenv("OPENDIR_INDEX_SCAN_ENABLED", "true"), True)

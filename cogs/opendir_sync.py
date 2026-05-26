@@ -64,6 +64,11 @@ log = logging.getLogger(__name__)
 
 _SENTINEL = object()
 _DEFAULT_CHUNK_SIZE = 1024 * 1024
+_DEFAULT_OPENDIR_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36"
+)
 _APPID_RE = re.compile(r"(?<!\d)(\d{2,10})(?!\d)")
 _HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
 _INVALID_FILENAME_CHARS = '<>:"/\\|?*'
@@ -137,6 +142,10 @@ def _safe_metadata_value(value: Any, *, max_len: int = 180) -> str:
 
 class OpenDirSyncError(RuntimeError):
     """Raised for recoverable sync failures."""
+
+    def __init__(self, message: str, *, status: int | None = None):
+        super().__init__(message)
+        self.status = status
 
 
 class QueueReadStream:
@@ -371,9 +380,18 @@ class OpenDirSync(commands.Cog):
         self.interval_seconds = max(0.1, _cfg_float("OPENDIR_INTERVAL_HOURS", 6.0)) * 3600
         self.short_sleep_seconds = max(1.0, _cfg_float("OPENDIR_SHORT_SLEEP_SECONDS", 30.0))
         self.start_delay = max(0.0, _cfg_float("OPENDIR_START_DELAY_SECONDS", 20.0))
-        self.user_agent = _cfg_str("OPENDIR_USER_AGENT", "TriadBot OpenDirSync/1.0")
+        self.user_agent = _cfg_str("OPENDIR_USER_AGENT", _DEFAULT_OPENDIR_USER_AGENT)
+        self.request_headers = {
+            "User-Agent": self.user_agent,
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,"
+                "application/zip,application/octet-stream,*/*;q=0.8"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "no-cache",
+        }
 
-        self.source_patterns = _cfg_list(
+        self.source_patterns = self._prioritize_source_patterns(_cfg_list(
             "OPENDIR_SOURCE_PATTERNS",
             # Try common Open Directory layouts. The depot source normally exposes
             # files under Database/, while some mirrors expose files at root.
@@ -385,7 +403,7 @@ class OpenDirSync(commands.Cog):
             "{safe_name}.{ext},"
             "{safe_name} ({appid}).{ext},"
             "Database/{safe_name} ({appid}).{ext}",
-        )
+        ))
 
         self.request_timeout = aiohttp.ClientTimeout(
             total=max(5.0, _cfg_float("OPENDIR_REQUEST_TIMEOUT_SECONDS", 300.0)),
@@ -558,7 +576,7 @@ class OpenDirSync(commands.Cog):
             async with aiohttp.ClientSession(
                 timeout=self.request_timeout,
                 connector=connector,
-                headers={"User-Agent": self.user_agent},
+                headers=self.request_headers,
                 raise_for_status=False,
             ) as session:
 
@@ -1092,6 +1110,16 @@ class OpenDirSync(commands.Cog):
 
         try:
             html = await self._fetch_text(session, directory_url)
+        except OpenDirSyncError as exc:
+            if exc.status in {401, 403} and self.direct_probe_enabled:
+                log.warning(
+                    "OpenDir index scan skipped at %s due to HTTP %s; continuing with direct probes",
+                    self._redact_url(directory_url),
+                    exc.status,
+                )
+                return []
+            summary.add_error(f"index scan failed at {self._redact_url(directory_url)}: {exc!r}")
+            return []
         except Exception as exc:
             summary.add_error(f"index scan failed at {self._redact_url(directory_url)}: {exc!r}")
             return []
@@ -1152,6 +1180,18 @@ class OpenDirSync(commands.Cog):
                     files.extend(item)
 
         return files
+
+    @staticmethod
+    def _prioritize_source_patterns(patterns: list[str]) -> list[str]:
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for pattern in ["{appid}.{ext}", "Database/{appid}.{ext}", *patterns]:
+            normalized = str(pattern or "").strip()
+            key = normalized.lower()
+            if normalized and key not in seen:
+                ordered.append(normalized)
+                seen.add(key)
+        return ordered
 
     def _build_remote_index(self, files: list[RemoteFile]) -> dict[str, list[RemoteFile]]:
         index: dict[str, list[RemoteFile]] = {}
@@ -1219,12 +1259,13 @@ class OpenDirSync(commands.Cog):
 
     def _format_source_pattern(self, pattern: str, game: GameRecord, ext: str, target_filename: str) -> str:
         try:
+            clean_ext = ext.lower().lstrip(".")
             return pattern.format(
                 appid=game.appid,
                 id=game.appid,
                 name=game.name,
                 safe_name=game.safe_name,
-                ext=ext,
+                ext=clean_ext,
                 target_filename=target_filename,
             ).strip().lstrip("/")
         except Exception:
@@ -1309,7 +1350,10 @@ class OpenDirSync(commands.Cog):
     async def _fetch_text(self, session: aiohttp.ClientSession, url: str) -> str:
         async with session.get(url, allow_redirects=True) as response:
             if response.status >= 400:
-                raise OpenDirSyncError(f"GET {self._redact_url(url)} failed with HTTP {response.status}")
+                raise OpenDirSyncError(
+                    f"GET {self._redact_url(url)} failed with HTTP {response.status}",
+                    status=response.status,
+                )
             return await response.text(errors="replace")
 
     async def _upload_if_needed(
