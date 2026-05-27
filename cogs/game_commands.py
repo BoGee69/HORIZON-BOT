@@ -121,6 +121,7 @@ class GameCommands(commands.Cog):
         limit_status = None
 
         if not is_limit_exempt:
+            # check_and_consume is atomic — no race window between check and consume
             allowed, _, _ = self.gen_limiter.check(interaction.user.id)
             if not allowed:
                 if ALERT_ON_LIMIT_HIT:
@@ -182,7 +183,13 @@ class GameCommands(commands.Cog):
             await asyncio.to_thread(self.db.mark_as_starred, target_id, game_info["name"])
             await asyncio.to_thread(self.db.save)
             if not is_limit_exempt:
-                limit_status = self.gen_limiter.consume(interaction.user.id)
+                allowed, used, remaining = self.gen_limiter.check_and_consume(interaction.user.id)
+                if allowed:
+                    limit_status = (used, remaining)
+                else:
+                    # Edge case: limit was hit between initial check and here (e.g. rapid concurrent requests)
+                    log.info("/gen: limit hit at consume time for user %s — download already shown, skipping followup", interaction.user.id)
+                    limit_status = None
             try:
                 await self._send_download_followup(interaction, game_info, dl)
                 if limit_status:

@@ -45,7 +45,7 @@ class GitHubDBBackupCog(commands.Cog):
             db_path=Path(SQLITE_PATH),
             github_db_path=GITHUB_DB_PATH,
             metadata_path=GITHUB_DB_METADATA_PATH,
-            session=getattr(bot, "session", None),
+            session=None,  # injected in cog_load after bot.session is ready
             timeout_seconds=GITHUB_BACKUP_TIMEOUT_SECONDS,
             chunk_size_mb=GITHUB_BACKUP_CHUNK_SIZE_MB,
         )
@@ -54,6 +54,11 @@ class GitHubDBBackupCog(commands.Cog):
         self.backup_loop.change_interval(hours=hours)
 
     async def cog_load(self) -> None:
+        # bot.session is created in setup_hook, which runs before cog_load — safe to inject here
+        if getattr(self.bot, "session", None) and not self.bot.session.closed:
+            self.backup_client.session = self.bot.session
+            log.debug("GitHub DB backup: injected bot.session into backup_client")
+
         if not GITHUB_BACKUP_ENABLED:
             log.info("GitHub DB backup cog loaded but disabled")
             return

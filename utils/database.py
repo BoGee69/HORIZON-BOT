@@ -105,6 +105,7 @@ class DatabaseManager:
         appid_str = str(appid)
         game = self.get_game(appid_str)
         if not game:
+            log.warning("update_game called for unknown appid=%s — entry does not exist in DB", appid_str)
             return False
 
         if "has_file" in kwargs and "file" not in kwargs:

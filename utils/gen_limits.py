@@ -45,6 +45,23 @@ class DailyGenLimiter:
             remaining = max(0, self.limit - used)
             return used < self.limit, used, remaining
 
+    def check_and_consume(self, user_id: int) -> Tuple[bool, int, int]:
+        """Atomically check the limit and consume one use if allowed.
+
+        Returns (allowed, used_after, remaining_after).
+        If not allowed, counts are not modified and remaining is 0.
+        """
+        with self._lock:
+            self._rollover_if_needed()
+            key = str(user_id)
+            used = self.counts.get(key, 0)
+            if used >= self.limit:
+                return False, used, 0
+            used += 1
+            self.counts[key] = used
+            self.save()
+            return True, used, max(0, self.limit - used)
+
     def get_usage(self, user_id: int) -> Tuple[int, int]:
         with self._lock:
             self._rollover_if_needed()
