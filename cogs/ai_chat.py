@@ -17,7 +17,7 @@ import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
 from utils.ai_chat import AIChatMemory, chat_with_triadbot
 from utils.ai_access import resolve_ai_chat_access
-from utils.ai_brain import direct_assistant_reply
+from utils.ai_brain import direct_assistant_reply, looks_like_time_question as _brain_time_q, time_reply as _brain_time_reply
 from utils.ai_memory import get_learning_memory, route_hint_from_learning
 from utils.attachments import read_message_attachments, store_attachment_text
 from utils.diagnostics import collect_health
@@ -182,106 +182,6 @@ class AIChat(commands.Cog):
                 clean,
             )
         )
-
-    @staticmethod
-    def _looks_like_time_question(text: str) -> bool:
-        lower = re.sub(r"\s+", " ", sanitize_text(text).lower()).strip()
-        if not lower:
-            return False
-        time_words = (
-            "jam", "pukul", "waktu", "tanggal", "hari", "tgl",
-            "time", "clock", "date", "today", "sekarang hari", "hari ini",
-        )
-        question_words = (
-            "berapa", "apa", "kapan", "sekarang", "now", "current", "today",
-            "hari ini", "tanggal berapa", "jam berapa",
-        )
-        return any(word in lower for word in time_words) and any(word in lower for word in question_words)
-
-    @staticmethod
-    def _local_now() -> tuple[datetime, str]:
-        tz_name = getattr(bot_config, "BOT_TIMEZONE", "Asia/Jakarta") or "Asia/Jakarta"
-        try:
-            tz = ZoneInfo(tz_name)
-        except ZoneInfoNotFoundError:
-            tz_name = "Asia/Jakarta"
-            tz = ZoneInfo(tz_name)
-        return datetime.now(tz), tz_name
-
-    def _time_reply(self) -> str:
-        now, tz_name = self._local_now()
-        return (
-            f"Sekarang `{now:%H:%M:%S}` ({tz_name}).\n"
-            f"Tanggal: `{now:%A, %d %B %Y}`."
-        )
-
-    def _wants_zip_name_stats(self, text: str, user_id: int) -> bool:
-        lower = sanitize_text(text).lower()
-        if self._looks_like_time_question(text):
-            return False
-        has_count = any(word in lower for word in ("berapa", "total", "how many", "count", "jumlah"))
-        has_name_update = any(
-            word in lower
-            for word in ("nama", "name", "update", "updated", "rename", "renamed", "ganti")
-        )
-        if "zip" in lower and has_count and has_name_update:
-            return True
-        if has_count and any(word in lower for word in ("sekarang", "current", "now", "saat ini")):
-            recent = " ".join(item["text"] for item in self.memory.snapshot(user_id)[-4:]).lower()
-            if any(marker in recent for marker in ("zip", "r2", "rename", "nama game", "appid")):
-                return True
-            # In owner DM, short follow-ups like "totalnya sekarang berapa?"
-            # usually refer to the active R2/ZIP maintenance topic.
-            return "total" in lower or "berapa" in lower
-        return False
-
-    async def _zip_name_stats_reply(self) -> str:
-        timeout = max(1.0, float(getattr(bot_config, "AI_CHAT_R2_STATS_TIMEOUT_SECONDS", 8) or 8))
-        try:
-            inventory = await asyncio.wait_for(
-                get_r2_inventory_snapshot_async(
-                    prefix=bot_config.R2_MAINTENANCE_PREFIX,
-                    cache_seconds=0,
-                    max_pages=bot_config.AI_CHAT_R2_STATS_MAX_PAGES,
-                ),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            return (
-                "Saya belum bisa memverifikasi jumlah ZIP langsung dari R2 sekarang.\n"
-                f"Scan R2 melewati timeout `{timeout:.0f}s`, jadi saya hentikan agar chat tetap responsif."
-            )
-        if inventory.get("error"):
-            return (
-                "Saya belum bisa memverifikasi jumlah nama ZIP langsung dari R2 saat ini.\n"
-                f"Error: `{sanitize_text(inventory.get('error'))[:400]}`"
-            )
-
-        total_zip = int(inventory.get("zip_objects_counted") or 0)
-        named_zip = int(inventory.get("named_zip_objects_counted") or 0)
-        appid_only = int(inventory.get("appid_only_zip_objects_counted") or 0)
-        unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
-        remaining = appid_only + unknown
-        last_summary = getattr(self.bot, "last_r2_maintenance_summary", None)
-        last_renamed = getattr(last_summary, "rename_applied", None)
-
-        lines = [
-            "Saya hitung langsung dari R2, bukan dari total katalog SQLite:",
-            "",
-            f"- Total ZIP di R2: `{total_zip:,}`",
-            f"- ZIP yang sudah format `Nama Game (AppID).zip`: `{named_zip:,}`",
-            f"- ZIP yang masih AppID-only: `{appid_only:,}`",
-            f"- ZIP dengan format belum dikenali: `{unknown:,}`",
-            f"- Estimasi ZIP yang masih perlu dirapikan: `{remaining:,}`",
-            f"- Total rename efektif di R2 sekarang: `{named_zip:,}`",
-        ]
-        if last_renamed is not None:
-            lines.append(f"- Rename applied pada run maintenance terakhir: `{int(last_renamed):,}`")
-        if inventory.get("truncated"):
-            lines.append("")
-            lines.append("Catatan: scan R2 terpotong karena batas halaman, jadi angka ini belum full bucket.")
-        return "\n".join(lines)
-
 
     @staticmethod
     def _summary_fields(summary) -> dict[str, str]:
@@ -451,7 +351,7 @@ class AIChat(commands.Cog):
         lower = sanitize_text(text).lower()
         if not lower:
             return False
-        if AIChat._looks_like_time_question(text):
+        if _brain_time_q(text):
             return False
         try:
             if route_hint_from_learning(text) == "read_only":
@@ -532,12 +432,43 @@ class AIChat(commands.Cog):
             lines.append(f"- Diagnostic gagal: `{sanitize_text(str(exc))[:350]}`")
             return True
 
-    async def _direct_status_reply(self, text: str) -> str:
+    async def _direct_status_reply(self, text: str, *, language: str = "Indonesian") -> str:
         lower = sanitize_text(text).lower()
         wants_r2 = any(word in lower for word in ("r2", "rename", "renaming", "zip", "file", "maintenance", "storage", "nama"))
         wants_opendir = any(word in lower for word in ("opendir", "open dir", "upload", "uploaded", "download", "sync file"))
         wants_steam = any(word in lower for word in ("steam", "database", "db", "sqlite", "catalog", "katalog", "sync", "sinkron"))
-        wants_server = any(word in lower for word in ("server", "bot", "status", "health", "sehat"))
+        wants_github = any(word in lower for word in ("github", "backup", "db backup", "codex", "git"))
+        wants_server = any(word in lower for word in ("server", "bot", "status", "health", "sehat", "pulse", "kondisi"))
+
+        # Labels bilingüe
+        if language == "English":
+            lbl_r2 = "**R2 / ZIP rename**"
+            lbl_opendir = "**OpenDir sync (last)**"
+            lbl_steam = "**Steam DB sync (last)**"
+            lbl_github = "**GitHub DB backup (last)**"
+            lbl_server = "**Bot / server health**"
+            lbl_no_r2 = "- No OpenDir sync summary in runtime memory yet."
+            lbl_no_steam = "- No Steam DB sync summary in runtime memory yet."
+            lbl_no_github = "- No GitHub backup summary in runtime memory yet."
+            lbl_overall = "Overall"
+            lbl_catalog = "SQLite catalog"
+            lbl_with_files = "with files"
+            lbl_checks = "Failed checks"
+            lbl_none = "none"
+        else:
+            lbl_r2 = "**R2 / rename ZIP**"
+            lbl_opendir = "**OpenDir sync terakhir**"
+            lbl_steam = "**Steam DB sync terakhir**"
+            lbl_github = "**GitHub DB backup terakhir**"
+            lbl_server = "**Bot / server health**"
+            lbl_no_r2 = "- Belum ada ringkasan OpenDir sync di memori runtime ini."
+            lbl_no_steam = "- Belum ada ringkasan Steam DB sync di memori runtime ini."
+            lbl_no_github = "- Belum ada ringkasan GitHub backup di memori runtime ini."
+            lbl_overall = "Overall"
+            lbl_catalog = "SQLite catalog"
+            lbl_with_files = "with files"
+            lbl_checks = "Checks bermasalah"
+            lbl_none = "tidak ada"
 
         lines: list[str] = []
 
@@ -555,7 +486,8 @@ class AIChat(commands.Cog):
             except asyncio.TimeoutError:
                 inventory = {"error": f"R2 inventory timeout setelah {timeout:.0f}s"}
 
-            lines.append("**R2 / rename ZIP**")
+            lines.append("")
+            lines.append(lbl_r2)
             if inventory.get("error"):
                 lines.append(f"- Status inventory: error — `{sanitize_text(inventory.get('error'))[:300]}`")
             else:
@@ -565,12 +497,18 @@ class AIChat(commands.Cog):
                 unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
                 pending = appid_only + unknown
                 pct = round(named_zip / total_zip * 100, 1) if total_zip else 0.0
-                lines.extend([
-                    f"Intinya: masih ada `{pending:,}` ZIP yang belum rapi dari total `{total_zip:,}`.",
-                    f"Yang sudah rapi `{named_zip:,}` (`{pct}%`). Sisanya: AppID-only `{appid_only:,}`, format tidak dikenali `{unknown:,}`.",
-                ])
+                if language == "English":
+                    lines.extend([
+                        f"Still `{pending:,}` ZIPs not properly named out of `{total_zip:,}` total.",
+                        f"Properly named: `{named_zip:,}` (`{pct}%`). Remaining: appid-only `{appid_only:,}`, unknown format `{unknown:,}`.",
+                    ])
+                else:
+                    lines.extend([
+                        f"Intinya: masih ada `{pending:,}` ZIP yang belum rapi dari total `{total_zip:,}`.",
+                        f"Yang sudah rapi `{named_zip:,}` (`{pct}%`). Sisanya: AppID-only `{appid_only:,}`, format tidak dikenali `{unknown:,}`.",
+                    ])
                 if inventory.get("truncated"):
-                    lines.append("Catatan: scan R2 terpotong, jadi angka real bisa lebih tinggi.")
+                    lines.append("Catatan: scan R2 terpotong, jadi angka real bisa lebih tinggi." if language != "English" else "Note: R2 scan truncated, real count may be higher.")
                 if self._wants_r2_rename_reason(text):
                     diagnostic_added = await self._append_r2_diagnostic_if_needed(lines, text)
                     if not diagnostic_added:
@@ -583,7 +521,7 @@ class AIChat(commands.Cog):
             r2_fields = self._summary_fields(getattr(self.bot, "last_r2_maintenance_summary", None))
             if r2_fields and self._wants_detailed_answer(text):
                 lines.append("")
-                lines.append("**Run R2 maintenance terakhir**")
+                lines.append("**Run R2 maintenance terakhir**" if language != "English" else "**Last R2 maintenance run**")
                 lines.extend(self._pick_fields(r2_fields, (
                     "Mode", "Scanned", "Processed", "Rename applied",
                     "Total rename applied", "Errors",
@@ -592,7 +530,7 @@ class AIChat(commands.Cog):
         if wants_opendir:
             opendir_fields = self._summary_fields(getattr(self.bot, "last_opendir_sync_summary", None))
             lines.append("")
-            lines.append("**OpenDir sync terakhir**")
+            lines.append(lbl_opendir)
             if opendir_fields:
                 lines.extend(self._pick_fields(opendir_fields, (
                     "Mode", "Games total", "Games checked", "Cursor",
@@ -600,12 +538,12 @@ class AIChat(commands.Cog):
                     "Uploaded", "Skipped", "No match", "Cleaned files", "Errors", "Elapsed",
                 )))
             else:
-                lines.append("- Belum ada ringkasan OpenDir sync di memori runtime ini.")
+                lines.append(lbl_no_r2)
 
         if wants_steam:
             steam_fields = self._summary_fields(getattr(self.bot, "last_steam_db_sync_summary", None))
             lines.append("")
-            lines.append("**Steam DB sync terakhir**")
+            lines.append(lbl_steam)
             if steam_fields:
                 lines.extend(self._pick_fields(steam_fields, (
                     "Mode", "Fetched Steam apps", "Existing DB entries",
@@ -613,9 +551,20 @@ class AIChat(commands.Cog):
                     "Saved", "Errors",
                 )))
             else:
-                lines.append("- Belum ada ringkasan Steam DB sync di memori runtime ini.")
+                lines.append(lbl_no_steam)
 
-        if wants_server or len(lines) == 1:
+        if wants_github:
+            github_fields = self._summary_fields(getattr(self.bot, "last_github_db_backup_summary", None))
+            lines.append("")
+            lines.append(lbl_github)
+            if github_fields:
+                lines.extend(self._pick_fields(github_fields, (
+                    "Status", "Committed", "SHA", "Branch", "Elapsed", "Errors",
+                )))
+            else:
+                lines.append(lbl_no_github)
+
+        if wants_server or not lines:
             try:
                 health = await collect_health(self.bot)
             except Exception as exc:
@@ -623,20 +572,33 @@ class AIChat(commands.Cog):
             db = health.get("database") or {}
             checks = health.get("checks") or {}
             lines.append("")
-            lines.append("**Bot / server health**")
-            lines.append(f"- Overall: `{'OK' if health.get('ok') else 'DEGRADED'}`")
+            lines.append(lbl_server)
+            lines.append(f"- {lbl_overall}: `{'OK' if health.get('ok') else 'DEGRADED'}`")
             if db:
                 total_games = db.get("total_games", db.get("total", 0))
                 with_files = db.get("with_files", 0)
-                lines.append(f"- SQLite catalog: `{int(total_games or 0):,}` game, with files: `{int(with_files or 0):,}`")
+                lines.append(f"- {lbl_catalog}: `{int(total_games or 0):,}` game, {lbl_with_files}: `{int(with_files or 0):,}`")
             if checks:
                 bad = [name for name, ok in checks.items() if not ok]
-                lines.append("- Checks bermasalah: " + ("`" + "`, `".join(bad[:8]) + "`" if bad else "`tidak ada`"))
+                lines.append(f"- {lbl_checks}: " + ("`" + "`, `".join(bad[:8]) + "`" if bad else f"`{lbl_none}`"))
             if health.get("error"):
                 lines.append(f"- Error: `{health['error']}`")
 
-        max_lines = 80 if self._wants_detailed_answer(text) else 18
-        return "\n".join(lines[:max_lines])
+        # Fix #6: respect AI_CHAT_MAX_REPLY_CHARS, trim from bottom rather than hard line-cut
+        max_chars = max(500, int(getattr(bot_config, "AI_CHAT_MAX_REPLY_CHARS", 1800) or 1800))
+        result = "\n".join(line for line in lines if line is not None)
+        if len(result) > max_chars:
+            trimmed: list[str] = []
+            used = 0
+            for line in lines:
+                chunk = (line or "") + "\n"
+                if used + len(chunk) > max_chars - 30:
+                    trimmed.append("…")
+                    break
+                trimmed.append(line)
+                used += len(chunk)
+            result = "\n".join(trimmed)
+        return result.strip()
     async def _message_text_with_attachments(self, message: discord.Message) -> str:
         text = sanitize_text(message.content).strip()
         attachments = list(getattr(message, "attachments", []) or [])
@@ -759,16 +721,14 @@ class AIChat(commands.Cog):
                         reply = direct_reply
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
-                    elif is_dm and access_allowed and self._looks_like_time_question(user_message):
-                        reply = self._time_reply()
+                    elif is_dm and access_allowed and _brain_time_q(user_message):
+                        reply = _brain_time_reply()
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
                     elif is_dm and access_allowed and self._looks_like_readonly_status(user_message):
-                        reply = await self._direct_status_reply(user_message)
-                        self.memory.append(message.author.id, "user", user_message)
-                        self.memory.append(message.author.id, "assistant", reply)
-                    elif is_dm and access_allowed and self._wants_zip_name_stats(user_message, message.author.id):
-                        reply = await self._zip_name_stats_reply()
+                        from utils.ai_chat import _detect_reply_language
+                        lang = _detect_reply_language(user_message)
+                        reply = await self._direct_status_reply(user_message, language=lang)
                         self.memory.append(message.author.id, "user", user_message)
                         self.memory.append(message.author.id, "assistant", reply)
                     else:
@@ -789,6 +749,7 @@ class AIChat(commands.Cog):
                             ),
                             timeout=reply_timeout,
                         )
+                        # chat_with_triadbot already handles memory append internally
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(
@@ -799,11 +760,17 @@ class AIChat(commands.Cog):
                     )
             except asyncio.TimeoutError:
                 log.warning("AI chat response timed out")
-                await message.channel.send(
-                    "AI provider terlalu lama merespons, jadi saya hentikan request ini. "
-                    "Coba kirim ulang sebentar lagi.",
-                    allowed_mentions=discord.AllowedMentions.none(),
+                # Fix #8: preserve user message in history even on timeout
+                # so the next message has context of what was asked
+                self.memory.append(message.author.id, "user", user_message)
+                timeout_msg = (
+                    "AI provider took too long to respond, request cancelled. "
+                    "Please try again in a moment."
+                    if _brain_time_q(user_message) or "english" in sanitize_text(user_message).lower()
+                    else "AI provider terlalu lama merespons, jadi saya hentikan request ini. "
+                    "Coba kirim ulang sebentar lagi."
                 )
+                await message.channel.send(timeout_msg, allowed_mentions=discord.AllowedMentions.none())
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(
                         "warning",
