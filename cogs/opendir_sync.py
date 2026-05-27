@@ -1111,7 +1111,7 @@ class OpenDirSync(commands.Cog):
         try:
             html = await self._fetch_text(session, directory_url)
         except OpenDirSyncError as exc:
-            if exc.status in {401, 403} and self.direct_probe_enabled:
+            if self._is_nonfatal_index_status(exc.status) and self.direct_probe_enabled:
                 log.warning(
                     "OpenDir index scan skipped at %s due to HTTP %s; continuing with direct probes",
                     self._redact_url(directory_url),
@@ -1192,6 +1192,10 @@ class OpenDirSync(commands.Cog):
                 ordered.append(normalized)
                 seen.add(key)
         return ordered
+
+    @staticmethod
+    def _is_nonfatal_index_status(status: int | None) -> bool:
+        return status in {401, 402, 403, 429}
 
     def _build_remote_index(self, files: list[RemoteFile]) -> dict[str, list[RemoteFile]]:
         index: dict[str, list[RemoteFile]] = {}
