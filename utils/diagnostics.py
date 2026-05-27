@@ -121,11 +121,16 @@ async def collect_health(bot) -> dict[str, Any]:
             "steam_api_key_configured": bool(bot_config.STEAM_API_KEY.strip()),
         },
         "roles": {
-            "admin_role_ids": len(bot_config.ADMIN_ROLE_IDS),
-            "moderator_role_ids": len(bot_config.MODERATOR_ROLE_IDS),
+            # Counts of configured role IDs. count >= 1 = configured correctly.
+            # Single-ID env vars (e.g. ADMIN_ROLE_IDS=123456) are valid — parse_id_set handles them.
+            # Do NOT treat count=1 as a misconfiguration or flag it as WARNING.
+            "admin_role_ids_count": len(bot_config.ADMIN_ROLE_IDS),
+            "moderator_role_ids_count": len(bot_config.MODERATOR_ROLE_IDS),
             "moderator_role_required": bool(bot_config.MODERATOR_ROLE_REQUIRED),
-            "donor_role_ids": len(bot_config.DONOR_ROLE_IDS),
-            "booster_role_ids": len(bot_config.BOOSTER_ROLE_IDS),
+            "donor_role_ids_count": len(bot_config.DONOR_ROLE_IDS),
+            "booster_role_ids_count": len(bot_config.BOOSTER_ROLE_IDS),
+            "admin_role_ids_ok": len(bot_config.ADMIN_ROLE_IDS) >= 1,
+            "donor_role_ids_ok": len(bot_config.DONOR_ROLE_IDS) >= 1,
             "admin_role_names": sorted(bot_config.ADMIN_ROLE_NAMES),
             "moderator_role_names": sorted(bot_config.MODERATOR_ROLE_NAMES),
             "donor_role_names": sorted(bot_config.DONOR_ROLE_NAMES),
