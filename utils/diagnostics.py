@@ -175,6 +175,13 @@ async def collect_health(bot) -> dict[str, Any]:
             "blacklist_threshold": bot_config.R2_MAINTENANCE_BLACKLIST_THRESHOLD,
             "state_path": str(bot_config.R2_MAINTENANCE_STATE_PATH),
         },
+        "opendir_sync": {
+            "enabled": bool(getattr(bot_config, "OPENDIR_SYNC_ENABLED", False)),
+            "base_url_configured": bool(getattr(bot_config, "OPENDIR_BASE_URL", "")),
+            "interval_hours": getattr(bot_config, "OPENDIR_INTERVAL_HOURS", 6),
+            "max_games_per_run": getattr(bot_config, "OPENDIR_MAX_GAMES_PER_RUN", 500),
+            "last_summary": getattr(getattr(bot, "last_opendir_sync_summary", None), "to_fields", lambda: None)(),
+        },
         "ai_caretaker": {
             "enabled": bool(bot_config.AI_MAINTENANCE_ENABLED),
             "provider": bot_config.AI_MAINTENANCE_PROVIDER,

@@ -136,20 +136,42 @@ def _detect_reply_language(message: str) -> str:
 
 
 def _looks_like_unbacked_approval_reply(text: str) -> bool:
+    """
+    Returns True ONLY when the AI is actively fabricating a fake proposal card.
+    Must NOT trigger on status answers, progress reports, or explanations that
+    happen to mention words like 'proposal', 'ready', or 'setuju'.
+    """
     clean = sanitize_text(text).strip().lower()
-    if not clean or re.search(r"\b[a-f0-9]{6}\b", clean):
+    if not clean:
         return False
-    approval_terms = (
-        "proposal", "approval", "approve", "reject",
-        "persetujuan", "setuju", "konfirmasi",
+    # If a real 6-char hex Proposal ID is present → legitimate operator card, never block
+    if re.search(r"\b[a-f0-9]{6}\b", clean):
+        return False
+    # Only block when AI explicitly claims first-person authorship of a new proposal
+    # OR when AI is asking the user to type "approve"/"reject" without a real ID
+    first_person_fake = (
+        "saya telah menyiapkan proposal" in clean
+        or "saya membuat proposal" in clean
+        or "i have created a proposal" in clean
+        or "i have prepared a proposal" in clean
+        or "i've created a proposal" in clean
+        or "i've prepared a proposal" in clean
+        or "proposal has been submitted" in clean
+        or "proposal telah dikirim" in clean
+        or "proposal telah dibuat" in clean
+        or "proposal baru telah dibuat" in clean
     )
-    fake_claim_terms = (
-        "prepared", "ready", "submitted", "registered",
-        "created the proposal", "proposal is ready", "proposal perubahan",
-        "menyiapkan proposal", "membuat proposal", "saya telah menyiapkan",
-        "siap untuk", "siap dieksekusi", "silakan approve", "reply approve", "balas approve",
+    fake_approval_ui = (
+        "reply approve" in clean
+        or "balas approve" in clean
+        or "silakan approve" in clean
+        or "silakan ketik approve" in clean
+        or "ketik approve" in clean
+        or "type approve" in clean
+        or "to approve, reply" in clean
+        or "untuk menyetujui, balas" in clean
     )
-    return any(t in clean for t in approval_terms) and any(t in clean for t in fake_claim_terms)
+    return first_person_fake or fake_approval_ui
 
 
 def _operator_boundary_reply(user_message: str) -> str:
@@ -182,6 +204,7 @@ def _compact_health(health: dict[str, Any]) -> dict[str, Any]:
             "r2": health.get("r2"),
             "r2_maintenance": health.get("r2_maintenance"),
             "steam_db_sync": health.get("steam_db_sync"),
+            "opendir_sync": health.get("opendir_sync"),
             "server_admin": health.get("server_admin"),
             "ai_caretaker": health.get("ai_caretaker"),
             "ai_operator": health.get("ai_operator"),
@@ -668,6 +691,7 @@ def _build_operational_pulse(
     last_maintenance: Any,
     last_steam_sync: Any,
     recent_events: Any,
+    last_opendir_sync: Any = None,
 ) -> dict[str, Any]:
     uptime_raw = health.get("uptime_seconds") or 0
     checks = health.get("checks") or {}
@@ -702,6 +726,11 @@ def _build_operational_pulse(
         for f in fields[:3]:
             if isinstance(f, dict) and f.get("name") and f.get("value"):
                 recent_actions.append(f"Steam sync — {f['name']}: {str(f['value'])[:80]}")
+    if last_opendir_sync:
+        fields = last_opendir_sync if isinstance(last_opendir_sync, list) else []
+        for f in fields[:4]:
+            if isinstance(f, dict) and f.get("name") and f.get("value"):
+                recent_actions.append(f"OpenDir sync — {f['name']}: {str(f['value'])[:80]}")
 
     event_count = 0
     if recent_events and hasattr(recent_events, "snapshot"):
@@ -734,6 +763,7 @@ def _build_operational_pulse(
         "database_files_with_archives": db.get("with_files", 0),
         "r2_storage": r2_narrative,
         "active_alerts": alerts,
+        "last_opendir_sync": sanitize_data(last_opendir_sync) if last_opendir_sync else None,
         "recent_maintenance_summary": recent_actions,
         "recent_event_count": event_count,
         "subsystem_checks": checks,
@@ -807,7 +837,7 @@ async def build_chat_prompt(
             "Speak in first person as TriadBot. Do not call the user Owner in public.\n\n"
             f"Required reply language: {reply_language}. Match the latest user message language exactly.\n\n"
             f"Public context:\n{context_json[:context_limit]}\n\n"
-            f"Conversation history:\n{history_json[:2500]}\n\n"
+            f"Conversation history:\n{history_json[:4000]}\n\n"
             f"Latest public message:\n{message}\n"
         )
 
@@ -826,12 +856,14 @@ async def build_chat_prompt(
     last_r2 = getattr(getattr(bot, "last_r2_maintenance_summary", None), "to_fields", lambda: None)()
     last_steam = getattr(getattr(bot, "last_steam_db_sync_summary", None), "to_fields", lambda: None)()
 
+    last_opendir = getattr(getattr(bot, "last_opendir_sync_summary", None), "to_fields", lambda: None)()
     pulse = _build_operational_pulse(
         health=health,
         r2_narrative=r2_narrative,
         last_maintenance=last_r2,
         last_steam_sync=last_steam,
         recent_events=recent_events,
+        last_opendir_sync=last_opendir,
     )
 
     learning_rules = relevant_learning_rules_for_prompt(
@@ -968,6 +1000,15 @@ async def build_chat_prompt(
         "For direct questions like `kenapa`, `berapa`, `aman?`, or `ada apa?`, start with the conclusion, then the proof. "
         "I do not use filler words, jokes, or phrases like 'oi', 'santuy'. "
         "I am confident about what I know and honest when something is uncertain or outside my data.\n\n"
+        "READ-ONLY vs ACTION — highest priority rule: "
+        "When the Owner/Admin asks about progress, status, health, rename, sync, upload, storage, ZIP count, "
+        "or any operational metric — ALWAYS answer directly from live context numbers. "
+        "Never redirect a status question to the proposal system. "
+        "Examples that are pure read-only: 'progres rename', 'upload udah berapa?', 'sync selesai?', "
+        "'db backup ok?', 'berapa ZIP', 'ada masalah?', 'status R2', 'opendir gimana', 'udah upload belum'. "
+        "These are answered from operational_pulse — never with a proposal card. "
+        "Only create a proposal when the message has a clear action verb like "
+        "'jalankan', 'rapikan', 'buat', 'atur', 'kirim', 'rename', 'hapus', 'update'.\n\n"
         f"{addressing_rule}\n\n"
         f"Required reply language: {reply_language}. "
         "Match the latest user message language exactly. This overrides all other signals.\n\n"
@@ -1012,7 +1053,7 @@ async def build_chat_prompt(
         "No piracy, license bypassing, account abuse, or platform abuse.\n\n"
         f"My username in Discord (context only): {sanitize_text(user_name)}\n\n"
         f"Live context:\n{context_json[:context_limit]}\n\n"
-        f"Conversation history:\n{history_json[:5000]}\n\n"
+        f"Conversation history:\n{history_json[:8000]}\n\n"
         f"Latest message:\n{message}\n"
     )
 
@@ -1043,8 +1084,8 @@ async def chat_with_triadbot(
         prompt,
         provider=bot_config.AI_CHAT_PROVIDER,
         model=bot_config.AI_CHAT_MODEL,
-        temperature=float(getattr(bot_config, "AI_CHAT_TEMPERATURE", 0.25) or 0.25),
-        max_output_tokens=900,
+        temperature=float(getattr(bot_config, "AI_CHAT_TEMPERATURE", 0.45) or 0.45),
+        max_output_tokens=1800,
     )
     reply = sanitize_text(reply).strip()
     if not reply:
