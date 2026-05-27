@@ -36,6 +36,7 @@ log = logging.getLogger(__name__)
 ACTION_LABELS = {
     "run_r2_maintenance": "Run R2 maintenance",
     "run_steam_db_sync": "Run Steam DB sync",
+    "run_opendir_sync": "Run OpenDir sync",
     "run_ai_check": "Run AI caretaker check",
     "run_server_audit": "Run Discord server audit",
     "sync_booster_roles": "Sync Booster roles",
@@ -61,6 +62,7 @@ ACTION_LABELS = {
 WRITE_ACTIONS = {
     "run_r2_maintenance",
     "run_steam_db_sync",
+    "run_opendir_sync",
     "sync_booster_roles",
     "send_announcement",
     "update_rules",
@@ -159,6 +161,8 @@ class AIOperator(commands.Cog):
             return bool(bot_config.AI_OPERATOR_ALLOW_R2_MAINTENANCE)
         if action == "run_steam_db_sync":
             return bool(bot_config.AI_OPERATOR_ALLOW_STEAM_DB_SYNC)
+        if action == "run_opendir_sync":
+            return bool(getattr(bot_config, "AI_OPERATOR_ALLOW_OPENDIR_SYNC", True))
         if action == "run_ai_check":
             return bool(bot_config.AI_OPERATOR_ALLOW_AI_RECHECK)
         if action == "run_server_audit":
@@ -220,7 +224,7 @@ class AIOperator(commands.Cog):
             self._recent_signatures.pop(signature, None)
 
     def _lock_for_action(self, action: str) -> tuple[asyncio.Lock, str]:
-        if action in {"run_r2_maintenance", "run_steam_db_sync"}:
+        if action in {"run_r2_maintenance", "run_steam_db_sync", "run_opendir_sync"}:
             return self._maintenance_lock, "maintenance"
         if action in {"run_server_audit", "sync_booster_roles"} or action in SERVER_CONTENT_ACTIONS:
             return self._server_lock, "server administration"
@@ -1520,7 +1524,7 @@ class AIOperator(commands.Cog):
         action = sanitize_text(str(params.get("scheduled_action") or params.get("action") or "run_r2_maintenance")).strip().lower()
         parsed = self._parse_schedule_params(schedule_text or f"daily 02:00 {action}", action=action)
         scheduled_action = str(parsed.get("action") or "").strip().lower()
-        allowed_scheduled = {"run_r2_maintenance", "run_steam_db_sync", "run_server_audit", "sync_booster_roles", "run_ai_check"}
+        allowed_scheduled = {"run_r2_maintenance", "run_steam_db_sync", "run_opendir_sync", "run_server_audit", "sync_booster_roles", "run_ai_check"}
         if scheduled_action not in allowed_scheduled:
             raise ValueError("This action cannot be scheduled automatically.")
         if not self._action_enabled(scheduled_action):
@@ -1735,6 +1739,19 @@ class AIOperator(commands.Cog):
             await cog._alert_if_needed(summary, automatic=False)
             return self._summary_text(summary)
 
+        if proposal.action == "run_opendir_sync":
+            cog = self.bot.get_cog("OpenDirSync")
+            if not cog:
+                raise RuntimeError("OpenDir sync cog is not loaded")
+            if not getattr(cog, "enabled", False):
+                return "OpenDir sync cog is loaded but OPENDIR_SYNC_ENABLED is false — no run started."
+            lock = getattr(cog, "_lock", None)
+            if lock and lock.locked():
+                return "OpenDir sync is already running. No new run was started."
+            priority_appid = str(proposal.params.get("appid") or "").strip() or None
+            summary = await cog.run_sync_once(mode="manual", priority_appid=priority_appid)
+            return self._summary_text(summary)
+
         raise RuntimeError(f"Unsupported action: {proposal.action}")
 
     def _summary_text(self, summary: Any) -> str:
@@ -1760,6 +1777,10 @@ class AIOperator(commands.Cog):
             "run_steam_db_sync": (
                 "This can update the SQLite games table from Steam if STEAM_DB_SYNC_APPLY is true. "
                 "It uses the current .env file."
+            ),
+            "run_opendir_sync": (
+                "This triggers one manual OpenDir sync pass. It scans the configured Open Directory "
+                "and streams matching ZIP files directly to R2. No files are written to local disk."
             ),
             "run_ai_check": "This only asks the caretaker to re-check the current sanitized bot status.",
             "run_server_audit": "This is read-only and checks Discord server permissions, roles, channels, and Booster role consistency.",

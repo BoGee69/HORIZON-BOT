@@ -88,6 +88,25 @@ class GitHubDBBackupCog(commands.Cog):
             result = await self.backup_client.backup(force=force, reason=reason)
             self._last_result = result
 
+        # Expose to AI chat/brain so status questions can read the last result
+        summary_fields = {
+            "Status": result.status,
+            "Uploaded": str(result.uploaded),
+            "SHA": result.sha256[:16] + "…" if result.sha256 else "—",
+            "Raw size": f"{result.size_bytes:,} bytes" if result.size_bytes else "—",
+            "Compressed": f"{result.compressed_size_bytes:,} bytes" if result.compressed_size_bytes else "—",
+            "Chunks": str(result.chunk_count) if result.chunk_count else "—",
+            "Message": result.message[:200] if result.message else "—",
+        }
+
+        class _BackupSummary:
+            def __init__(self, fields):
+                self._fields = fields
+            def to_fields(self):
+                return self._fields
+
+        self.bot.last_github_db_backup_summary = _BackupSummary(summary_fields)
+
         if result.ok:
             if result.uploaded:
                 log.info(

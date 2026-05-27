@@ -72,6 +72,7 @@ class SteamBot(commands.Bot):
         self.last_steam_db_sync_summary = None
         self.last_server_admin_summary = None
         self.last_opendir_sync_summary = None  # set by cogs/opendir_sync.py
+        self.last_github_db_backup_summary = None  # set by cogs/github_db_backup.py
         self._ai_log_handler = CaretakerLogHandler(self.ai_events)
         self._ai_log_handler.setFormatter(
             logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
