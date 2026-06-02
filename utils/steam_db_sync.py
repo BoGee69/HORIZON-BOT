@@ -11,8 +11,9 @@ import logging
 import sqlite3
 import urllib.parse
 import urllib.request
+from contextlib import closing
 from dataclasses import dataclass, field
-from typing import Optional, Any
+from typing import Optional
 
 import config as bot_config
 from utils.database import DatabaseManager, is_placeholder_game_name
@@ -199,65 +200,63 @@ def sync_steam_database(
     summary.fetched_apps = len(steam_names)
 
     try:
-        conn = sqlite3.connect(db.db_path)
-        cursor = conn.cursor()
-        
-        # 1. Update existing placeholders
-        cursor.execute("SELECT appid, name, raw_data FROM games")
-        rows = cursor.fetchall()
-        
-        for appid, name, raw_data in rows:
-            if not appid.isdigit():
-                summary.skipped_invalid += 1
-                continue
-                
-            if is_placeholder_game_name(name, appid):
-                summary.placeholders_found += 1
-                steam_name = steam_names.get(appid)
-                if steam_name and steam_name != name:
-                    if max_updates > 0 and summary.names_updated >= max_updates:
+        with closing(sqlite3.connect(db.db_path)) as conn:
+            cursor = conn.cursor()
+
+            # 1. Update existing placeholders
+            cursor.execute("SELECT appid, name, raw_data FROM games")
+            rows = cursor.fetchall()
+
+            for appid, name, raw_data in rows:
+                if not appid.isdigit():
+                    summary.skipped_invalid += 1
+                    continue
+
+                if is_placeholder_game_name(name, appid):
+                    summary.placeholders_found += 1
+                    steam_name = steam_names.get(appid)
+                    if steam_name and steam_name != name:
+                        if max_updates > 0 and summary.names_updated >= max_updates:
+                            continue
+
+                        summary.names_updated += 1
+                        summary.add_sample(f"update: {name} -> {steam_name} ({appid})")
+                        if apply:
+                            try:
+                                data = json.loads(raw_data)
+                            except Exception:
+                                data = {"appid": appid, "name": name, "file": False}
+                            data["name"] = steam_name
+                            cursor.execute(
+                                "UPDATE games SET name = ?, raw_data = ? WHERE appid = ?",
+                                (steam_name, json.dumps(data), appid)
+                            )
+
+            # 2. Add new entries
+            if include_new:
+                cursor.execute("SELECT appid FROM games")
+                existing_ids = {row[0] for row in cursor.fetchall()}
+
+                for appid in sorted(steam_names, key=lambda item: int(item) if item.isdigit() else 0):
+                    if appid in existing_ids:
                         continue
-                    
-                    summary.names_updated += 1
-                    summary.add_sample(f"update: {name} -> {steam_name} ({appid})")
+                    if max_new > 0 and summary.new_entries_added >= max_new:
+                        summary.skipped_new_limit += 1
+                        continue
+
+                    summary.new_entries_added += 1
+                    summary.add_sample(f"new: {steam_names[appid]} ({appid})")
                     if apply:
-                        try:
-                            data = json.loads(raw_data)
-                        except Exception:
-                            data = {"appid": appid, "name": name, "file": False}
-                        data["name"] = steam_name
+                        raw_data = json.dumps({"appid": appid, "name": steam_names[appid], "file": False})
                         cursor.execute(
-                            "UPDATE games SET name = ?, raw_data = ? WHERE appid = ?",
-                            (steam_name, json.dumps(data), appid)
+                            "INSERT INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
+                            (appid, steam_names[appid], 0, raw_data)
                         )
+                        existing_ids.add(appid)
 
-        # 2. Add new entries
-        if include_new:
-            cursor.execute("SELECT appid FROM games")
-            existing_ids = {row[0] for row in cursor.fetchall()}
-            
-            for appid in sorted(steam_names, key=lambda item: int(item) if item.isdigit() else 0):
-                if appid in existing_ids:
-                    continue
-                if max_new > 0 and summary.new_entries_added >= max_new:
-                    summary.skipped_new_limit += 1
-                    continue
-
-                summary.new_entries_added += 1
-                summary.add_sample(f"new: {steam_names[appid]} ({appid})")
-                if apply:
-                    raw_data = json.dumps({"appid": appid, "name": steam_names[appid], "file": False})
-                    cursor.execute(
-                        "INSERT INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
-                        (appid, steam_names[appid], 0, raw_data)
-                    )
-                    existing_ids.add(appid)
-
-        if apply and summary.has_changes:
-            conn.commit()
-            summary.saved = True
-        
-        conn.close()
+            if apply and summary.has_changes:
+                conn.commit()
+                summary.saved = True
     except Exception as exc:
         summary.add_error(f"SQLite sync error: {exc}")
 

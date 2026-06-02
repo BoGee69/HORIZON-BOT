@@ -15,6 +15,7 @@ import sys
 import time
 import urllib.request
 import urllib.parse
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -126,7 +127,7 @@ def load_sqlite_game_names(db_path: Path = DEFAULT_SQLITE_DB) -> list[dict[str, 
     if not db_path.exists():
         return []
     try:
-        with sqlite3.connect(db_path) as conn:
+        with closing(sqlite3.connect(db_path)) as conn:
             rows = conn.execute(
                 """
                 SELECT appid, name

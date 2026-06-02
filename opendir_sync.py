@@ -22,7 +22,7 @@ import queue
 import re
 import time
 import unicodedata
-from contextlib import suppress
+from contextlib import closing, suppress
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
@@ -460,7 +460,7 @@ class OpenDirSync(commands.Cog):
                 db_path = Path(getattr(bot_config, "DATA_DIR", Path("data"))) / db_path
 
             try:
-                with _sqlite3.connect(db_path) as conn:
+                with closing(_sqlite3.connect(db_path)) as conn:
                     games_count = int(conn.execute(
                         """
                         SELECT COUNT(*)
@@ -996,7 +996,7 @@ class OpenDirSync(commands.Cog):
         seen: set[str] = set()
 
         try:
-            with _sqlite3.connect(db_path) as conn:
+            with closing(_sqlite3.connect(db_path)) as conn:
                 conn.row_factory = _sqlite3.Row
                 rows = conn.execute(
                     """

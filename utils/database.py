@@ -6,6 +6,7 @@ import sqlite3
 import json
 import logging
 import re
+from contextlib import closing
 from pathlib import Path
 from typing import Dict, List, Optional
 from config import SQLITE_PATH as CONFIG_SQLITE_PATH
@@ -35,7 +36,7 @@ class DatabaseManager:
         
     def _init_db(self):
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             # Enable WAL mode for better concurrency and crash resistance
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
@@ -66,7 +67,7 @@ class DatabaseManager:
     def load(self) -> bool:
         """Verify database connection and integrity"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 # Perform a quick integrity check
                 integrity = conn.execute("PRAGMA integrity_check(1)").fetchone()[0]
                 if integrity != "ok":
@@ -85,15 +86,35 @@ class DatabaseManager:
         return True
     
     def add_game(self, appid: str, name: Optional[str] = None, has_file: bool = False) -> bool:
-        """Add a game to database"""
+        """Add a game to database, refreshing placeholder data when it already exists."""
         appid_str = str(appid)
         try:
-            raw_data = json.dumps({"appid": appid_str, "name": name, "file": has_file})
-            with sqlite3.connect(self.db_path) as conn:
-                conn.execute(
-                    "INSERT OR IGNORE INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
-                    (appid_str, name, 1 if has_file else 0, raw_data)
-                )
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                row = conn.execute(
+                    "SELECT name, has_file, raw_data FROM games WHERE appid = ?",
+                    (appid_str,),
+                ).fetchone()
+                if row:
+                    current_name, current_has_file, current_raw = row
+                    try:
+                        raw_data = json.loads(current_raw) if current_raw else {}
+                    except Exception:
+                        raw_data = {}
+
+                    existing_name = raw_data.get("name") or current_name
+                    next_name = name if name and is_placeholder_game_name(existing_name, appid_str) else existing_name
+                    next_has_file = bool(raw_data.get("file") or current_has_file or has_file)
+                    raw_data.update({"appid": appid_str, "name": next_name, "file": next_has_file})
+                    conn.execute(
+                        "UPDATE games SET name = ?, has_file = ?, raw_data = ? WHERE appid = ?",
+                        (next_name, 1 if next_has_file else 0, json.dumps(raw_data), appid_str),
+                    )
+                else:
+                    raw_data = json.dumps({"appid": appid_str, "name": name, "file": has_file})
+                    conn.execute(
+                        "INSERT INTO games (appid, name, has_file, raw_data) VALUES (?, ?, ?, ?)",
+                        (appid_str, name, 1 if has_file else 0, raw_data)
+                    )
                 conn.commit()
             return True
         except Exception as e:
@@ -113,7 +134,7 @@ class DatabaseManager:
 
         game.update(kwargs)
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute(
                     "UPDATE games SET name = ?, has_file = ?, raw_data = ? WHERE appid = ?",
                     (game.get("name"), 1 if game.get("file") else 0, json.dumps(game), appid_str)
@@ -126,12 +147,17 @@ class DatabaseManager:
     
     def mark_as_starred(self, appid: str, name: Optional[str] = None) -> bool:
         """Mark game as having file available"""
-        return self.update_game(appid, file=True, name=name) if self.get_game(appid) else self.add_game(appid, name, has_file=True)
+        if self.get_game(appid):
+            kwargs = {"file": True}
+            if name:
+                kwargs["name"] = name
+            return self.update_game(appid, **kwargs)
+        return self.add_game(appid, name, has_file=True)
     
     def get_game(self, appid: str) -> Optional[Dict]:
         """Get game by AppID"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 row = conn.execute("SELECT raw_data FROM games WHERE appid = ?", (str(appid),)).fetchone()
             return json.loads(row[0]) if row else None
         except Exception:
@@ -141,7 +167,7 @@ class DatabaseManager:
         """Search games by name or AppID. Empty query returns starred games first."""
         results = []
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 if query:
                     rows = conn.execute(
                         """SELECT raw_data FROM games
@@ -164,13 +190,41 @@ class DatabaseManager:
             log.error(f"Search failed: {e}")
         return results
 
+    def get_games_without_file(self, limit: int = 500) -> List[Dict]:
+        """Return games that are not marked as file-ready yet."""
+        results = []
+        try:
+            limit = max(1, int(limit or 500))
+            with closing(sqlite3.connect(self.db_path)) as conn:
+                rows = conn.execute(
+                    """SELECT appid, name, has_file, raw_data FROM games
+                       WHERE COALESCE(has_file, 0) = 0
+                         AND name IS NOT NULL
+                         AND TRIM(name) != ''
+                       ORDER BY name COLLATE NOCASE ASC
+                       LIMIT ?""",
+                    (limit,),
+                ).fetchall()
+            for appid, name, has_file, raw_data in rows:
+                try:
+                    item = json.loads(raw_data) if raw_data else {}
+                except Exception:
+                    item = {}
+                item["appid"] = str(item.get("appid") or item.get("id") or appid)
+                item["name"] = item.get("name") or name
+                item["file"] = bool(item.get("file") or has_file)
+                results.append(item)
+        except Exception as e:
+            log.error(f"Missing-file game lookup failed: {e}")
+        return results
+
     def autocomplete_titles(self, query: str, limit: int = 25) -> List[Dict]:
         """Autocomplete game titles from SQLite only."""
         results = []
         limit = max(1, min(int(limit or 25), 25))
         query = " ".join(str(query or "").strip().split())
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 if query:
                     rows = conn.execute(
                         """SELECT appid, name, has_file, raw_data FROM games
@@ -208,7 +262,7 @@ class DatabaseManager:
     def get_stats(self) -> Dict:
         """Get database statistics using SQL"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 total = conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]
                 with_files = conn.execute("SELECT COUNT(*) FROM games WHERE has_file = 1").fetchone()[0]
                 last_appid = conn.execute(
@@ -252,7 +306,7 @@ class R2InventoryDB:
         self._init_table()
 
     def _init_table(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS r2_inventory (
@@ -290,8 +344,7 @@ class R2InventoryDB:
                     time.time(),
                 ))
 
-        now = time.time()
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             # Wipe stale data for this prefix then bulk-insert
             conn.execute("DELETE FROM r2_inventory WHERE key LIKE ?", (f"{prefix}%",))
@@ -319,7 +372,7 @@ class R2InventoryDB:
     def contains(self, key: str) -> bool:
         """O(1) primary-key lookup."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 row = conn.execute(
                     "SELECT 1 FROM r2_inventory WHERE key = ? LIMIT 1", (key,)
                 ).fetchone()
@@ -330,7 +383,7 @@ class R2InventoryDB:
     def get_all_keys(self, prefix: str = "") -> set[str]:
         """Return all cached keys, optionally filtered by prefix."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 if prefix:
                     rows = conn.execute(
                         "SELECT key FROM r2_inventory WHERE key LIKE ?",
@@ -344,7 +397,7 @@ class R2InventoryDB:
 
     def count(self, prefix: str = "") -> int:
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 if prefix:
                     return conn.execute(
                         "SELECT COUNT(*) FROM r2_inventory WHERE key LIKE ?",
@@ -357,7 +410,7 @@ class R2InventoryDB:
     def last_synced_at(self, prefix: str = "") -> float:
         """Return the oldest synced_at timestamp for the given prefix (0 if empty)."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 row = conn.execute(
                     "SELECT MIN(synced_at) FROM r2_inventory WHERE key LIKE ?",
                     (f"{prefix}%",),
@@ -374,7 +427,7 @@ class R2InventoryDB:
         """Call after a successful upload so the cache reflects the new key."""
         import time
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO r2_inventory (key, size, last_modified, synced_at) VALUES (?,?,?,?)",
                     (key, size, "", time.time()),
@@ -386,7 +439,7 @@ class R2InventoryDB:
     def mark_deleted(self, key: str) -> None:
         """Call after a successful delete."""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn:
                 conn.execute("DELETE FROM r2_inventory WHERE key = ?", (key,))
                 conn.commit()
         except Exception as exc:

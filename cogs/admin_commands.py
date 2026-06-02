@@ -5,9 +5,8 @@ All responses are ephemeral (only visible to the admin who ran the command).
 """
 import asyncio
 import logging
-import time
-from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import quote
 
 import aiohttp
 import discord
@@ -16,12 +15,13 @@ from discord.ext import commands
 
 import config as bot_config
 from config import (
-    ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES, ADMIN_WEBHOOK, COLOR_DOWNLOAD, COLOR_ERROR, COLOR_INFO,
+    ADMIN_IDS, ADMIN_ROLE_IDS, ADMIN_ROLE_NAMES, COLOR_ERROR, COLOR_INFO,
     COLOR_SUCCESS, COLOR_WARNING, GEN_DAILY_LIMIT, GEN_USAGE_PATH, R2_BASE_URL,
 )
-from utils.diagnostics import collect_health, yes_no
-from utils.helpers import format_number, format_size, has_any_role_id, has_any_role_name, is_admin_interaction
+from utils.helpers import format_number, has_any_role_id, has_any_role_name, is_admin_interaction
 from utils.gen_limits import DailyGenLimiter
+from utils.r2_keys import build_r2_key_candidates
+from utils.r2_presign import _PRESIGN_ENABLED, generate_presigned_url
 
 log = logging.getLogger(__name__)
 
@@ -218,11 +218,11 @@ class AdminCommands(commands.Cog):
     async def check_r2(self, interaction: discord.Interaction, limit: int = 500):
         await interaction.response.defer(ephemeral=True)
 
-        if not R2_BASE_URL:
+        if not R2_BASE_URL and not _PRESIGN_ENABLED:
             await interaction.followup.send(
                 embed=discord.Embed(
                     title="❌ R2 Not Configured",
-                    description="Set `R2_BASE_URL` in your `.env` file first.",
+                    description="Set `R2_BASE_URL` or complete the R2 S3 credentials in your `.env` file first.",
                     color=COLOR_ERROR,
                 ),
                 ephemeral=True,
@@ -238,27 +238,42 @@ class AdminCommands(commands.Cog):
 
         found = 0
         checked = 0
-        all_without_file = [g for g in self.db.search_games("", limit=limit * 10) if not g.get("file")]
-        to_check = all_without_file[:limit]
+        limit = max(1, int(limit or 500))
+        to_check = await asyncio.to_thread(self.db.get_games_without_file, limit)
 
         sem = asyncio.Semaphore(20)
+
+        async def candidate_url(key: str) -> str | None:
+            if _PRESIGN_ENABLED:
+                presigned = await generate_presigned_url(key)
+                if presigned:
+                    return presigned
+            if R2_BASE_URL:
+                return f"{R2_BASE_URL.rstrip('/')}/{quote(key, safe='/')}"
+            return None
 
         async def check_one(game):
             nonlocal found, checked
             appid = str(game.get("appid") or game.get("id") or "")
             if not appid:
                 return
-            url = f"{R2_BASE_URL}/Database/{appid}.zip"
+            game_name = game.get("name")
             async with sem:
                 try:
-                    async with self.bot.session.head(
-                        url, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True
-                    ) as resp:
-                        checked += 1
-                        if resp.status == 200:
-                            self.db.mark_as_starred(appid, game.get("name"))
-                            found += 1
-                except Exception:
+                    for key in build_r2_key_candidates(appid, game_name):
+                        url = await candidate_url(key)
+                        if not url:
+                            continue
+                        async with self.bot.session.get(
+                            url, timeout=aiohttp.ClientTimeout(total=8), allow_redirects=True
+                        ) as resp:
+                            if resp.status == 200:
+                                await asyncio.to_thread(self.db.mark_as_starred, appid, game_name)
+                                found += 1
+                                break
+                except Exception as exc:
+                    log.debug("R2 scan failed for appid=%s: %r", appid, exc)
+                finally:
                     checked += 1
 
         await asyncio.gather(*[check_one(g) for g in to_check])
