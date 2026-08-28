@@ -1,6 +1,6 @@
-# TriadBot
+# HORIZON BOT
 
-TriadBot is an open-source Discord bot focused on:
+HORIZON BOT is an open-source Discord bot focused on:
 
 - Game library management
 - Cloudflare R2 storage integration
