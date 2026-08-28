@@ -176,7 +176,7 @@ class ServerAdmin(commands.Cog):
             color=color,
             timestamp=discord.utils.utcnow(),
         )
-        embed.set_footer(text="TriadBot")
+        embed.set_footer(text="HORIZON BOT")
         return embed
 
     @staticmethod
@@ -616,9 +616,9 @@ class ServerAdmin(commands.Cog):
     def _assert_role_manageable(self, guild: discord.Guild, role: discord.Role) -> None:
         me = guild.me
         if not me or not me.guild_permissions.manage_roles and not me.guild_permissions.administrator:
-            raise ValueError("TriadBot is missing Manage Roles permission.")
+            raise ValueError("HORIZON BOT is missing Manage Roles permission.")
         if role >= me.top_role or role.is_default() or role.managed:
-            raise ValueError("That role cannot be managed by TriadBot because of role hierarchy or Discord restrictions.")
+            raise ValueError("That role cannot be managed by HORIZON BOT because of role hierarchy or Discord restrictions.")
 
     async def create_role(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)
@@ -735,7 +735,7 @@ class ServerAdmin(commands.Cog):
     async def create_webhook(self, params: dict[str, Any]) -> str:
         guild = self._resolve_guild(params)
         channel = self._resolve_text_channel(guild, params)
-        name = str(params.get("name") or "TriadBot Webhook").strip()[:80] or "TriadBot Webhook"
+        name = str(params.get("name") or "HORIZON BOT Webhook").strip()[:80] or "HORIZON BOT Webhook"
         webhook = await channel.create_webhook(name=name, reason="Owner-approved webhook creation")
         return f"Created webhook `{webhook.name}` in #{channel.name}. Webhook ID: {webhook.id}. Token is not shown."
 

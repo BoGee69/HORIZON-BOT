@@ -1,6 +1,6 @@
-# TriadBot GitHub Mode
+# HORIZON BOT GitHub Mode
 
-TriadBot GitHub Mode makes TriadBot behave like a safe code assistant for its own repository.
+HORIZON BOT GitHub Mode makes HORIZON BOT behave like a safe code assistant for its own repository.
 It does **not** edit the live Railway container. It reads files from GitHub, creates an approval card in Discord DM, then after approval pushes a new branch and optionally opens a pull request.
 
 ## Flow
@@ -8,17 +8,17 @@ It does **not** edit the live Railway container. It reads files from GitHub, cre
 ```txt
 Owner/Admin DM
   ↓
-TriadBot reads selected GitHub files
+HORIZON BOT reads selected GitHub files
   ↓
 AI creates a minimal patch proposal
   ↓
 Owner approves with: approve patch <id>
   ↓
-TriadBot creates branch ai-triadbot/<id>
+HORIZON BOT creates branch ai-horizon/<id>
   ↓
-TriadBot commits changed files
+HORIZON BOT commits changed files
   ↓
-TriadBot creates a PR to the base branch
+HORIZON BOT creates a PR to the base branch
 ```
 
 ## Example DM prompts
@@ -46,7 +46,7 @@ AI_GITHUB_ALLOW_APPLY=true
 AI_GITHUB_CREATE_PR=true
 ```
 
-Use a GitHub fine-grained token limited to the TriadBot repository. Recommended permissions:
+Use a GitHub fine-grained token limited to the HORIZON BOT repository. Recommended permissions:
 
 ```txt
 Contents: Read and write

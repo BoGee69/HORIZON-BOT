@@ -1,4 +1,4 @@
-"""Helpers for TriadBot <-> n8n integration."""
+"""Helpers for HORIZON BOT <-> n8n integration."""
 from __future__ import annotations
 
 import logging
@@ -82,17 +82,17 @@ async def post_n8n_event(
     body = sanitize_data(
         {
             "event_type": event_type,
-            "source": "triadbot",
+            "source": "horizon",
             "bot_version": bot_config.BOT_VERSION,
             "payload": payload,
         }
     )
     headers = {
         "Content-Type": "application/json",
-        "X-TriadBot-Source": "triadbot",
+        "X-HORIZON BOT-Source": "horizon",
     }
     if bot_config.N8N_WEBHOOK_SECRET:
-        headers["X-TriadBot-N8N-Secret"] = bot_config.N8N_WEBHOOK_SECRET
+        headers["X-HORIZON BOT-N8N-Secret"] = bot_config.N8N_WEBHOOK_SECRET
 
     try:
         async with session.post(

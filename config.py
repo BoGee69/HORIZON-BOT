@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_WEB_URL = "https://triadgames.up.railway.app"
+DEFAULT_WEB_URL = "https://horizon.up.railway.app"
 
 
 def parse_id_list(value: str) -> list[int]:
@@ -46,7 +46,7 @@ BASE_DIR = Path(__file__).parent
 LOCAL_DATA_DIR = BASE_DIR / "data"
 
 # Local timezone used by AI chat and status replies.
-# Default is WIB because TriadGames is operated from Indonesia.
+# Default is WIB because HORIZON is operated from Indonesia.
 BOT_TIMEZONE = os.getenv("BOT_TIMEZONE", os.getenv("TZ", "Asia/Jakarta")).strip() or "Asia/Jakarta"
 
 
@@ -113,7 +113,7 @@ ADMIN_ROLE_NAMES = {
 MODERATOR_ROLE_IDS = parse_id_set(os.getenv("MODERATOR_ROLE_IDS", ""))
 MODERATOR_ROLE_NAMES = {
     x.strip().lower()
-    for x in os.getenv("MODERATOR_ROLE_NAMES", "triadbot,admin,moderator,mod").split(",")
+    for x in os.getenv("MODERATOR_ROLE_NAMES", "horizon,admin,moderator,mod").split(",")
     if x.strip()
 }
 MODERATOR_ROLE_REQUIRED = parse_bool(os.getenv("MODERATOR_ROLE_REQUIRED", "false"), False)
@@ -142,7 +142,7 @@ BOOSTER_ROLE_NAMES = {
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
-# n8n integration. n8n can call protected internal endpoints and TriadBot can
+# n8n integration. n8n can call protected internal endpoints and HORIZON BOT can
 # optionally forward admin alerts to an n8n webhook.
 N8N_ENABLED = parse_bool(os.getenv("N8N_ENABLED", "false"), False)
 N8N_SHARED_SECRET = os.getenv("N8N_SHARED_SECRET", "").strip()
@@ -155,7 +155,7 @@ N8N_REQUEST_TIMEOUT_SECONDS = float(os.getenv("N8N_REQUEST_TIMEOUT_SECONDS", "10
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 
 # FIX 3: WEB_URL — WAJIB di-set di your .env file env agar JWT link tidak nunjuk ke localhost.
-# Isi dengan URL your .env file kamu, e.g. https://triadbot-production.up.railway.app
+# Isi dengan URL your .env file kamu, e.g. https://horizon-production.up.railway.app
 WEB_URL    = os.getenv("WEB_URL", DEFAULT_WEB_URL).rstrip("/")
 JWT_SECRET = os.getenv("JWT_SECRET", "").strip()
 PORT       = int(os.getenv("PORT", "8080"))
@@ -304,7 +304,7 @@ AI_CHAT_MAX_HISTORY = int(os.getenv("AI_CHAT_MAX_HISTORY", "30"))
 AI_CHAT_MEMORY_PERSIST = parse_bool(os.getenv("AI_CHAT_MEMORY_PERSIST", "true"), True)
 AI_CHAT_MEMORY_PATH = env_path("AI_CHAT_MEMORY_PATH", DATA_DIR / "ai_chat_memory.json")
 
-# TriadBot learning memory. This does not fine-tune the model; it stores owner/admin
+# HORIZON BOT learning memory. This does not fine-tune the model; it stores owner/admin
 # corrections as persistent routing/prompt rules so repeated mistakes can be fixed over time.
 AI_LEARNING_ENABLED = parse_bool(os.getenv("AI_LEARNING_ENABLED", "true"), True)
 AI_LEARNING_MEMORY_PATH = env_path("AI_LEARNING_MEMORY_PATH", DATA_DIR / "ai_learning_memory.sqlite3")
@@ -499,8 +499,8 @@ GITHUB_BACKUP_TIMEOUT_SECONDS = int(os.getenv("GITHUB_BACKUP_TIMEOUT_SECONDS", "
 GITHUB_BACKUP_CHUNK_SIZE_MB = int(os.getenv("GITHUB_BACKUP_CHUNK_SIZE_MB", "8"))
 
 
-# TriadBot GitHub Mode: AI proposes code patches, owner/admin approves,
-# then TriadBot creates a GitHub branch/PR. It does not edit the live Railway container.
+# HORIZON BOT GitHub Mode: AI proposes code patches, owner/admin approves,
+# then HORIZON BOT creates a GitHub branch/PR. It does not edit the live Railway container.
 # New AI_GITHUB_* env names are preferred. Older AI_CODEX_* env names are still accepted for compatibility.
 AI_GITHUB_ENABLED = parse_bool(os.getenv("AI_GITHUB_ENABLED", os.getenv("AI_CODEX_ENABLED", "true")), True)
 AI_GITHUB_TOKEN = os.getenv("AI_GITHUB_TOKEN", os.getenv("AI_CODEX_GITHUB_TOKEN", GITHUB_TOKEN)).strip()
@@ -512,7 +512,7 @@ AI_GITHUB_TEMPERATURE = float(os.getenv("AI_GITHUB_TEMPERATURE", os.getenv("AI_C
 AI_GITHUB_MAX_OUTPUT_TOKENS = int(os.getenv("AI_GITHUB_MAX_OUTPUT_TOKENS", os.getenv("AI_CODEX_MAX_OUTPUT_TOKENS", "8000")))
 AI_GITHUB_ALLOW_APPLY = parse_bool(os.getenv("AI_GITHUB_ALLOW_APPLY", os.getenv("AI_CODEX_ALLOW_APPLY", "true")), True)
 AI_GITHUB_CREATE_PR = parse_bool(os.getenv("AI_GITHUB_CREATE_PR", os.getenv("AI_CODEX_CREATE_PR", "true")), True)
-AI_GITHUB_BRANCH_PREFIX = os.getenv("AI_GITHUB_BRANCH_PREFIX", os.getenv("AI_CODEX_BRANCH_PREFIX", "ai-triadbot")).strip() or "ai-triadbot"
+AI_GITHUB_BRANCH_PREFIX = os.getenv("AI_GITHUB_BRANCH_PREFIX", os.getenv("AI_CODEX_BRANCH_PREFIX", "ai-horizon")).strip() or "ai-horizon"
 AI_GITHUB_PROPOSAL_TTL_SECONDS = int(os.getenv("AI_GITHUB_PROPOSAL_TTL_SECONDS", os.getenv("AI_CODEX_PROPOSAL_TTL_SECONDS", "1800")))
 AI_GITHUB_MAX_CONTEXT_FILES = int(os.getenv("AI_GITHUB_MAX_CONTEXT_FILES", os.getenv("AI_CODEX_MAX_CONTEXT_FILES", "5")))
 AI_GITHUB_CONTEXT_CHARS_PER_FILE = int(os.getenv("AI_GITHUB_CONTEXT_CHARS_PER_FILE", os.getenv("AI_CODEX_CONTEXT_CHARS_PER_FILE", "14000")))

@@ -21,7 +21,7 @@ Changes applied to this ZIP:
    - Long announcements are split into safe plain-message chunks.
 
 5. Prevented duplicate channel creation.
-   - If a requested text channel already exists, TriadBot no longer creates a duplicate.
+   - If a requested text channel already exists, HORIZON BOT no longer creates a duplicate.
    - If a topic was supplied, the existing channel topic is updated instead.
 
 6. Cleaned attachment text before public posting.

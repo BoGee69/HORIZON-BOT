@@ -107,7 +107,7 @@ class R2MaintenanceSummary:
     def add_skip(self, reason: str, message: str | None = None, limit: int = 12) -> None:
         """Record a skipped object with a machine-readable reason.
 
-        This gives TriadBot evidence for owner questions like "kenapa masih
+        This gives HORIZON BOT evidence for owner questions like "kenapa masih
         ada yang belum rename?" so it can explain from actual maintenance
         observations instead of guessing.
         """

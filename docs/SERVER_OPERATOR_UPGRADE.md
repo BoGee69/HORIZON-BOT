@@ -1,22 +1,22 @@
 # Prompt-Only Server Operator Upgrade
 
-This patch expands TriadBot's owner-approved operator flow without adding any new slash commands.
+This patch expands HORIZON BOT's owner-approved operator flow without adding any new slash commands.
 All operator actions are triggered from normal prompts, then converted into proposals that require approval before anything changes.
 
 ## Prompt-only control surface
 
-You can use DM prompts to TriadBot, or mention/reply to TriadBot in a server channel when `AI_OPERATOR_SERVER_PROMPTS_ENABLED=true`.
+You can use DM prompts to HORIZON BOT, or mention/reply to HORIZON BOT in a server channel when `AI_OPERATOR_SERVER_PROMPTS_ENABLED=true`.
 Server prompts require a mention/reply by default so normal channel conversation does not accidentally create proposals.
 
 Examples:
 
 ```text
-TriadBot buat channel #test untuk testing
-TriadBot atur #announcement hanya Admin yang bisa kirim pesan
-TriadBot ganti topic #rules jadi Baca dulu sebelum main
-TriadBot kirim announcement di #announcement: Server maintenance jam 10 malam
-TriadBot setup game category Games
-TriadBot setiap Minggu jam 2 jalankan R2 maintenance
+HORIZON BOT buat channel #test untuk testing
+HORIZON BOT atur #announcement hanya Admin yang bisa kirim pesan
+HORIZON BOT ganti topic #rules jadi Baca dulu sebelum main
+HORIZON BOT kirim announcement di #announcement: Server maintenance jam 10 malam
+HORIZON BOT setup game category Games
+HORIZON BOT setiap Minggu jam 2 jalankan R2 maintenance
 ```
 
 Approval examples:
@@ -58,14 +58,14 @@ Dangerous actions are disabled by default where appropriate:
 ```text
 setup game category Games
 buat template support kategori Help
-TriadBot setup community category Server
+HORIZON BOT setup community category Server
 ```
 
 The template system creates/configures existing resources instead of duplicating channels.
 
 ## Schedule behavior
 
-Schedules do not bypass approval. When a schedule is due, TriadBot creates a normal approval proposal.
+Schedules do not bypass approval. When a schedule is due, HORIZON BOT creates a normal approval proposal.
 
 Example:
 
@@ -98,7 +98,7 @@ AI_OPERATOR_SCHEDULES_PATH=data/ai_operator_schedules.json
 
 ## Auto server knowledge refresh
 
-Server channel/role create, update, and delete events invalidate the AI server knowledge cache, so TriadBot can refresh its view of channels, roles, and server layout sooner than the normal cache TTL.
+Server channel/role create, update, and delete events invalidate the AI server knowledge cache, so HORIZON BOT can refresh its view of channels, roles, and server layout sooner than the normal cache TTL.
 
 
 ## Security note

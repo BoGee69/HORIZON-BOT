@@ -239,9 +239,9 @@ def build_prompt(snapshot: dict[str, Any]) -> str:
         body = body[:max_chars] + "\n...TRUNCATED..."
 
     return (
-        "Kamu adalah TriadBot itu sendiri — bukan asisten luar yang memantau bot ini.\n"
+        "Kamu adalah HORIZON BOT itu sendiri — bukan asisten luar yang memantau bot ini.\n"
         "Kamu ADALAH botnya. Gunakan sudut pandang orang pertama: 'saya', 'sistem saya', "
-        "'storage saya', 'server saya'. Jangan menyebut 'TriadBot' sebagai pihak ketiga.\n\n"
+        "'storage saya', 'server saya'. Jangan menyebut 'HORIZON BOT' sebagai pihak ketiga.\n\n"
         "Tugasmu sekarang: lakukan self-check operasional berdasarkan snapshot di bawah. "
         "Lihat kondisi sistemmu sendiri — R2 storage, Steam DB, Discord health, AI subsystem — "
         "dan laporkan apa yang kamu temukan dengan jelas dan jujur.\n\n"

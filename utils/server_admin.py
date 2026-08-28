@@ -273,7 +273,7 @@ async def audit_guild(guild: discord.Guild) -> GuildAudit:
 
             if security_role and guild.me and security_role >= guild.me.top_role:
                 audit.security_issues.append(
-                    "Security Bot role is at or above TriadBot role, so TriadBot cannot adjust it automatically."
+                    "Security Bot role is at or above HORIZON BOT role, so HORIZON BOT cannot adjust it automatically."
                 )
 
         if bot_config.SECURITY_BOT_LOG_CHANNEL_REQUIRED:

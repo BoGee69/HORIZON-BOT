@@ -15,12 +15,12 @@ def monitor():
         temp = get_temp()
         if temp > 80:
             print(f"⚠️ HIGH TEMP DETECTED: {temp}C. Stopping bot service...")
-            os.system("sudo systemctl stop triadbot")
+            os.system("sudo systemctl stop horizon")
             # Tunggu dingin
             while get_temp() > 60:
                 time.sleep(60)
             print("🌡️ Temp normalized. Starting bot service...")
-            os.system("sudo systemctl start triadbot")
+            os.system("sudo systemctl start horizon")
         time.sleep(30)
 
 if __name__ == "__main__":

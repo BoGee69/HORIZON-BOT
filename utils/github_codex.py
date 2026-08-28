@@ -1,4 +1,4 @@
-"""GitHub-backed code assistant helpers for TriadBot.
+"""GitHub-backed code assistant helpers for HORIZON BOT.
 
 This module keeps code-changing power away from the live Railway container.
 It reads files from GitHub, asks the configured AI provider for a proposed
@@ -83,7 +83,7 @@ class GitHubRepoClient:
             "Authorization": f"Bearer {self.token}",
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "TriadBot-GitHub-Patch",
+            "User-Agent": "HORIZON BOT-GitHub-Patch",
         }
 
     async def _request(self, method: str, path: str, **kwargs) -> Any:
@@ -176,7 +176,7 @@ class GitHubRepoClient:
     async def put_file(self, *, path: str, content: str, branch: str, message: str, sha: str | None = None) -> dict[str, Any]:
         path = normalize_repo_path(path)
         payload: dict[str, Any] = {
-            "message": sanitize_text(message)[:200] or f"TriadBot AI update {path}",
+            "message": sanitize_text(message)[:200] or f"HORIZON BOT AI update {path}",
             "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
             "branch": branch,
         }
@@ -189,7 +189,7 @@ class GitHubRepoClient:
             "POST",
             f"/repos/{self.repo}/pulls",
             json={
-                "title": sanitize_text(title)[:240] or "TriadBot AI patch",
+                "title": sanitize_text(title)[:240] or "HORIZON BOT AI patch",
                 "head": branch,
                 "base": self.base_branch,
                 "body": sanitize_text(body)[:6000],
@@ -296,7 +296,7 @@ async def build_ai_code_proposal(
     selected_paths: list[str] | None = None,
 ) -> CodeProposal:
     if not client.configured:
-        raise GitHubCodexError("TriadBot GitHub Mode belum dikonfigurasi. Set AI_GITHUB_REPO dan AI_GITHUB_TOKEN.")
+        raise GitHubCodexError("HORIZON BOT GitHub Mode belum dikonfigurasi. Set AI_GITHUB_REPO dan AI_GITHUB_TOKEN.")
 
     max_files = max(1, min(int(getattr(bot_config, "AI_CODEX_MAX_CONTEXT_FILES", 5) or 5), 10))
     all_paths = await client.get_tree_paths()
@@ -322,7 +322,7 @@ async def build_ai_code_proposal(
         raise GitHubCodexError("Tidak ada file teks/code yang bisa saya baca untuk membuat patch.")
 
     prompt = (
-        "You are TriadBot GitHub Mode. You edit the TriadBot Discord bot repository safely.\n"
+        "You are HORIZON BOT GitHub Mode. You edit the HORIZON BOT Discord bot repository safely.\n"
         "Return ONLY valid JSON. No markdown. No prose outside JSON.\n"
         "The user is the owner/admin of the bot. Diagnose the request and produce a minimal safe patch.\n"
         "Rules:\n"
@@ -407,7 +407,7 @@ async def apply_code_proposal(client: GitHubRepoClient, proposal: CodeProposal) 
             content=change.content,
             branch=branch,
             sha=sha,
-            message=f"TriadBot AI: update {change.path}",
+            message=f"HORIZON BOT AI: update {change.path}",
         )
         committed.append(change.path)
 
@@ -415,7 +415,7 @@ async def apply_code_proposal(client: GitHubRepoClient, proposal: CodeProposal) 
     pr_url = ""
     if bool(getattr(bot_config, "AI_CODEX_CREATE_PR", True)):
         body_lines = [
-            "TriadBot AI patch proposal applied after Discord owner/admin approval.",
+            "HORIZON BOT AI patch proposal applied after Discord owner/admin approval.",
             "",
             f"Proposal ID: `{proposal.proposal_id}`",
             "",
@@ -428,7 +428,7 @@ async def apply_code_proposal(client: GitHubRepoClient, proposal: CodeProposal) 
             body_lines.append(f"- `{change.path}` — {change.reason}")
         pr = await client.create_pull_request(
             branch=branch,
-            title=f"TriadBot AI patch {proposal.proposal_id}",
+            title=f"HORIZON BOT AI patch {proposal.proposal_id}",
             body="\n".join(body_lines),
         )
         pr_url = str(pr.get("html_url") or "")

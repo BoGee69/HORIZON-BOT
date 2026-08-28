@@ -1,5 +1,5 @@
 """
-Personal DM chat with TriadBot through the configured AI provider.
+Personal DM chat with HORIZON BOT through the configured AI provider.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from discord.ext import commands
 
 import config as bot_config
 from utils.ai_caretaker import AICaretakerUnavailable, sanitize_text
-from utils.ai_chat import AIChatMemory, chat_with_triadbot
+from utils.ai_chat import AIChatMemory, chat_with_horizon
 from utils.ai_access import resolve_ai_chat_access
 from utils.ai_brain import direct_assistant_reply, looks_like_time_question as _brain_time_q, time_reply as _brain_time_reply
 from utils.ai_memory import get_learning_memory, route_hint_from_learning
@@ -81,7 +81,7 @@ class AIChat(commands.Cog):
             scope="owner" if sanitize_text(access_level).lower().strip() == "owner" else "admin",
         )
         if not ok:
-            # Only answer as learning feedback when the user clearly tried to teach TriadBot.
+            # Only answer as learning feedback when the user clearly tried to teach HORIZON BOT.
             lower = sanitize_text(text).lower()
             if any(word in lower for word in ("ingat", "remember", "catat", "simpan", "ke depannya", "kedepannya")):
                 return f"Saya belum menyimpan rule itu. Alasan: {sanitize_text(status)[:300]}"
@@ -129,7 +129,7 @@ class AIChat(commands.Cog):
             return mentioned or replied
         lower = sanitize_text(message.content).lower()
         passive_triggers = (
-            "triadbot",
+            "horizon",
             "aturan",
             "rules",
             "peraturan",
@@ -238,7 +238,7 @@ class AIChat(commands.Cog):
 
         Important: this must not present guesses as facts. It only states what
         can be proven from inventory and the latest maintenance summary. When
-        per-file evidence is missing, TriadBot says so plainly.
+        per-file evidence is missing, HORIZON BOT says so plainly.
         """
         appid_only = int(inventory.get("appid_only_zip_objects_counted") or 0)
         unknown = int(inventory.get("unknown_zip_objects_counted") or 0)
@@ -668,7 +668,7 @@ class AIChat(commands.Cog):
             if not self._server_reply_allowed(message):
                 return
             # Public server channels are info-only. Do not hand public messages
-            # to the operator, even when an admin mentions TriadBot with an
+            # to the operator, even when an admin mentions HORIZON BOT with an
             # operator-like request. The chat prompt will explain that real
             # server/database actions must be sent through DM.
         if not message.content.strip() and not getattr(message, "attachments", None):
@@ -737,7 +737,7 @@ class AIChat(commands.Cog):
                             float(getattr(bot_config, "AI_CHAT_RESPONSE_TIMEOUT_SECONDS", 60) or 60),
                         )
                         reply = await asyncio.wait_for(
-                            chat_with_triadbot(
+                            chat_with_horizon(
                                 self.bot,
                                 user_id=message.author.id,
                                 user_name=str(message.author),
@@ -749,7 +749,7 @@ class AIChat(commands.Cog):
                             ),
                             timeout=reply_timeout,
                         )
-                        # chat_with_triadbot already handles memory append internally
+                        # chat_with_horizon already handles memory append internally
                 await self._reply_chunks(message, reply)
                 if hasattr(self.bot, "record_ai_event"):
                     self.bot.record_ai_event(

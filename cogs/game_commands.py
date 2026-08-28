@@ -294,7 +294,7 @@ class GameCommands(commands.Cog):
             description=f"Found **{len(results)}** result(s) for `{query}`",
             color=COLOR_INFO,
         )
-        embed.set_author(name="triadbot  •  Local Database")
+        embed.set_author(name="horizon  •  Local Database")
 
         for game in results:
             name   = game.get("name", "Unknown")
@@ -336,7 +336,7 @@ class GameCommands(commands.Cog):
             color=COLOR_INFO,
             url=f"https://store.steampowered.com/app/{appid}",
         )
-        embed.set_author(name="triadbot  •  Steam Store Info")
+        embed.set_author(name="horizon  •  Steam Store Info")
         embed.add_field(name="🆔  App ID",     value=f"`{appid}`",             inline=True)
         embed.add_field(name="🎯  Type",       value=game_info["type"],         inline=True)
         embed.add_field(name="💰  Price",      value=game_info["price"],        inline=True)
@@ -355,7 +355,7 @@ class GameCommands(commands.Cog):
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
 
-        embed.set_footer(text=f"triadbot  •  App ID: {appid}")
+        embed.set_footer(text=f"horizon  •  App ID: {appid}")
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ── Error handler ─────────────────────────────────────────────────────────
@@ -553,7 +553,7 @@ class GameCommands(commands.Cog):
         if game_info.get("header_image"):
             embed.set_image(url=game_info["header_image"])
 
-        embed.set_footer(text="triadbot v9.1  •  Data from Steam Store")
+        embed.set_footer(text="horizon v9.1  •  Data from Steam Store")
         return embed
 
     async def _send_download_followup(
@@ -580,7 +580,7 @@ class GameCommands(commands.Cog):
             ),
             color=COLOR_DOWNLOAD,
         )
-        embed.set_author(name="triadbot  •  Secure File Delivery")
+        embed.set_author(name="horizon  •  Secure File Delivery")
         embed.add_field(name="📁  Filename",    value=f"`{dl['filename']}`", inline=True)
         embed.add_field(name="💾  Size",        value=size_str,              inline=True)
         embed.add_field(name=expiry_label,      value="Download before it expires.",   inline=False)
@@ -595,7 +595,7 @@ class GameCommands(commands.Cog):
         )
         if game_info.get("header_image"):
             embed.set_thumbnail(url=game_info["header_image"])
-        embed.set_footer(text="triadbot  •  Powered by Cloudflare R2")
+        embed.set_footer(text="horizon  •  Powered by Cloudflare R2")
 
         view = discord.ui.View(timeout=None)
         view.add_item(
@@ -661,7 +661,7 @@ class GameCommands(commands.Cog):
             ),
             color=COLOR_ERROR,
         )
-        embed.set_footer(text="triadbot  •  Steam Database")
+        embed.set_footer(text="horizon  •  Steam Database")
         return embed
 
     def _embed_steam_unavailable(self, query: str) -> discord.Embed:
@@ -673,7 +673,7 @@ class GameCommands(commands.Cog):
             ),
             color=COLOR_WARNING,
         )
-        embed.set_footer(text="triadbot  -  Steam Store")
+        embed.set_footer(text="horizon  -  Steam Store")
         return embed
 
     def _embed_unavailable(self, game_name: str) -> discord.Embed:
@@ -689,7 +689,7 @@ class GameCommands(commands.Cog):
             ),
             color=COLOR_ERROR,
         )
-        embed.set_footer(text="triadbot  •  This message is only visible to you")
+        embed.set_footer(text="horizon  •  This message is only visible to you")
         return embed
 
     def _is_gen_limit_exempt(self, interaction: discord.Interaction) -> bool:

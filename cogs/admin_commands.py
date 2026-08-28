@@ -130,7 +130,7 @@ class AdminCommands(commands.Cog):
     async def alert_test(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         delivered = await self.bot.notify_admins(
-            "Test alert from triadbot",
+            "Test alert from horizon",
             "DM alert delivery is working.",
             level="info",
             fields={

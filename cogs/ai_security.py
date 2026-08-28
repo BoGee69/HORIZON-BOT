@@ -1,5 +1,5 @@
 """
-Passive security guardian for TriadBot.
+Passive security guardian for HORIZON BOT.
 
 Default mode is alert-only. It watches for spam bursts, mention floods, and
 link floods, then records AI events and notifies admins. Destructive actions
@@ -170,7 +170,7 @@ class AISecurity(commands.Cog):
                 me_perms = getattr(message.guild.me, "guild_permissions", None) if message.guild and message.guild.me else None
                 if me_perms and me_perms.moderate_members:
                     until = discord.utils.utcnow() + timedelta(seconds=self.timeout_seconds)
-                    await message.author.timeout(until, reason=f"TriadBot AI Security: {kind}")
+                    await message.author.timeout(until, reason=f"HORIZON BOT AI Security: {kind}")
                     self._stats.auto_actions += 1
             except Exception:
                 log.debug("Auto-timeout failed", exc_info=True)

@@ -1,5 +1,5 @@
 """
-Personal AI chat helper for TriadBot DMs.
+Personal AI chat helper for HORIZON BOT DMs.
 
 Enhanced to give the AI a true sense of 'living' inside the Discord server
 and R2 storage — deep operational awareness, not just data lookup.
@@ -46,7 +46,7 @@ def _local_time_context() -> dict[str, str]:
 class AIChatMemory:
     """Small persistent per-user chat memory.
 
-    The old memory lived only in RAM, so after every Railway restart TriadBot
+    The old memory lived only in RAM, so after every Railway restart HORIZON BOT
     forgot the recent owner/admin context.  This keeps the same lightweight
     in-memory API, but optionally mirrors it to DATA_DIR/ai_chat_memory.json.
     """
@@ -825,7 +825,7 @@ async def build_chat_prompt(
         context_json = json.dumps(public_context, ensure_ascii=False)
         history_json = json.dumps(sanitize_data(history[-bot_config.AI_CHAT_MAX_HISTORY:]), ensure_ascii=False)
         return (
-            "You are TriadBot — the Discord bot for TriadGames. You are replying in a PUBLIC SERVER CHANNEL. "
+            "You are HORIZON BOT — the Discord bot for HORIZON. You are replying in a PUBLIC SERVER CHANNEL. "
             "This channel mode is information-only, even if the sender is an owner or admin. "
             "Never create, submit, approve, reject, or simulate operator proposals in public. "
             "Never expose internal R2/database state, object names, logs, stack traces, token/env names, channel IDs, role IDs, user IDs, or private admin reasoning. "
@@ -834,7 +834,7 @@ async def build_chat_prompt(
             "tell them briefly that management commands must be sent through DM by an authorized Owner/Admin and cannot be handled in public. "
             "For normal community questions, answer only from public server knowledge such as #rules, #resources, welcome, guides, and announcement context. "
             "The only public slash command is /gen; never mention hidden maintenance/admin slash commands. "
-            "Speak in first person as TriadBot. Do not call the user Owner in public.\n\n"
+            "Speak in first person as HORIZON BOT. Do not call the user Owner in public.\n\n"
             f"Required reply language: {reply_language}. Match the latest user message language exactly.\n\n"
             f"Public context:\n{context_json[:context_limit]}\n\n"
             f"Conversation history:\n{history_json[:4000]}\n\n"
@@ -925,7 +925,7 @@ async def build_chat_prompt(
         )
     elif access_level == "admin":
         addressing_rule = (
-            "The person talking to you is a trusted TriadGames admin/staff member, not necessarily the Owner. "
+            "The person talking to you is a trusted HORIZON admin/staff member, not necessarily the Owner. "
             "Be operationally useful and direct. Do not call them Owner. "
             "They may ask about bot status, R2, rules, channels, resources, and moderation context. "
             "For real changes, keep using the proposal/approval boundary and never claim an action was executed "
@@ -933,7 +933,7 @@ async def build_chat_prompt(
         )
     else:
         addressing_rule = (
-            "The user is a TriadGames community member, not the Owner. "
+            "The user is a HORIZON community member, not the Owner. "
             "Be helpful and professional. Do not call them Owner. "
             "Answer questions about server rules, channels, and resources "
             "based on your knowledge of this server."
@@ -965,12 +965,12 @@ async def build_chat_prompt(
             )
 
     return (
-        "You are TriadBot — a Discord bot that permanently lives inside the TriadGames server "
+        "You are HORIZON BOT — a Discord bot that permanently lives inside the HORIZON server "
         "and manages its Cloudflare R2 cloud storage. You are NOT an outside assistant. "
-        "You ARE TriadBot. Always speak in first person.\n"
+        "You ARE HORIZON BOT. Always speak in first person.\n"
         "English: 'I', 'my server', 'my storage', 'my database', 'my maintenance'.\n"
         "Indonesian: 'saya', 'server saya', 'storage saya', 'database saya'.\n"
-        "Never refer to TriadBot in third person ('the bot does', 'TriadBot has'). Never.\n\n"
+        "Never refer to HORIZON BOT in third person ('the bot does', 'HORIZON BOT has'). Never.\n\n"
         "COMMAND MODEL: The only public slash command is /gen. Do not tell users to use /pulse, /status, /request, /search, /info, /dbbackup, /r2_maintenance, /steam_db_sync, /reload_cog, /limit_status, /limit_reset, /check_r2, /add_game, /remove_game, /backup, or any other maintenance slash command. Those commands are intentionally hidden. For members, direct game downloads/searches to /gen only. For Owner/Admin operations, answer from live context and, when a real action is needed, use the AI operator/proposal flow through DM prompts instead of slash commands. Maintenance, R2 inventory, OpenDir sync, Steam DB sync, and GitHub DB backup run automatically in the background.\n\n"
         "I live in two environments simultaneously:\n\n"
         "1. MY DISCORD SERVER — I know every channel, every category, every role, every rule. "
@@ -1058,7 +1058,7 @@ async def build_chat_prompt(
     )
 
 
-async def chat_with_triadbot(
+async def chat_with_horizon(
     bot: Any,
     *,
     user_id: int,

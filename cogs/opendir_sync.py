@@ -5,7 +5,7 @@ Purpose:
 - Use the persistent SQLite database as the source list of AppIDs and game names.
 - For each game, check whether matching files exist in a configured Open Directory.
 - Stream matching files directly from HTTP to Cloudflare R2 without writing to local disk.
-- Rename uploaded objects into the normal TriadBot format: "Game Name (AppID).zip".
+- Rename uploaded objects into the normal HORIZON BOT format: "Game Name (AppID).zip".
 - Notify admins through the existing bot notifier when a sync run finishes.
 
 This cog is intentionally disabled by default. Only enable it for sources that you own
@@ -990,7 +990,7 @@ class OpenDirSync(commands.Cog):
             ContentType="application/zip",
             Metadata={
                 "source": "opendir-api-sync",
-                "synced-by": "triadbot",
+                "synced-by": "horizon",
                 "appid": _safe_metadata_value(remote_file.appid, max_len=40),
                 "game-name": _safe_metadata_value(remote_file.game_name),
             },
@@ -1489,7 +1489,7 @@ class OpenDirSync(commands.Cog):
         extra_args = {
             "Metadata": {
                 "source": "opendir-sqlite-sync",
-                "synced-by": "triadbot",
+                "synced-by": "horizon",
                 "appid": _safe_metadata_value(remote_file.appid, max_len=40),
                 "game-name": _safe_metadata_value(remote_file.game_name),
             }

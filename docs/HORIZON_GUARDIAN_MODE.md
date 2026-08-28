@@ -1,6 +1,6 @@
-# TriadBot Guardian Mode
+# HORIZON BOT Guardian Mode
 
-Guardian Mode membuat TriadBot lebih terasa seperti asisten operasional, security monitor, dan caretaker server/database.
+Guardian Mode membuat HORIZON BOT lebih terasa seperti asisten operasional, security monitor, dan caretaker server/database.
 
 ## Mode utama
 

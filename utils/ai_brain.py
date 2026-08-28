@@ -1,8 +1,8 @@
 """
-TriadBot deterministic brain helpers.
+HORIZON BOT deterministic brain helpers.
 
 This module keeps simple, safety-critical intent handling out of the LLM so
-TriadBot does not force every owner/admin message into R2/database context.
+HORIZON BOT does not force every owner/admin message into R2/database context.
 It provides direct replies for time, guardian/security/caretaker reports, and
 capability explanations, while leaving open-ended conversation to the AI model.
 """

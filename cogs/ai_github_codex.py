@@ -1,6 +1,6 @@
-"""TriadBot GitHub Mode.
+"""HORIZON BOT GitHub Mode.
 
-Owner/Admin can ask TriadBot to inspect GitHub files and generate a safe code
+Owner/Admin can ask HORIZON BOT to inspect GitHub files and generate a safe code
 patch proposal. Applying the proposal creates a GitHub branch and PR, not a
 live edit inside Railway.
 """
@@ -48,20 +48,20 @@ class AIGitHubCodex(commands.Cog):
     @staticmethod
     def _clean_prompt(text: str) -> str:
         clean = sanitize_text(text).strip()
-        clean = re.sub(r"^(@?triadbot\s*)", "", clean, flags=re.I).strip()
+        clean = re.sub(r"^(@?(?:horizon|triadbot)\s*)", "", clean, flags=re.I).strip()
         return clean
 
     @staticmethod
     def _is_codex_intent(text: str) -> bool:
         lower = sanitize_text(text).lower()
         triggers = (
-            "github", "repo", "repository", "pull request", "pr ", "triadbot github", "triadbot patch", "baca repo", "cek repo",
+            "github", "repo", "repository", "pull request", "pr ", "horizon github", "horizon patch", "triadbot github", "triadbot patch", "baca repo", "cek repo",
             "edit code", "ubah code", "ubah kode", "perbaiki code", "perbaiki kode",
             "patch code", "buat patch", "bikin patch", "diagnosa code", "diagnosa kode",
         )
         if any(t in lower for t in triggers):
             return True
-        return bool(re.search(r"\b(approve|reject|apply|cancel|lanjut|jalankan|gas|batal|tolak)\s+(?:patch|github|repo|triadbot|codex)\s+[a-f0-9]{6}\b", lower))
+        return bool(re.search(r"\b(approve|reject|apply|cancel|lanjut|jalankan|gas|batal|tolak)\s+(?:patch|github|repo|horizon|triadbot|codex)\s+[a-f0-9]{6}\b", lower))
 
     async def is_github_codex_command_for_user(self, text: str, user_id: int) -> bool:
         if not getattr(bot_config, "AI_CODEX_ENABLED", True):
@@ -84,7 +84,7 @@ class AIGitHubCodex(commands.Cog):
         elif proposal.risk == "high":
             color = 0xE74C3C
         embed = discord.Embed(
-            title="TriadBot GitHub patch approval required",
+            title="HORIZON BOT GitHub patch approval required",
             description="Saya sudah membuat proposal patch GitHub. Saya belum mengubah file apa pun sampai proposal ini di-approve.",
             color=color,
         )
@@ -109,7 +109,7 @@ class AIGitHubCodex(commands.Cog):
         client = self._client()
         self._cleanup()
         return (
-            "**TriadBot GitHub Mode**\n"
+            "**HORIZON BOT GitHub Mode**\n"
             f"- Enabled: `{bool(getattr(bot_config, 'AI_CODEX_ENABLED', True))}`\n"
             f"- Repo: `{client.repo or 'not configured'}`\n"
             f"- Base branch: `{client.base_branch}`\n"
@@ -175,7 +175,7 @@ class AIGitHubCodex(commands.Cog):
 
     async def _handle_search(self, message: discord.Message, text: str) -> None:
         client = self._client()
-        query = re.sub(r"\b(codex|triadbot|github|repo|repository|cari|search|find|file|kode|code)\b", " ", text, flags=re.I).strip()
+        query = re.sub(r"\b(codex|horizon|github|repo|repository|cari|search|find|file|kode|code)\b", " ", text, flags=re.I).strip()
         if not query:
             query = text
         paths = await client.get_tree_paths()
@@ -202,7 +202,7 @@ class AIGitHubCodex(commands.Cog):
                 self.bot.record_ai_event(
                     "warning",
                     "github-patch",
-                    "TriadBot GitHub patch proposal created.",
+                    "HORIZON BOT GitHub patch proposal created.",
                     {"proposal_id": proposal.proposal_id, "changes": str(len(proposal.changes)), "risk": proposal.risk},
                 )
 
@@ -225,15 +225,15 @@ class AIGitHubCodex(commands.Cog):
             proposal.status = "completed"
             proposal.result = result
             self.pending.pop(proposal_id, None)
-            await self._send_chunks(message.channel, f"**TriadBot GitHub action completed**\n{result}")
+            await self._send_chunks(message.channel, f"**HORIZON BOT GitHub action completed**\n{result}")
             if hasattr(self.bot, "record_ai_event"):
-                self.bot.record_ai_event("warning", "github-patch", "TriadBot GitHub patch proposal applied.", {"proposal_id": proposal_id, "branch": proposal.branch, "pr_url": proposal.pr_url})
+                self.bot.record_ai_event("warning", "github-patch", "HORIZON BOT GitHub patch proposal applied.", {"proposal_id": proposal_id, "branch": proposal.branch, "pr_url": proposal.pr_url})
         except Exception as exc:
             proposal.status = "failed"
             proposal.result = repr(exc)[:1000]
             await message.channel.send(f"Patch apply gagal: `{sanitize_text(repr(exc))[:1000]}`", allowed_mentions=discord.AllowedMentions.none())
             if hasattr(self.bot, "record_ai_event"):
-                self.bot.record_ai_event("error", "github-patch", "TriadBot GitHub patch proposal failed.", {"proposal_id": proposal_id, "error": repr(exc)[:800]})
+                self.bot.record_ai_event("error", "github-patch", "HORIZON BOT GitHub patch proposal failed.", {"proposal_id": proposal_id, "error": repr(exc)[:800]})
 
     async def _reject(self, message: discord.Message, proposal_id: str) -> None:
         proposal = self.pending.pop(proposal_id, None)
@@ -257,8 +257,8 @@ class AIGitHubCodex(commands.Cog):
             return
 
         lower = text.lower().strip()
-        approve = re.fullmatch(r"(?:approve|apply|lanjut|jalankan|gas)\s+(?:patch|github|repo|triadbot|codex)\s+([a-f0-9]{6})", lower)
-        reject = re.fullmatch(r"(?:reject|cancel|batal|tolak)\s+(?:patch|github|repo|triadbot|codex)\s+([a-f0-9]{6})", lower)
+        approve = re.fullmatch(r"(?:approve|apply|lanjut|jalankan|gas)\s+(?:patch|github|repo|horizon|triadbot|codex)\s+([a-f0-9]{6})", lower)
+        reject = re.fullmatch(r"(?:reject|cancel|batal|tolak)\s+(?:patch|github|repo|horizon|triadbot|codex)\s+([a-f0-9]{6})", lower)
 
         try:
             async with message.channel.typing():
@@ -281,7 +281,7 @@ class AIGitHubCodex(commands.Cog):
                     await self._handle_create_proposal(message, text)
                     return
                 await message.channel.send(
-                    "TriadBot GitHub Mode siap. Contoh:\n"
+                    "HORIZON BOT GitHub Mode siap. Contoh:\n"
                     "- `github status`\n"
                     "- `cari file game_commands`\n"
                     "- `baca file cogs/game_commands.py`\n"
@@ -290,12 +290,12 @@ class AIGitHubCodex(commands.Cog):
                     allowed_mentions=discord.AllowedMentions.none(),
                 )
         except GitHubCodexError as exc:
-            await message.channel.send(f"TriadBot GitHub belum bisa lanjut: `{sanitize_text(str(exc))[:1200]}`", allowed_mentions=discord.AllowedMentions.none())
+            await message.channel.send(f"HORIZON BOT GitHub belum bisa lanjut: `{sanitize_text(str(exc))[:1200]}`", allowed_mentions=discord.AllowedMentions.none())
         except asyncio.TimeoutError:
-            await message.channel.send("TriadBot GitHub timeout. Coba lagi dengan path file yang lebih spesifik.", allowed_mentions=discord.AllowedMentions.none())
+            await message.channel.send("HORIZON BOT GitHub timeout. Coba lagi dengan path file yang lebih spesifik.", allowed_mentions=discord.AllowedMentions.none())
         except Exception as exc:
-            log.exception("TriadBot GitHub failed")
-            await message.channel.send(f"TriadBot GitHub error: `{sanitize_text(repr(exc))[:1000]}`", allowed_mentions=discord.AllowedMentions.none())
+            log.exception("HORIZON BOT GitHub failed")
+            await message.channel.send(f"HORIZON BOT GitHub error: `{sanitize_text(repr(exc))[:1000]}`", allowed_mentions=discord.AllowedMentions.none())
 
 
 async def setup(bot):

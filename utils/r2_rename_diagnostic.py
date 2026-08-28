@@ -2,7 +2,7 @@
 Read-only evidence collector for R2 ZIP rename leftovers.
 
 This module does not copy, delete, upload, or rewrite R2 objects. It only reads
-R2 inventory/cache and SQLite/cache metadata so TriadBot can answer owner
+R2 inventory/cache and SQLite/cache metadata so HORIZON BOT can answer owner
 questions like "kenapa masih ada yang belum di-rename?" with evidence instead
 of assumptions.
 """

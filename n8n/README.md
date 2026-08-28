@@ -26,21 +26,21 @@ The first visit asks you to create the owner account.
 
 Two starter workflows are provided in `n8n/workflows/`:
 
-- `TriadBot Event Receiver`: receives TriadBot completion/admin alert events at `/webhook/triadbot`.
-- `TriadBot Health Check`: checks TriadBot's `/n8n/health` endpoint. Keep it inactive until TriadBot is running with `N8N_ENABLED=true`.
+- `HORIZON BOT Event Receiver`: receives HORIZON BOT completion/admin alert events at `/webhook/horizon`.
+- `HORIZON BOT Health Check`: checks HORIZON BOT's `/n8n/health` endpoint. Keep it inactive until HORIZON BOT is running with `N8N_ENABLED=true`.
 
 Import them manually:
 
 ```powershell
-docker cp .\workflows triadbot-n8n:/tmp/triadbot-workflows
-docker exec triadbot-n8n n8n import:workflow --separate --input=/tmp/triadbot-workflows
+docker cp .\workflows horizon-n8n:/tmp/horizon-workflows
+docker exec horizon-n8n n8n import:workflow --separate --input=/tmp/horizon-workflows
 ```
 
 Publish the event receiver after import:
 
 ```powershell
-docker exec triadbot-n8n n8n publish:workflow --id=<workflow-id>
-docker restart triadbot-n8n
+docker exec horizon-n8n n8n publish:workflow --id=<workflow-id>
+docker restart horizon-n8n
 ```
 
 ## Data

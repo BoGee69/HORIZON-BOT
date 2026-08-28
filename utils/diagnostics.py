@@ -15,7 +15,7 @@ from utils.r2_presign import _PRESIGN_ENABLED
 def _writable(path: Path) -> tuple[bool, str]:
     try:
         path.mkdir(parents=True, exist_ok=True)
-        probe = path / ".triadbot_healthcheck"
+        probe = path / ".horizon_healthcheck"
         probe.write_text("ok", encoding="utf-8")
         probe.unlink(missing_ok=True)
         return True, "writable"

@@ -1,6 +1,6 @@
-# TriadBot Human-Style Replies
+# HORIZON BOT Human-Style Replies
 
-Patch ini membuat jawaban TriadBot lebih mirip asisten manusia:
+Patch ini membuat jawaban HORIZON BOT lebih mirip asisten manusia:
 
 - Jawab inti dulu.
 - Status/diagnostic dibuat ringkas secara default.
@@ -22,7 +22,7 @@ AI_CHAT_MAX_REPLY_CHARS=1200
 
 Owner: `kenapa masih ada rename pending?`
 
-TriadBot akan menjawab singkat:
+HORIZON BOT akan menjawab singkat:
 
 ```txt
 Jawaban singkatnya:

@@ -153,7 +153,7 @@ class SteamBot(commands.Bot):
         if auth_header.lower().startswith("bearer "):
             candidates.append(auth_header.split(" ", 1)[1].strip())
 
-        for header_name in ("X-TriadBot-N8N-Token", "X-N8N-Token"):
+        for header_name in ("X-HORIZON-N8N-Token", "X-N8N-Token"):
             header_value = request.headers.get(header_name, "").strip()
             if header_value:
                 candidates.append(header_value)
@@ -613,7 +613,7 @@ class SteamBot(commands.Bot):
             self._ready_notified = True
             deploy_info = _deployment_info()
             await self.notify_admins(
-                "triadbot is online",
+                "HORIZON BOT is online",
                 "Bot started successfully and is ready to receive commands.",
                 level="info",
                 fields={

@@ -79,7 +79,7 @@ class AdminNotifier:
         )
         for name, value in (fields or {}).items():
             embed.add_field(name=str(name)[:256], value=str(value)[:1024] or "-", inline=False)
-        embed.set_footer(text="triadbot admin alert")
+        embed.set_footer(text="horizon admin alert")
 
         delivered = 0
         for user_id in self.admin_ids:

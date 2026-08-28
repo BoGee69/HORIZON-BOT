@@ -403,12 +403,12 @@ class AIOperator(commands.Cog):
                 "has permission",
                 "permission to send",
                 "bot has permission",
-                "triadbot has permission",
+                "horizon has permission",
                 "bot permission",
                 "bot permissions",
                 "izin bot",
                 "bot bisa",
-                "triadbot bisa",
+                "horizon bisa",
                 "bisa chat",
                 "bisa kirim",
                 "kirim pesan",
@@ -473,7 +473,7 @@ class AIOperator(commands.Cog):
             phrase in lower
             for phrase in (
                 "bot",
-                "triadbot",
+                "horizon",
                 "bot role",
                 "role bot",
                 "peran bot",
@@ -699,7 +699,7 @@ class AIOperator(commands.Cog):
         if webhook_create:
             channel = self._extract_channel_reference(clean)
             name_match = re.search(r"(?:nama|name)\s*[:=]?\s*([\w\- ]{2,80})", clean, re.I)
-            return "create_webhook", {"channel": channel, "name": name_match.group(1).strip() if name_match else "TriadBot Webhook"}
+            return "create_webhook", {"channel": channel, "name": name_match.group(1).strip() if name_match else "HORIZON BOT Webhook"}
 
         webhook_delete = re.search(r"(?:hapus|delete|remove)\s+webhook\s+(\d{16,25})", clean, re.I)
         if webhook_delete:
@@ -1159,9 +1159,9 @@ class AIOperator(commands.Cog):
                 "role bot",
                 "my role",
                 "peran bot",
-                "triadbot",
-                "triadbot role",
-                "role triadbot",
+                "horizon",
+                "horizon role",
+                "role horizon",
             )
         )
         send_words = any(
@@ -2093,7 +2093,7 @@ class AIOperator(commands.Cog):
         if author and getattr(author, "id", None) == bot_user.id:
             return True
         content = sanitize_text(getattr(message, "content", "") or "").strip().lower()
-        return content.startswith(("triadbot ", "triadbot,", "triadbot:"))
+        return content.startswith(("horizon ", "horizon,", "horizon:"))
 
     def _strip_bot_addressing(self, text: str) -> str:
         clean = sanitize_text(text).strip()
@@ -2101,7 +2101,7 @@ class AIOperator(commands.Cog):
         if bot_user:
             clean = clean.replace(f"<@{bot_user.id}>", "")
             clean = clean.replace(f"<@!{bot_user.id}>", "")
-        clean = re.sub(r"^triadbot\s*[:,]?\s*", "", clean, flags=re.I).strip()
+        clean = re.sub(r"^horizon\s*[:,]?\s*", "", clean, flags=re.I).strip()
         return clean
 
     @staticmethod

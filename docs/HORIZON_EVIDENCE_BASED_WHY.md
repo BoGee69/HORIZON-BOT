@@ -1,10 +1,10 @@
-# TriadBot Evidence-Based Why Answers
+# HORIZON BOT Evidence-Based Why Answers
 
-This patch makes TriadBot answer owner questions like `kenapa masih ada yang belum rename?` from evidence instead of generic assumptions.
+This patch makes HORIZON BOT answer owner questions like `kenapa masih ada yang belum rename?` from evidence instead of generic assumptions.
 
 ## Behavior
 
-When the owner asks `kenapa`, `kok`, `why`, `apa penyebabnya`, or `alasan`, TriadBot should:
+When the owner asks `kenapa`, `kok`, `why`, `apa penyebabnya`, or `alasan`, HORIZON BOT should:
 
 1. Show the facts it can prove from live inventory or runtime summaries.
 2. Use R2 maintenance skip counters when available.
@@ -22,7 +22,7 @@ The R2 maintenance summary now records machine-readable skip reason counts:
 - `Skip target exists`
 - `Skip oversized ZIP`
 
-These counters let TriadBot explain leftover rename work from actual maintenance observations.
+These counters let HORIZON BOT explain leftover rename work from actual maintenance observations.
 
 ## Important limitation
 

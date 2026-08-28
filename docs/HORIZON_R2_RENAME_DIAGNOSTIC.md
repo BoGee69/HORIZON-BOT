@@ -1,6 +1,6 @@
-# TriadBot R2 Rename Diagnostic
+# HORIZON BOT R2 Rename Diagnostic
 
-Patch ini menambahkan diagnostic read-only agar TriadBot bisa menjawab pertanyaan seperti:
+Patch ini menambahkan diagnostic read-only agar HORIZON BOT bisa menjawab pertanyaan seperti:
 
 - `kenapa masih ada yang belum di rename?`
 - `diagnosa sisa rename`
@@ -19,7 +19,7 @@ Diagnostic tidak melakukan copy, delete, upload, rewrite ZIP, atau rename file. 
 
 ## Reason yang bisa dibuktikan
 
-TriadBot akan mengelompokkan sisa ZIP ke reason seperti:
+HORIZON BOT akan mengelompokkan sisa ZIP ke reason seperti:
 
 - `no_appid`: AppID tidak bisa diparse dari nama file.
 - `missing_game_name`: AppID ada, tetapi nama game tidak ditemukan di SQLite/cache/R2 name map.
@@ -52,10 +52,10 @@ kenapa masih ada yang belum di rename?
 
 Expected behavior:
 
-- TriadBot menampilkan inventory count.
-- TriadBot menjalankan diagnostic read-only.
-- TriadBot menjawab reason berdasarkan bukti, bukan asumsi.
-- Kalau bukti belum cukup, TriadBot menyebut batas analisisnya.
+- HORIZON BOT menampilkan inventory count.
+- HORIZON BOT menjalankan diagnostic read-only.
+- HORIZON BOT menjawab reason berdasarkan bukti, bukan asumsi.
+- Kalau bukti belum cukup, HORIZON BOT menyebut batas analisisnya.
 
 ## Catatan penting
 

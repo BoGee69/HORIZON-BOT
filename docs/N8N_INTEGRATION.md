@@ -1,6 +1,6 @@
-# TriadBot n8n Integration
+# HORIZON BOT n8n Integration
 
-TriadBot can be connected to n8n as a control tower for monitoring, alerts,
+HORIZON BOT can be connected to n8n as a control tower for monitoring, alerts,
 scheduled maintenance, and admin workflows.
 
 ## Environment
@@ -12,8 +12,8 @@ N8N_ENABLED=true
 N8N_SHARED_SECRET=use-a-long-random-secret
 N8N_ALLOW_MAINTENANCE_ACTIONS=true
 
-# Optional: TriadBot sends completion/admin-alert events to n8n.
-N8N_WEBHOOK_URL=https://your-n8n-host/webhook/triadbot
+# Optional: HORIZON BOT sends completion/admin-alert events to n8n.
+N8N_WEBHOOK_URL=https://your-n8n-host/webhook/horizon
 N8N_WEBHOOK_SECRET=use-another-random-secret
 N8N_FORWARD_ADMIN_ALERTS=true
 ```
@@ -31,7 +31,7 @@ Authorization: Bearer <N8N_SHARED_SECRET>
 Alternative headers also work:
 
 ```http
-X-TriadBot-N8N-Token: <N8N_SHARED_SECRET>
+X-HORIZON BOT-N8N-Token: <N8N_SHARED_SECRET>
 X-N8N-Token: <N8N_SHARED_SECRET>
 ```
 
@@ -44,9 +44,9 @@ GET /n8n/health
 POST /n8n/health
 ```
 
-Returns the existing TriadBot health payload plus recent AI/caretaker events.
+Returns the existing HORIZON BOT health payload plus recent AI/caretaker events.
 
-### Send Event To TriadBot
+### Send Event To HORIZON BOT
 
 ```http
 POST /n8n/event
@@ -154,7 +154,7 @@ If `N8N_WEBHOOK_URL` is set, background jobs post completion events back to n8n:
 - `r2_maintenance.failed`
 - `admin_alert`
 
-TriadBot includes `X-TriadBot-N8N-Secret` when `N8N_WEBHOOK_SECRET` is set.
+HORIZON BOT includes `X-HORIZON BOT-N8N-Secret` when `N8N_WEBHOOK_SECRET` is set.
 
 ## Suggested n8n Workflows
 

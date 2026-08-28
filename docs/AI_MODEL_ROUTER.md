@@ -1,6 +1,6 @@
-# TriadBot AI Model Router
+# HORIZON BOT AI Model Router
 
-TriadBot keeps GPT as the main/default brain and uses other Ollama Cloud models only as specialist helpers.
+HORIZON BOT keeps GPT as the main/default brain and uses other Ollama Cloud models only as specialist helpers.
 
 ## Runtime roles
 

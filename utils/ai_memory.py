@@ -1,8 +1,8 @@
-"""Persistent learning memory for TriadBot owner/admin corrections.
+"""Persistent learning memory for HORIZON BOT owner/admin corrections.
 
 This module does not fine-tune the AI model.  It stores small, auditable
 behavior rules learned from trusted owner/admin feedback, then feeds relevant
-rules back into routing and prompts so TriadBot can stop repeating the same
+rules back into routing and prompts so HORIZON BOT can stop repeating the same
 mistakes across restarts.
 """
 from __future__ import annotations
@@ -159,7 +159,7 @@ def _infer_topic(text: str) -> str:
         ("steam_sync", ("steam", "steam db", "appid", "sync steam")),
         ("security", ("security", "spam", "mention", "link", "timeout", "ban", "kick", "moderation")),
         ("time_date", ("jam", "tanggal", "hari ini", "time", "date")),
-        ("identity", ("triadbot", "identitas", "nama", "codex", "siapa")),
+        ("identity", ("horizon", "identitas", "nama", "codex", "siapa")),
         ("conversation_style", ("jawab", "bahasa", "gaya", "context", "konteks", "nyambung")),
     ]
     hits = [(topic, sum(1 for marker in markers if marker in lower)) for topic, markers in topic_map]

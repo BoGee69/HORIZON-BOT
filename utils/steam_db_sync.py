@@ -87,7 +87,7 @@ def _extract_app_names(payload: dict) -> dict[str, str]:
 
 
 def _load_json_url(url: str, timeout: int) -> dict:
-    request = urllib.request.Request(url, headers={"User-Agent": "triadbot/steam-db-sync"})
+    request = urllib.request.Request(url, headers={"User-Agent": "horizon/steam-db-sync"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
 

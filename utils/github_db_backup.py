@@ -95,7 +95,7 @@ class GitHubDatabaseBackup:
             "Accept": "application/vnd.github+json",
             "Authorization": f"Bearer {self.token}",
             "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "TriadBot-GitHub-DB-Backup",
+            "User-Agent": "HORIZON BOT-GitHub-DB-Backup",
         }
 
     def _contents_url(self, path: str) -> str:
@@ -216,7 +216,7 @@ class GitHubDatabaseBackup:
     def _create_sqlite_snapshot(self) -> Path:
         """Create a consistent SQLite snapshot using sqlite backup API."""
         snapshot_dir = Path(tempfile.gettempdir())
-        snapshot_path = snapshot_dir / f"triadbot_games_snapshot_{os.getpid()}.db"
+        snapshot_path = snapshot_dir / f"horizon_games_snapshot_{os.getpid()}.db"
         snapshot_path.unlink(missing_ok=True)
 
         source = sqlite3.connect(str(self.db_path), timeout=60)

@@ -4,8 +4,8 @@ Static legal pages for Discord App Verification.
 from datetime import date
 from html import escape
 
-APP_NAME = "triadbot"
-SERVICE_NAME = "TriadGames"
+APP_NAME = "horizon"
+SERVICE_NAME = "HORIZON"
 LAST_UPDATED = date(2026, 5, 16).strftime("%B %d, %Y")
 
 

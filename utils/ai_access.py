@@ -1,7 +1,7 @@
 """
 Access helpers for AI chat/operator features.
 
-These helpers let TriadBot recognize trusted Discord staff from the live guild
+These helpers let HORIZON BOT recognize trusted Discord staff from the live guild
 state instead of requiring every admin to be hardcoded by user ID.
 """
 from __future__ import annotations
@@ -25,7 +25,7 @@ def _configured_guilds(bot: Any) -> list[Any]:
 
 async def resolve_discord_admin_member(bot: Any, user_id: int) -> tuple[bool, str]:
     """
-    Return whether a user is an admin/staff member in one of TriadBot's guilds.
+    Return whether a user is an admin/staff member in one of HORIZON BOT's guilds.
 
     A user is trusted when any of these is true in a configured guild:
     - they are the Discord server owner;

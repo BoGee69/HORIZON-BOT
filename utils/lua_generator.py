@@ -187,7 +187,7 @@ def fetch_all_steam_apps(
             for base_url in (STORE_SERVICE_URL, STORE_SERVICE_FALLBACK):
                 try:
                     url = f"{base_url}?{query}"
-                    req = urllib.request.Request(url, headers={"User-Agent": "triadbot/lua-sync"})
+                    req = urllib.request.Request(url, headers={"User-Agent": "horizon/lua-sync"})
                     with urllib.request.urlopen(req, timeout=timeout) as resp:
                         payload = json.loads(resp.read().decode("utf-8"))
                     break
@@ -218,7 +218,7 @@ def fetch_all_steam_apps(
 
     for url in PUBLIC_APP_LIST_URLS:
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "triadbot/lua-sync"})
+            req = urllib.request.Request(url, headers={"User-Agent": "horizon/lua-sync"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
             apps = data.get("applist", {}).get("apps", [])

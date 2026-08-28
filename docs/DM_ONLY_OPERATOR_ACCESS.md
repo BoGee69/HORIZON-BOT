@@ -1,14 +1,14 @@
 # DM-only operator access
 
-TriadBot now separates public chat from private operator control.
+HORIZON BOT now separates public chat from private operator control.
 
 ## Rules
 
 - Public server channels are **info-only**.
 - Server/database/R2/operator prompts only work in **DM**.
-- Owner/Admin users may DM TriadBot to request server management or database maintenance.
+- Owner/Admin users may DM HORIZON BOT to request server management or database maintenance.
 - Public messages cannot create proposals, approve proposals, reject proposals, run R2 maintenance, sync Steam DB, edit channels, edit roles, manage permissions, manage members, or expose internal logs/storage state.
-- If a user asks for management in a public channel, TriadBot should tell them to send the request through DM as an authorized Owner/Admin.
+- If a user asks for management in a public channel, HORIZON BOT should tell them to send the request through DM as an authorized Owner/Admin.
 
 ## Important environment variables
 
@@ -31,7 +31,7 @@ Allowed:
 
 - explain server rules
 - point users to #rules, #resources, #announcement, #welcome, or guide channels
-- answer general TriadGames server questions
+- answer general HORIZON server questions
 - explain that management requests must be done in DM
 
 Blocked:
