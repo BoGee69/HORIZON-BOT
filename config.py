@@ -142,6 +142,16 @@ BOOSTER_ROLE_NAMES = {
 ADMIN_WEBHOOK = os.getenv("ADMIN_WEBHOOK", "")
 DEFAULT_CC    = os.getenv("DEFAULT_CC", "id")
 
+# n8n integration. n8n can call protected internal endpoints and TriadBot can
+# optionally forward admin alerts to an n8n webhook.
+N8N_ENABLED = parse_bool(os.getenv("N8N_ENABLED", "false"), False)
+N8N_SHARED_SECRET = os.getenv("N8N_SHARED_SECRET", "").strip()
+N8N_ALLOW_MAINTENANCE_ACTIONS = parse_bool(os.getenv("N8N_ALLOW_MAINTENANCE_ACTIONS", "false"), False)
+N8N_WEBHOOK_URL = os.getenv("N8N_WEBHOOK_URL", "").strip()
+N8N_WEBHOOK_SECRET = os.getenv("N8N_WEBHOOK_SECRET", "").strip()
+N8N_FORWARD_ADMIN_ALERTS = parse_bool(os.getenv("N8N_FORWARD_ADMIN_ALERTS", "false"), False)
+N8N_REQUEST_TIMEOUT_SECONDS = float(os.getenv("N8N_REQUEST_TIMEOUT_SECONDS", "10"))
+
 R2_BASE_URL = os.getenv("R2_BASE_URL", "")
 
 # FIX 3: WEB_URL — WAJIB di-set di your .env file env agar JWT link tidak nunjuk ke localhost.

@@ -161,6 +161,14 @@ async def collect_health(bot) -> dict[str, Any]:
             "bucket_configured": bool(bot_config.R2_BUCKET_NAME),
             "link_expire_seconds": bot_config.LINK_EXPIRE_SECONDS,
         },
+        "n8n": {
+            "enabled": bool(bot_config.N8N_ENABLED),
+            "shared_secret_configured": bool(bot_config.N8N_SHARED_SECRET),
+            "allow_maintenance_actions": bool(bot_config.N8N_ALLOW_MAINTENANCE_ACTIONS),
+            "webhook_configured": bool(bot_config.N8N_WEBHOOK_URL),
+            "forward_admin_alerts": bool(bot_config.N8N_FORWARD_ADMIN_ALERTS),
+            "request_timeout_seconds": bot_config.N8N_REQUEST_TIMEOUT_SECONDS,
+        },
         "r2_maintenance": {
             "enabled": bool(bot_config.R2_MAINTENANCE_ENABLED),
             "apply": bool(bot_config.R2_MAINTENANCE_APPLY),

@@ -4,7 +4,9 @@ Steam Game Database & Download Manager Bot
 import asyncio
 import logging
 from logging.handlers import RotatingFileHandler
+import secrets
 import sys
+import time
 import traceback
 from pathlib import Path
 
@@ -16,6 +18,7 @@ import jwt
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+import config as bot_config
 from config import (
     DISCORD_TOKEN, BOT_PREFIX, BOT_VERSION, BOT_DESCRIPTION,
     LOG_LEVEL, LOG_FILE, LOG_FORMAT, LOG_DATE_FORMAT,
@@ -26,6 +29,7 @@ from utils.ai_caretaker import CaretakerLogHandler, SafeEventRingBuffer, sanitiz
 from utils.database import DatabaseManager
 from utils.diagnostics import collect_health, _deployment_info
 from utils.legal_pages import PRIVACY_HTML, TERMS_HTML
+from utils.n8n import post_n8n_event, summary_to_payload
 from utils.r2_keys import build_r2_key_candidates
 from utils.r2_presign import generate_presigned_url
 
@@ -119,6 +123,13 @@ class SteamBot(commands.Bot):
         app.router.add_get("/terms", self.handle_terms)
         app.router.add_get("/privacy", self.handle_privacy)
         app.router.add_get("/download/{appid}", self.handle_download)
+        app.router.add_get("/n8n/health", self.handle_n8n_health)
+        app.router.add_post("/n8n/health", self.handle_n8n_health)
+        app.router.add_post("/n8n/event", self.handle_n8n_event)
+        app.router.add_post("/n8n/opendir-sync", self.handle_n8n_opendir_sync)
+        app.router.add_post("/n8n/db-backup", self.handle_n8n_db_backup)
+        app.router.add_post("/n8n/steam-db-sync", self.handle_n8n_steam_db_sync)
+        app.router.add_post("/n8n/r2-maintenance", self.handle_n8n_r2_maintenance)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", PORT)
@@ -128,6 +139,309 @@ class SteamBot(commands.Bot):
     async def handle_health(self, request):
         health = await collect_health(self)
         return web.json_response(health, status=200 if health["ok"] else 503)
+
+    def _n8n_auth_error(self, request) -> web.Response | None:
+        if not bot_config.N8N_ENABLED:
+            return web.json_response({"ok": False, "error": "n8n integration is disabled"}, status=404)
+        if not bot_config.N8N_SHARED_SECRET:
+            return web.json_response({"ok": False, "error": "N8N_SHARED_SECRET is not configured"}, status=503)
+
+        expected = bot_config.N8N_SHARED_SECRET
+        candidates: list[str] = []
+
+        auth_header = request.headers.get("Authorization", "").strip()
+        if auth_header.lower().startswith("bearer "):
+            candidates.append(auth_header.split(" ", 1)[1].strip())
+
+        for header_name in ("X-TriadBot-N8N-Token", "X-N8N-Token"):
+            header_value = request.headers.get(header_name, "").strip()
+            if header_value:
+                candidates.append(header_value)
+
+        query_token = request.query.get("token", "").strip()
+        if query_token:
+            candidates.append(query_token)
+
+        if any(secrets.compare_digest(token, expected) for token in candidates):
+            return None
+        return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+
+    async def _n8n_payload(self, request) -> dict:
+        if not request.can_read_body:
+            return {}
+        try:
+            payload = await request.json()
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    @staticmethod
+    def _payload_bool(payload: dict, name: str, default: bool = False) -> bool:
+        value = payload.get(name, default)
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _payload_int(payload: dict, name: str, default: int = 0, *, minimum: int = 0, maximum: int = 100000) -> int:
+        try:
+            value = int(payload.get(name, default))
+        except Exception:
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _n8n_maintenance_error(self) -> web.Response | None:
+        if not bot_config.N8N_ALLOW_MAINTENANCE_ACTIONS:
+            return web.json_response(
+                {
+                    "ok": False,
+                    "error": "N8N_ALLOW_MAINTENANCE_ACTIONS is false",
+                },
+                status=403,
+            )
+        return None
+
+    async def emit_n8n_event(self, event_type: str, payload: dict) -> bool:
+        return await post_n8n_event(getattr(self, "session", None), event_type, payload)
+
+    async def _run_n8n_background(self, action: str, awaitable) -> None:
+        started = time.time()
+        try:
+            result = await awaitable
+            summary = summary_to_payload(result)
+            ok = self._n8n_result_ok(summary)
+            event_status = "completed" if ok else "failed"
+            await self.emit_n8n_event(
+                f"{action}.{event_status}",
+                {
+                    "action": action,
+                    "status": event_status,
+                    "ok": ok,
+                    "elapsed_seconds": round(time.time() - started, 2),
+                    "summary": summary,
+                },
+            )
+        except Exception as exc:
+            log.exception("n8n background action failed: %s", action)
+            context = {"action": action, "error": repr(exc)[:1000]}
+            self.record_ai_event("error", "n8n", f"n8n action failed: {action}", context)
+            self.queue_ai_caretaker("n8n-action-failed", context, force=True)
+            await self.emit_n8n_event(
+                f"{action}.failed",
+                {
+                    "action": action,
+                    "status": "failed",
+                    "elapsed_seconds": round(time.time() - started, 2),
+                    "error": repr(exc)[:1000],
+                },
+            )
+
+    def _n8n_accepted_response(self, action: str, task: asyncio.Task) -> web.Response:
+        return web.json_response(
+            {
+                "ok": True,
+                "action": action,
+                "status": "accepted",
+                "task_name": task.get_name(),
+                "callback": "Configure N8N_WEBHOOK_URL to receive completion events.",
+            },
+            status=202,
+        )
+
+    @staticmethod
+    def _n8n_result_ok(summary: dict | None) -> bool:
+        if not summary:
+            return True
+        if "ok" in summary:
+            return bool(summary.get("ok"))
+        return not bool(summary.get("has_errors") or summary.get("errors"))
+
+    def _n8n_summary_response(self, action: str, result, *, status: int = 200) -> web.Response:
+        summary = summary_to_payload(result)
+        ok = self._n8n_result_ok(summary)
+        return web.json_response(
+            {
+                "ok": ok,
+                "action": action,
+                "status": "completed" if ok else "failed",
+                "summary": summary,
+            },
+            status=status,
+        )
+
+    async def handle_n8n_health(self, request):
+        auth_error = self._n8n_auth_error(request)
+        if auth_error is not None:
+            return auth_error
+
+        health = await collect_health(self)
+        return web.json_response(
+            {
+                "ok": bool(health.get("ok")),
+                "action": "health",
+                "health": health,
+                "recent_events": self.ai_events.snapshot() if getattr(self, "ai_events", None) else [],
+            },
+            status=200 if health.get("ok") else 503,
+        )
+
+    async def handle_n8n_event(self, request):
+        auth_error = self._n8n_auth_error(request)
+        if auth_error is not None:
+            return auth_error
+
+        payload = await self._n8n_payload(request)
+        level = str(payload.get("level") or "info").strip().lower()
+        if level not in {"info", "warning", "error"}:
+            level = "info"
+        source = str(payload.get("source") or "n8n").strip()[:80] or "n8n"
+        message = str(payload.get("message") or payload.get("text") or "n8n event").strip()
+        fields = payload.get("fields") if isinstance(payload.get("fields"), dict) else {}
+
+        self.record_ai_event(level, source, message, fields)
+
+        delivered = 0
+        if self._payload_bool(payload, "notify_admins", False):
+            delivered = await self.notify_admins(
+                str(payload.get("title") or "n8n event")[:256],
+                message[:4000],
+                level=level,
+                fields=fields,
+                key=str(payload.get("key") or f"n8n-{source}-{level}")[:120],
+                force=self._payload_bool(payload, "force", False),
+                skip_n8n=True,
+            )
+
+        return web.json_response(
+            {
+                "ok": True,
+                "action": "event",
+                "recorded": True,
+                "admin_dms_delivered": delivered,
+            }
+        )
+
+    async def handle_n8n_opendir_sync(self, request):
+        auth_error = self._n8n_auth_error(request)
+        if auth_error is not None:
+            return auth_error
+        maintenance_error = self._n8n_maintenance_error()
+        if maintenance_error is not None:
+            return maintenance_error
+
+        payload = await self._n8n_payload(request)
+        cog = self.get_cog("OpenDirSync")
+        if not cog:
+            return web.json_response({"ok": False, "error": "OpenDirSync cog is not loaded"}, status=503)
+
+        appid = str(payload.get("appid") or payload.get("priority_appid") or "").strip() or None
+        background = self._payload_bool(payload, "background", True)
+        awaitable = cog.run_sync_once(mode="n8n", priority_appid=appid)
+        if background:
+            task = asyncio.create_task(self._run_n8n_background("opendir_sync", awaitable), name="n8n-opendir-sync")
+            return self._n8n_accepted_response("opendir_sync", task)
+        summary = await awaitable
+        return self._n8n_summary_response("opendir_sync", summary)
+
+    async def handle_n8n_db_backup(self, request):
+        auth_error = self._n8n_auth_error(request)
+        if auth_error is not None:
+            return auth_error
+        maintenance_error = self._n8n_maintenance_error()
+        if maintenance_error is not None:
+            return maintenance_error
+
+        payload = await self._n8n_payload(request)
+        cog = self.get_cog("GitHubDBBackupCog")
+        if not cog:
+            return web.json_response({"ok": False, "error": "GitHubDBBackupCog is not loaded"}, status=503)
+
+        force = self._payload_bool(payload, "force", True)
+        background = self._payload_bool(payload, "background", True)
+        awaitable = cog.run_backup(force=force, reason="n8n")
+        if background:
+            task = asyncio.create_task(self._run_n8n_background("db_backup", awaitable), name="n8n-db-backup")
+            return self._n8n_accepted_response("db_backup", task)
+        result = await awaitable
+        return self._n8n_summary_response("db_backup", result)
+
+    async def handle_n8n_steam_db_sync(self, request):
+        auth_error = self._n8n_auth_error(request)
+        if auth_error is not None:
+            return auth_error
+        maintenance_error = self._n8n_maintenance_error()
+        if maintenance_error is not None:
+            return maintenance_error
+
+        payload = await self._n8n_payload(request)
+        cog = self.get_cog("SteamDbSyncCommands")
+        if not cog:
+            return web.json_response({"ok": False, "error": "SteamDbSyncCommands cog is not loaded"}, status=503)
+
+        async def run_sync():
+            summary = await cog._run_threaded(
+                apply_changes=self._payload_bool(payload, "apply", False),
+                include_new=self._payload_bool(payload, "include_new", True),
+                max_new=self._payload_int(payload, "max_new", 0),
+                max_updates=self._payload_int(payload, "max_updates", 0),
+            )
+            await cog._alert_if_needed(summary, automatic=False)
+            return summary
+
+        background = self._payload_bool(payload, "background", True)
+        awaitable = run_sync()
+        if background:
+            task = asyncio.create_task(self._run_n8n_background("steam_db_sync", awaitable), name="n8n-steam-db-sync")
+            return self._n8n_accepted_response("steam_db_sync", task)
+        summary = await awaitable
+        return self._n8n_summary_response("steam_db_sync", summary)
+
+    async def handle_n8n_r2_maintenance(self, request):
+        auth_error = self._n8n_auth_error(request)
+        if auth_error is not None:
+            return auth_error
+        maintenance_error = self._n8n_maintenance_error()
+        if maintenance_error is not None:
+            return maintenance_error
+
+        payload = await self._n8n_payload(request)
+        cog = self.get_cog("R2MaintenanceCommands")
+        if not cog:
+            return web.json_response({"ok": False, "error": "R2MaintenanceCommands cog is not loaded"}, status=503)
+
+        async def run_maintenance():
+            summary = await cog._run_threaded(
+                apply_changes=self._payload_bool(payload, "apply", False),
+                prefix=str(payload.get("prefix") or bot_config.R2_MAINTENANCE_PREFIX),
+                limit=self._payload_int(payload, "limit", bot_config.R2_MAINTENANCE_MAX_OBJECTS, maximum=1000000),
+                rename_objects=self._payload_bool(payload, "rename_objects", bot_config.R2_MAINTENANCE_RENAME_OBJECTS),
+                clean_lua=self._payload_bool(payload, "clean_lua", bot_config.R2_MAINTENANCE_CLEAN_LUA_COMMENTS),
+                use_steam=self._payload_bool(payload, "use_steam", bot_config.R2_MAINTENANCE_STEAM_LOOKUPS),
+                max_steam_lookups=self._payload_int(
+                    payload,
+                    "max_steam_lookups",
+                    bot_config.R2_MAINTENANCE_MAX_STEAM_LOOKUPS,
+                ),
+                use_queue=self._payload_bool(payload, "use_queue", bot_config.R2_MAINTENANCE_QUEUE_ENABLED),
+                fallback_to_appid=self._payload_bool(
+                    payload,
+                    "fallback_to_appid",
+                    bot_config.R2_MAINTENANCE_FALLBACK_TO_APPID,
+                ),
+                ignore_blacklist=self._payload_bool(payload, "ignore_blacklist", False),
+            )
+            await cog._alert_if_needed(summary, automatic=False)
+            return summary
+
+        background = self._payload_bool(payload, "background", True)
+        awaitable = run_maintenance()
+        if background:
+            task = asyncio.create_task(self._run_n8n_background("r2_maintenance", awaitable), name="n8n-r2-maintenance")
+            return self._n8n_accepted_response("r2_maintenance", task)
+        summary = await awaitable
+        return self._n8n_summary_response("r2_maintenance", summary)
 
     async def handle_terms(self, request):
         return web.Response(text=TERMS_HTML, content_type="text/html")
@@ -182,7 +496,7 @@ class SteamBot(commands.Bot):
 
         return web.Response(text="❌ File tidak ditemukan di storage.", status=404)
 
-    async def notify_admins(self, *args, **kwargs) -> int:
+    async def notify_admins(self, *args, skip_n8n: bool = False, **kwargs) -> int:
         try:
             title = str(args[0] if args else kwargs.get("title", "admin alert"))
             description = str(args[1] if len(args) > 1 else kwargs.get("description", ""))
@@ -196,6 +510,20 @@ class SteamBot(commands.Bot):
                 f"{title}: {description}",
                 kwargs.get("fields"),
             )
+            if bot_config.N8N_FORWARD_ADMIN_ALERTS and not skip_n8n:
+                asyncio.create_task(
+                    self.emit_n8n_event(
+                        "admin_alert",
+                        {
+                            "title": title,
+                            "description": description,
+                            "level": kwargs.get("level", "warning"),
+                            "fields": kwargs.get("fields") or {},
+                            "key": kwargs.get("key"),
+                        },
+                    ),
+                    name="n8n-admin-alert",
+                )
         except Exception:
             pass
         return await self.notifier.send(*args, **kwargs)
