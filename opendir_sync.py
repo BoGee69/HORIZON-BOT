@@ -1557,7 +1557,10 @@ class OpenDirSync(commands.Cog):
     def _target_key(self, game: GameRecord, ext: str) -> str:
         safe_name = _safe_game_name(game.name, max_len=160)
         filename = f"{safe_name} ({game.appid}).{ext.lower().lstrip('.')}"
-        return f"{self.r2_prefix}{filename}"
+        # New structure: 1 folder 1 game (folder contains single zip with base + DLC)
+        # e.g. Database/My Summer Car (516750)/My Summer Car (516750).zip
+        folder = f"{safe_name} ({game.appid})"
+        return f"{self.r2_prefix}{folder}/{filename}"
 
     def _iter_hrefs(self, soup: BeautifulSoup) -> Iterable[str]:
         for tag in soup.find_all("a", href=True):

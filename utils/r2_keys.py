@@ -23,6 +23,10 @@ def build_r2_key_candidates(appid: str, game_name: Optional[str] = None) -> list
     if game_name:
         safe_name = sanitize_game_name(game_name)
         if safe_name:
+            # New per-game folder structure (1 folder 1 game, zip already includes base + DLC)
+            # Example: Database/My Summer Car (516750)/My Summer Car (516750).zip
+            keys.append(f"Database/{safe_name} ({appid})/{safe_name} ({appid}).zip")
+            # Legacy flat pattern for backward compat (still checked as fallback)
             keys.append(f"Database/{safe_name} ({appid}).zip")
 
     keys.extend(pattern.format(appid=appid) for pattern in R2_KEY_PATTERNS)
